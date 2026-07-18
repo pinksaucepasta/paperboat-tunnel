@@ -1,0 +1,1 @@
+{"repository":"paperboat-tunnel","contract_version":"1.0.0","canonical_source":"contracts/manifest.json","copied_manifest_sha256":"4937758804f989878a26dae4ee0788df4e19556e130ef27c83cdcd79d7ca7c4f","supported":{"fixture_manifest":"1","helper_protocol":"1.0-1.0","edge_control":"1.0-1.0","frp":"v0.70.0@7b6e01f04f286632f0d23715aa17a3bc41234b5c"},"last_review":"phase-1-draft"}

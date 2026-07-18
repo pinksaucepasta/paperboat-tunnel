@@ -7,7 +7,10 @@ FRP_COMMIT := 7b6e01f04f286632f0d23715aa17a3bc41234b5c
 FRP_TAGS := noweb
 OWNED_GO_FILES := $(shell find . -path ./frp -prune -o -name '*.go' -print)
 
-.PHONY: build check clean fmt fmt-check generate race submodule-check test tidy verify-toolchain vet
+.PHONY: build check clean contracts fmt fmt-check generate race submodule-check test tidy verify-toolchain vet
+
+contracts:
+	@./testdata/contracts/validate.sh
 
 verify-toolchain:
 	@test "$$(GOTOOLCHAIN=local go env GOVERSION)" = "go$(GO_VERSION)" || { echo "required Go $(GO_VERSION), found $$(GOTOOLCHAIN=local go env GOVERSION)" >&2; exit 1; }
@@ -32,9 +35,11 @@ generate:
 	@if test -n "$(OWNED_GO_FILES)"; then $(GO) generate ./...; fi
 
 vet: submodule-check
+	$(GO) vet ./...
 	cd $(FRP_DIR) && $(GO) vet -tags "$(FRP_TAGS)" ./cmd/frps ./cmd/frpc ./client/... ./server/... ./pkg/...
 
 test: submodule-check
+	$(GO) test ./...
 	cd $(FRP_DIR) && $(GO) test -tags "$(FRP_TAGS)" ./assets/... ./cmd/... ./client/... ./server/... ./pkg/...
 
 race: submodule-check
@@ -43,7 +48,7 @@ race: submodule-check
 tidy:
 	$(GO) mod tidy
 
-check: verify-toolchain submodule-check fmt-check vet test build
+check: verify-toolchain contracts submodule-check fmt-check vet test build
 
 clean:
 	rm -rf bin dist coverage.out
