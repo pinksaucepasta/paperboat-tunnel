@@ -10,7 +10,7 @@ import (
 	"regexp"
 )
 
-const FRPCommit = "3342d7775f8b22ce4e2ab1671b11f0e8b5970602"
+const FRPCommit = "3d8e03cb1e81d7a4bb1afaec472c5649e0deac43"
 const FRPVersion = "v0.70.0"
 
 var pathPattern = regexp.MustCompile(`^/[a-zA-Z0-9/_-]{16,255}$`)
@@ -39,6 +39,7 @@ type serverConfig struct {
 	ProxyBindAddr     string       `json:"proxyBindAddr"`
 	VhostHTTPPort     int          `json:"vhostHTTPPort"`
 	PreserveProto     bool         `json:"vhostHTTPPreserveXForwardedProto"`
+	DisableKeepAlives bool         `json:"vhostHTTPDisableKeepAlives"`
 	VhostHTTPSPort    int          `json:"vhostHTTPSPort"`
 	TCPMuxHTTPPort    int          `json:"tcpmuxHTTPConnectPort"`
 	EnablePrometheus  bool         `json:"enablePrometheus"`
@@ -86,7 +87,7 @@ func Generate(input Input) ([]byte, ArtifactMetadata, error) {
 	if err := validate(input); err != nil {
 		return nil, ArtifactMetadata{}, err
 	}
-	config := serverConfig{BindAddr: input.BindAddr, BindPort: input.BindPort, QUICBindPort: input.QUICBindPort, ProxyBindAddr: input.PrivateProxyAddr, VhostHTTPPort: input.VhostHTTPPort, PreserveProto: true, Auth: authConfig{Method: "token", Token: input.InternalAuthToken}, Log: logConfig{To: "console", Level: "error", DisablePrintColor: true}, WebServer: webConfig{Addr: "127.0.0.1", Port: 0}, Transport: transport{TCPMux: true, TCPMuxKeepaliveInterval: 30}, HTTPPlugins: []httpPlugin{{Name: "paperboat-edge", Addr: input.HookAddr, Path: input.HookPath, Ops: []string{"Login", "NewProxy", "CloseProxy", "Ping", "NewWorkConn", "NewUserConn", "CloseUserConn", "Traffic"}, TLSVerify: true}}, MaxPortsPerClient: 128, UserConnTimeout: 30}
+	config := serverConfig{BindAddr: input.BindAddr, BindPort: input.BindPort, QUICBindPort: input.QUICBindPort, ProxyBindAddr: input.PrivateProxyAddr, VhostHTTPPort: input.VhostHTTPPort, PreserveProto: true, DisableKeepAlives: true, Auth: authConfig{Method: "token", Token: input.InternalAuthToken}, Log: logConfig{To: "console", Level: "error", DisablePrintColor: true}, WebServer: webConfig{Addr: "127.0.0.1", Port: 0}, Transport: transport{TCPMux: true, TCPMuxKeepaliveInterval: 30}, HTTPPlugins: []httpPlugin{{Name: "paperboat-edge", Addr: input.HookAddr, Path: input.HookPath, Ops: []string{"Login", "NewProxy", "CloseProxy", "Ping", "NewWorkConn", "NewUserConn", "CloseUserConn", "Traffic"}, TLSVerify: true}}, MaxPortsPerClient: 128, UserConnTimeout: 30}
 	encoded, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return nil, ArtifactMetadata{}, fmt.Errorf("encode frps config: %w", err)

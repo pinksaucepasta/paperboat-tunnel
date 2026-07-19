@@ -51,6 +51,10 @@ func TestGenerateCaddyPolicy(t *testing.T) {
 	if proxy["flush_interval"].(float64) != -1 {
 		t.Fatal("streaming flush disabled")
 	}
+	keepAlive := proxy["transport"].(map[string]any)["keep_alive"].(map[string]any)
+	if keepAlive["enabled"] != false {
+		t.Fatalf("Caddy may reuse stale authorized streams: %v", keepAlive)
+	}
 	requestHeaders := proxy["headers"].(map[string]any)["request"].(map[string]any)
 	set := requestHeaders["set"].(map[string]any)
 	proto := set["X-Forwarded-Proto"].([]any)

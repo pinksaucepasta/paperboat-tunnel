@@ -33,6 +33,9 @@ func TestGenerateIsDeterministicAndRestrictive(t *testing.T) {
 	if decoded["vhostHTTPPreserveXForwardedProto"] != true {
 		t.Fatalf("trusted public scheme is not preserved: %s", first)
 	}
+	if decoded["vhostHTTPDisableKeepAlives"] != true {
+		t.Fatalf("stale HTTP work connections can be reused: %s", first)
+	}
 	logConfig, ok := decoded["log"].(map[string]any)
 	if !ok || logConfig["to"] != "console" || logConfig["level"] != "error" || logConfig["disablePrintColor"] != true {
 		t.Fatalf("unsafe child logging: %s", first)

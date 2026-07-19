@@ -50,6 +50,11 @@ func TestLoginAttachesOnlyAfterAdmissionAndRevokeCleansUp(t *testing.T) {
 	if stats := adapter.Stats(); stats.ActiveStreams != 0 {
 		t.Fatalf("closed stream stats = %+v", stats)
 	}
+	adapter.Now = func() time.Time { return now.Add(2 * time.Minute) }
+	if stats := adapter.Stats(); stats.Sessions != 0 || stats.Routes != 0 {
+		t.Fatalf("expired session stats = %+v", stats)
+	}
+	adapter.Now = func() time.Time { return now }
 	if err := adapter.RecordTraffic(response.RunID.Value, "helper_1", "http", 10, 20); err != nil {
 		t.Fatal(err)
 	}

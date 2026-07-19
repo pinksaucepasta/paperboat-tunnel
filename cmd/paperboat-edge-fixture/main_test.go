@@ -37,7 +37,7 @@ func TestGenerateSelectsTransportListener(t *testing.T) {
 
 func TestGenerateParameterizedLifecycleFixture(t *testing.T) {
 	directory := t.TempDir()
-	options := fixtureOptions{Protocol: "quic", Generation: 7, Revision: 9, Revoked: true, IncludeRoute: false, LoseUsageAck: true}
+	options := fixtureOptions{Protocol: "quic", NodeID: "edge_test_02", TCPPort: 27022, QUICPort: 27023, Generation: 7, Revision: 9, Revoked: true, IncludeRoute: false, LoseUsageAck: true}
 	if err := generateFixture(directory, options, time.Unix(1_700_000_000, 0)); err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +49,7 @@ func TestGenerateParameterizedLifecycleFixture(t *testing.T) {
 		Assignments []struct {
 			Generation uint64 `json:"connector_generation"`
 			Revoked    bool   `json:"revoked"`
+			NodeID     string `json:"edge_node_id"`
 		} `json:"assignments"`
 		Routes       []any `json:"routes"`
 		LoseUsageAck bool  `json:"lose_next_usage_ack"`
@@ -56,7 +57,7 @@ func TestGenerateParameterizedLifecycleFixture(t *testing.T) {
 	if err := json.Unmarshal(data, &seed); err != nil {
 		t.Fatal(err)
 	}
-	if len(seed.Assignments) != 1 || seed.Assignments[0].Generation != 7 || !seed.Assignments[0].Revoked || len(seed.Routes) != 0 || !seed.LoseUsageAck {
+	if len(seed.Assignments) != 1 || seed.Assignments[0].Generation != 7 || seed.Assignments[0].NodeID != "edge_test_02" || !seed.Assignments[0].Revoked || len(seed.Routes) != 0 || !seed.LoseUsageAck {
 		t.Fatalf("seed = %+v", seed)
 	}
 }

@@ -7,7 +7,7 @@
   "revocations_file": "/opt/paperboat-tunnel/private/revocations.json",
   "usage_signing_key_file": "/opt/paperboat-tunnel/private/usage.key",
   "frps_binary": "/opt/paperboat-tunnel/bin/frps",
-  "frps_sha256": "94564f37a932edb41f2b374f27df80f2d9011a44003bdbb4c8d7affb833d8393",
+  "frps_sha256": "0cb38e7a267e34ae86a5c882807c46110af810ac58a2db338827700019288d75",
   "caddy_binary": "/opt/paperboat-tunnel/bin/caddy",
   "caddy_sha256": "b7105518e3ed1c0761f232e44fc09345535533c9cb0abf0e12809416c7ac64d9",
   "runtime_directory": "/opt/paperboat-tunnel/runtime",

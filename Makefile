@@ -3,7 +3,7 @@ GO := GOTOOLCHAIN=local go
 GOFMT := $(shell GOTOOLCHAIN=local go env GOROOT 2>/dev/null)/bin/gofmt
 FRP_DIR := frp
 FRP_VERSION := v0.70.0
-FRP_COMMIT := 3342d7775f8b22ce4e2ab1671b11f0e8b5970602
+FRP_COMMIT := 3d8e03cb1e81d7a4bb1afaec472c5649e0deac43
 FRP_TAGS := noweb
 BUILD_FLAGS := -trimpath -buildvcs=false
 OWNED_GO_FILES := $(shell find . -path ./frp -prune -o -name '*.go' -print)

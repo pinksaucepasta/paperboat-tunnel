@@ -54,12 +54,20 @@ func NewAdapter(admissions *admission.Service, routes *route.Registry, capacity 
 func (a *Adapter) Stats() Stats {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	stats := Stats{Sessions: len(a.sessions)}
+	now := time.Now()
+	if a.Now != nil {
+		now = a.Now()
+	}
+	stats := Stats{}
 	for _, current := range a.sessions {
-		stats.Routes += len(current.attached)
 		for _, count := range current.active {
 			stats.ActiveStreams += count
 		}
+		if current.run.Resume(current.run.Value, current.run.Generation, now) != nil {
+			continue
+		}
+		stats.Sessions++
+		stats.Routes += len(current.attached)
 	}
 	return stats
 }
