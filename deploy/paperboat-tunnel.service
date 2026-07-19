@@ -1,0 +1,31 @@
+[Unit]
+Description=Paperboat Phase 3 tunnel data plane
+After=network-online.target paperboat-fake-control.service
+Wants=network-online.target
+Requires=paperboat-fake-control.service
+
+[Service]
+Type=simple
+User=paperboat-tunnel
+Group=paperboat-tunnel
+ExecStart=/opt/paperboat-tunnel/bin/paperboat-tunnel -node-id edge-vps-01 -edge-pool default -health-address 127.0.0.1:19090 -state-path /opt/paperboat-tunnel/state/edge-state.json -deployment-config /opt/paperboat-tunnel/config/deployment.json
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/opt/paperboat-tunnel/runtime /opt/paperboat-tunnel/state
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

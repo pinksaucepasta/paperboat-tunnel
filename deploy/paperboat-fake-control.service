@@ -1,0 +1,30 @@
+[Unit]
+Description=Paperboat Phase 3 fake edge control
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=paperboat-tunnel
+Group=paperboat-tunnel
+ExecStart=/opt/paperboat-tunnel/bin/paperboat-fake-control -listen 127.0.0.1:18081 -credential-file /opt/paperboat-tunnel/private/control.credential -seed-file /opt/paperboat-tunnel/config/fake-control.seed.json -tls-cert-file /opt/paperboat-tunnel/private/control.crt -tls-key-file /opt/paperboat-tunnel/private/control.key
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

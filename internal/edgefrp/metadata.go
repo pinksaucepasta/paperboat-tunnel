@@ -1,0 +1,62 @@
+package edgefrp
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/admission"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/route"
+)
+
+const maxAdmissionMetadata = 64 << 10
+
+type MetadataResolver struct{}
+
+type metadataHandoff struct {
+	OperationID   string          `json:"operation_id"`
+	Credential    string          `json:"credential"`
+	EnvironmentID string          `json:"environment_id"`
+	HelperID      string          `json:"helper_id"`
+	Generation    uint64          `json:"connector_generation"`
+	EdgePool      string          `json:"edge_pool"`
+	EdgeNodeID    string          `json:"edge_node_id"`
+	Routes        []metadataRoute `json:"routes"`
+}
+type metadataRoute struct {
+	RouteID    string `json:"route_id"`
+	Revision   uint64 `json:"route_revision"`
+	Kind       string `json:"kind"`
+	PublicHost string `json:"public_host"`
+	ProxyName  string `json:"proxy_name"`
+	Target     struct {
+		Host string `json:"host"`
+		Port uint16 `json:"port"`
+	} `json:"target"`
+}
+
+func (MetadataResolver) ResolveLogin(_ context.Context, login LoginContent) (admission.Request, error) {
+	if len(login.Metas) != 1 {
+		return admission.Request{}, route.ErrInvalid
+	}
+	raw, ok := login.Metas[AdmissionMetadataKey]
+	if !ok || len(raw) == 0 || len(raw) > maxAdmissionMetadata {
+		return admission.Request{}, route.ErrInvalid
+	}
+	var handoff metadataHandoff
+	decoder := json.NewDecoder(bytes.NewBufferString(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&handoff); err != nil {
+		return admission.Request{}, route.ErrInvalid
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return admission.Request{}, route.ErrInvalid
+	}
+	routes := make([]admission.Route, 0, len(handoff.Routes))
+	for _, item := range handoff.Routes {
+		routes = append(routes, admission.Route{RouteID: item.RouteID, Revision: item.Revision, Kind: item.Kind, PublicHost: item.PublicHost, ProxyName: item.ProxyName, TargetHost: item.Target.Host, TargetPort: item.Target.Port})
+	}
+	return admission.Request{OperationID: handoff.OperationID, Credential: handoff.Credential, Environment: handoff.EnvironmentID, Helper: handoff.HelperID, Generation: handoff.Generation, EdgePool: handoff.EdgePool, EdgeNode: handoff.EdgeNodeID, Routes: routes}, nil
+}

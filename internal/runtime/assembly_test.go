@@ -1,0 +1,79 @@
+package runtime
+
+import (
+	"context"
+	"net"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/admission"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/edgefrp"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/route"
+)
+
+type loginResolverFunc func(context.Context, edgefrp.LoginContent) (admission.Request, error)
+
+func (f loginResolverFunc) ResolveLogin(ctx context.Context, login edgefrp.LoginContent) (admission.Request, error) {
+	return f(ctx, login)
+}
+
+func TestAssemblyOwnsHookAndChildProcesses(t *testing.T) {
+	address := freeLoopbackAddress(t)
+	var events []string
+	var lock sync.Mutex
+	component := func(name string) Component { return orderedComponent{name: name, events: &events, mu: &lock} }
+	process := ProcessSpec{Name: "test-process", Path: "/bin/sh", Args: []string{"-c", "trap 'exit 0' TERM; while :; do sleep 1; done"}, MaxOutputBytes: 1024}
+	adapter := edgefrp.NewAdapter(&admission.Service{}, route.NewRegistry())
+	assembly, err := NewAssembly(AssemblySpec{
+		Persistence: component("store"),
+		Control:     component("control"),
+		Node:        component("node"),
+		Routes:      component("routes"),
+		Usage:       component("usage"),
+		HookAddress: address,
+		HookPath:    "/private/paperboat-hook",
+		Policy: edgefrp.Policy{Adapter: adapter, Resolver: loginResolverFunc(func(context.Context, edgefrp.LoginContent) (admission.Request, error) {
+			return admission.Request{}, nil
+		}), InternalAuthToken: "01234567890123456789012345678901"},
+		Bundle: Bundle{FRPSProcess: process, CaddyProcess: ProcessSpec{Name: "test-caddy", Path: process.Path, Args: process.Args, MaxOutputBytes: process.MaxOutputBytes}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assembly.Hook.listen = func(_, _ string) (net.Listener, error) { return newBlockingListener(), nil }
+	if err := assembly.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := assembly.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := events, []string{"start:store", "start:control", "start:node", "start:routes", "start:usage", "stop:routes", "stop:usage", "stop:node", "stop:control", "stop:store"}; !equalStrings(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
+func TestAssemblyRejectsIncompletePolicyAndBundle(t *testing.T) {
+	if _, err := NewAssembly(AssemblySpec{}); err == nil {
+		t.Fatal("incomplete assembly accepted")
+	}
+}
+
+func freeLoopbackAddress(t *testing.T) string {
+	t.Helper()
+	return "127.0.0.1:19091"
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}

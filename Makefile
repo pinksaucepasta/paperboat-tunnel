@@ -3,8 +3,9 @@ GO := GOTOOLCHAIN=local go
 GOFMT := $(shell GOTOOLCHAIN=local go env GOROOT 2>/dev/null)/bin/gofmt
 FRP_DIR := frp
 FRP_VERSION := v0.70.0
-FRP_COMMIT := 7b6e01f04f286632f0d23715aa17a3bc41234b5c
+FRP_COMMIT := 3342d7775f8b22ce4e2ab1671b11f0e8b5970602
 FRP_TAGS := noweb
+BUILD_FLAGS := -trimpath -buildvcs=false
 OWNED_GO_FILES := $(shell find . -path ./frp -prune -o -name '*.go' -print)
 
 .PHONY: build check clean contracts fmt fmt-check generate race submodule-check test tidy verify-toolchain vet
@@ -22,8 +23,9 @@ submodule-check:
 
 build: verify-toolchain submodule-check
 	@mkdir -p bin
-	cd $(FRP_DIR) && CGO_ENABLED=0 $(GO) build -trimpath -ldflags "-s -w" -tags "frps,$(FRP_TAGS)" -o ../bin/frps ./cmd/frps
-	cd $(FRP_DIR) && CGO_ENABLED=0 $(GO) build -trimpath -ldflags "-s -w" -tags "frpc,$(FRP_TAGS)" -o ../bin/frpc ./cmd/frpc
+	CGO_ENABLED=0 $(GO) build $(BUILD_FLAGS) -o bin/paperboat-tunnel ./cmd/paperboat-tunnel
+	cd $(FRP_DIR) && CGO_ENABLED=0 $(GO) build $(BUILD_FLAGS) -ldflags "-s -w" -tags "frps,$(FRP_TAGS)" -o ../bin/frps ./cmd/frps
+	cd $(FRP_DIR) && CGO_ENABLED=0 $(GO) build $(BUILD_FLAGS) -ldflags "-s -w" -tags "frpc,$(FRP_TAGS)" -o ../bin/frpc ./cmd/frpc
 
 fmt:
 	@if test -n "$(OWNED_GO_FILES)"; then $(GOFMT) -w $(OWNED_GO_FILES); fi
@@ -43,6 +45,7 @@ test: submodule-check
 	cd $(FRP_DIR) && $(GO) test -tags "$(FRP_TAGS)" ./assets/... ./cmd/... ./client/... ./server/... ./pkg/...
 
 race: submodule-check
+	$(GO) test -race ./...
 	cd $(FRP_DIR) && $(GO) test -race -tags "$(FRP_TAGS)" ./assets/... ./cmd/... ./client/... ./server/... ./pkg/...
 
 tidy:
