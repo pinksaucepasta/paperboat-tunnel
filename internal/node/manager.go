@@ -199,10 +199,10 @@ func (m *Manager) Snapshot() ManagerSnapshot {
 	return snapshot
 }
 
-func (m *Manager) Observation(nodeID string, at time.Time) control.NodeObservation {
+func (m *Manager) Observation(nodeID, processEpoch string, at time.Time) control.NodeObservation {
 	snapshot := m.Snapshot()
 	phase := m.state.Snapshot().Phase
-	return control.NodeObservation{NodeID: nodeID, Ready: phase == Ready, Draining: phase == Draining, ActiveStreams: snapshot.Streams, At: at}
+	return control.NodeObservation{NodeID: nodeID, ProcessEpoch: processEpoch, Ready: phase == Ready, Draining: phase == Draining, ActiveStreams: snapshot.Streams, At: at}
 }
 
 func (m *Manager) RegisterAndHeartbeat(ctx context.Context, sink control.NodeSink, registration control.NodeRegistration, at time.Time) error {
@@ -212,7 +212,7 @@ func (m *Manager) RegisterAndHeartbeat(ctx context.Context, sink control.NodeSin
 	if err := sink.RegisterNode(ctx, registration); err != nil {
 		return err
 	}
-	return sink.Heartbeat(ctx, m.Observation(registration.NodeID, at))
+	return sink.Heartbeat(ctx, m.Observation(registration.NodeID, registration.ProcessEpoch, at))
 }
 
 func (m *Manager) totalStreamsLocked() uint32 {

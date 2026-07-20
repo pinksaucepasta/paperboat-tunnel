@@ -155,7 +155,7 @@ func (w *NodeWorker) run(ctx context.Context) {
 				if !ok {
 					return
 				}
-				w.recordError(w.Sink.Heartbeat(ctx, w.Manager.Observation(w.Registration.NodeID, at)))
+				w.recordError(w.Sink.Heartbeat(ctx, w.Manager.Observation(w.Registration.NodeID, w.Registration.ProcessEpoch, at)))
 			}
 		}
 	}
@@ -166,7 +166,7 @@ func (w *NodeWorker) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case at := <-ticker.C:
-			w.recordError(w.Sink.Heartbeat(ctx, w.Manager.Observation(w.Registration.NodeID, at)))
+			w.recordError(w.Sink.Heartbeat(ctx, w.Manager.Observation(w.Registration.NodeID, w.Registration.ProcessEpoch, at)))
 		}
 	}
 }
@@ -196,7 +196,7 @@ func (w *NodeWorker) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return w.Sink.Heartbeat(ctx, w.Manager.Observation(w.Registration.NodeID, w.now()))
+	return w.Sink.Heartbeat(ctx, w.Manager.Observation(w.Registration.NodeID, w.Registration.ProcessEpoch, w.now()))
 }
 
 func (w *NodeWorker) now() time.Time {
@@ -209,6 +209,7 @@ func (w *NodeWorker) now() time.Time {
 type RouteWorker struct {
 	Registry *route.Registry
 	Source   control.RouteSource
+	Observer control.RouteObserver
 	State    *node.State
 	NodeID   string
 	Interval time.Duration
@@ -287,7 +288,17 @@ func (w *RouteWorker) reconcile(ctx context.Context) error {
 		}
 		attachments = append(attachments, route.Attachment{ID: assignment.RouteID, Revision: assignment.Revision, Environment: assignment.Environment, Node: assignment.NodeID, Generation: assignment.Generation, Kind: route.Kind(assignment.Kind), Host: assignment.PublicHost, Target: net.JoinHostPort(assignment.TargetHost, strconv.Itoa(int(assignment.TargetPort)))})
 	}
-	return w.Registry.Replace(attachments)
+	if err := w.Registry.Replace(attachments); err != nil {
+		return err
+	}
+	if w.Observer == nil {
+		return nil
+	}
+	observations := make([]control.RouteObservation, 0, len(desired))
+	for _, assignment := range desired {
+		observations = append(observations, control.RouteObservation{RouteID: assignment.RouteID, RouteRevision: assignment.Revision, EdgeNodeID: assignment.NodeID, ConnectorGeneration: assignment.Generation})
+	}
+	return w.Observer.ObserveRoutes(ctx, w.NodeID, observations)
 }
 
 func (w *RouteWorker) Shutdown(ctx context.Context) error {

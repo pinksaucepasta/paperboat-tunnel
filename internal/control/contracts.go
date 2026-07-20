@@ -48,17 +48,40 @@ type RouteSource interface {
 	DesiredRoutes(context.Context, string) ([]RouteAssignment, error)
 }
 
+type RouteObservation struct {
+	RouteID             string `json:"route_id"`
+	RouteRevision       uint64 `json:"route_revision"`
+	EdgeNodeID          string `json:"edge_node_id"`
+	ConnectorGeneration uint64 `json:"connector_generation"`
+}
+
+type RouteObserver interface {
+	ObserveRoutes(context.Context, string, []RouteObservation) error
+}
+
+type RevocationSource interface {
+	Revocations(context.Context) ([]byte, error)
+}
+
 type NodeRegistration struct {
-	NodeID       string `json:"edge_node_id"`
-	EdgePool     string `json:"edge_pool"`
-	Artifact     string `json:"artifact"`
-	Protocol     string `json:"protocol"`
-	ProcessEpoch string `json:"process_epoch"`
-	Capacity     uint32 `json:"capacity"`
+	NodeID       string            `json:"edge_node_id"`
+	EdgePool     string            `json:"edge_pool"`
+	Artifact     string            `json:"artifact"`
+	Protocol     string            `json:"protocol"`
+	ProcessEpoch string            `json:"process_epoch"`
+	Capacity     uint32            `json:"capacity"`
+	Endpoint     ConnectorEndpoint `json:"connector_endpoint"`
+}
+
+type ConnectorEndpoint struct {
+	Host     string `json:"host"`
+	TCPPort  uint16 `json:"tcp_port"`
+	QUICPort uint16 `json:"quic_port"`
 }
 
 type NodeObservation struct {
 	NodeID        string    `json:"edge_node_id"`
+	ProcessEpoch  string    `json:"process_epoch"`
 	Ready         bool      `json:"ready"`
 	Draining      bool      `json:"draining"`
 	ActiveStreams uint32    `json:"active_streams"`

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/admission"
 )
@@ -22,6 +23,9 @@ type Snapshot struct {
 	keys                                       map[string]ed25519.PublicKey
 	revokedJTI, revokedEnvironment, revokedKey map[string]struct{}
 	revokedHelperGeneration                    map[helperGeneration]struct{}
+	revocationMaxAge                           time.Duration
+	revocationUpdatedAt                        time.Time
+	now                                        func() time.Time
 }
 type helperGeneration struct {
 	Helper     string
@@ -29,7 +33,16 @@ type helperGeneration struct {
 }
 
 func NewSnapshot() *Snapshot {
-	return &Snapshot{keys: map[string]ed25519.PublicKey{}, revokedJTI: map[string]struct{}{}, revokedEnvironment: map[string]struct{}{}, revokedKey: map[string]struct{}{}, revokedHelperGeneration: map[helperGeneration]struct{}{}}
+	return &Snapshot{keys: map[string]ed25519.PublicKey{}, revokedJTI: map[string]struct{}{}, revokedEnvironment: map[string]struct{}{}, revokedKey: map[string]struct{}{}, revokedHelperGeneration: map[helperGeneration]struct{}{}, now: time.Now}
+}
+
+func (s *Snapshot) ConfigureRevocationFreshness(maxAge time.Duration, now func() time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.revocationMaxAge = maxAge
+	if now != nil {
+		s.now = now
+	}
 }
 
 type jwksDocument struct {
@@ -124,12 +137,20 @@ func (s *Snapshot) ReplaceRevocations(data []byte) error {
 	}
 	s.mu.Lock()
 	s.revokedJTI, s.revokedEnvironment, s.revokedHelperGeneration, s.revokedKey = jtis, environments, helpers, keys
+	clock := s.now
+	if clock == nil {
+		clock = time.Now
+	}
+	s.revocationUpdatedAt = clock()
 	s.mu.Unlock()
 	return nil
 }
 func (s *Snapshot) Revoked(_ context.Context, claims admission.Claims) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.revocationMaxAge > 0 && (s.revocationUpdatedAt.IsZero() || s.now().Sub(s.revocationUpdatedAt) > s.revocationMaxAge) {
+		return false, ErrSnapshotInvalid
+	}
 	_, a := s.revokedJTI[claims.JTI]
 	_, b := s.revokedEnvironment[claims.EnvironmentID]
 	_, c := s.revokedHelperGeneration[helperGeneration{claims.HelperID, claims.ConnectorGeneration}]

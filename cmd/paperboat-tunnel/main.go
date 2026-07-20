@@ -83,6 +83,7 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	if err != nil {
 		return nil, fmt.Errorf("load trust: %w", err)
 	}
+	trust.Snapshot.ConfigureRevocationFreshness(3*deployment.ControlInterval, time.Now)
 	tlsConfig, err := controlTLS(deployment.ControlCAFile)
 	if err != nil {
 		return nil, fmt.Errorf("load control TLS: %w", err)
@@ -140,11 +141,12 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 		return nil, err
 	}
 	persistence := edgeruntime.Persistence{Path: cfg.StatePath, Restore: func(store.State) error { return nil }, Snapshot: snapshotState}
-	nodeWorker := &edgeruntime.NodeWorker{Manager: manager, Sink: client, Registration: control.NodeRegistration{NodeID: cfg.NodeID, EdgePool: cfg.EdgePool, Artifact: bundle.FRPSMetadata.FRPVersion + "+" + bundle.CaddyMetadata.Version, Protocol: "1.0", ProcessEpoch: processEpoch, Capacity: deployment.NodeCapacity}, Interval: deployment.ControlInterval}
-	routeWorker := &edgeruntime.RouteWorker{Registry: routes, Source: client, State: state, NodeID: cfg.NodeID, Interval: deployment.ControlInterval}
+	nodeWorker := &edgeruntime.NodeWorker{Manager: manager, Sink: client, Registration: control.NodeRegistration{NodeID: cfg.NodeID, EdgePool: cfg.EdgePool, Artifact: bundle.FRPSMetadata.FRPVersion + "+" + bundle.CaddyMetadata.Version, Protocol: "1.0", ProcessEpoch: processEpoch, Capacity: deployment.NodeCapacity, Endpoint: control.ConnectorEndpoint{Host: deployment.ConnectorAdvertiseHost, TCPPort: uint16(deployment.ConnectorTCPPort), QUICPort: uint16(deployment.ConnectorQUICPort)}}, Interval: deployment.ControlInterval}
+	routeWorker := &edgeruntime.RouteWorker{Registry: routes, Source: client, Observer: client, State: state, NodeID: cfg.NodeID, Interval: deployment.ControlInterval}
 	usageWorker := &edgeruntime.UsageWorker{Queue: queue, Sink: client, Prepare: meter, Interval: deployment.UsageInterval}
 	metrics := observability.NewMetrics()
-	assembly, err := edgeruntime.NewAssembly(edgeruntime.AssemblySpec{Persistence: persistence, Control: edgeruntime.ControlDependency{Source: client, NodeID: cfg.NodeID}, Node: nodeWorker, Routes: routeWorker, Usage: usageWorker, HookAddress: deployment.HookAddress, HookPath: deployment.HookPath, Policy: edgefrp.Policy{Adapter: adapter, Resolver: edgefrp.MetadataResolver{}, InternalAuthToken: internalToken}, HookReject: func(operation, reason string) {
+	controlDependency := &edgeruntime.ControlDependency{Source: client, TrustSource: client, ApplyTrust: trust.Snapshot.ReplaceRevocations, NodeID: cfg.NodeID, Interval: deployment.ControlInterval}
+	assembly, err := edgeruntime.NewAssembly(edgeruntime.AssemblySpec{Persistence: persistence, Control: controlDependency, Node: nodeWorker, Routes: routeWorker, Usage: usageWorker, HookAddress: deployment.HookAddress, HookPath: deployment.HookPath, Policy: edgefrp.Policy{Adapter: adapter, Resolver: edgefrp.MetadataResolver{}, InternalAuthToken: internalToken}, HookReject: func(operation, reason string) {
 		log.Printf("frp hook rejected operation=%s reason=%s", operation, reason)
 	}, HookObserve: func(operation string, rejected bool) {
 		kind := map[string]observability.Kind{"Login": observability.Admission, "NewProxy": observability.Route, "NewUserConn": observability.Stream, "CloseUserConn": observability.Stream, "Traffic": observability.Usage, "CloseProxy": observability.Cleanup}[operation]

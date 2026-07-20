@@ -6,8 +6,10 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/admission"
 )
@@ -74,4 +76,20 @@ func TestSnapshotRejectsMalformedAndSupportsConcurrentReaders(t *testing.T) {
 		}()
 	}
 	group.Wait()
+}
+
+func TestSnapshotFailsClosedWhenRevocationsAreStale(t *testing.T) {
+	now := time.Unix(1000, 0)
+	snapshot := NewSnapshot()
+	snapshot.ConfigureRevocationFreshness(time.Minute, func() time.Time { return now })
+	if err := snapshot.ReplaceRevocations([]byte(`{"jtis":[],"environments":[],"helper_generations":[],"key_ids":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := snapshot.Revoked(context.Background(), admission.Claims{}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute + time.Nanosecond)
+	if _, err := snapshot.Revoked(context.Background(), admission.Claims{}); !errors.Is(err, ErrSnapshotInvalid) {
+		t.Fatalf("stale revocations error = %v", err)
+	}
 }

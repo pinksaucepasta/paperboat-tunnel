@@ -18,33 +18,34 @@ import (
 const maxDeploymentBytes = 1 << 20
 
 type Deployment struct {
-	ControlURL            string        `json:"control_url"`
-	CredentialIssuer      string        `json:"credential_issuer"`
-	ControlCredentialFile string        `json:"control_credential_file"`
-	ControlCAFile         string        `json:"control_ca_file"`
-	JWKSFile              string        `json:"jwks_file"`
-	RevocationsFile       string        `json:"revocations_file"`
-	UsageSigningKeyFile   string        `json:"usage_signing_key_file"`
-	FRPSBinary            string        `json:"frps_binary"`
-	FRPSSHA256            string        `json:"frps_sha256"`
-	CaddyBinary           string        `json:"caddy_binary"`
-	CaddySHA256           string        `json:"caddy_sha256"`
-	RuntimeDirectory      string        `json:"runtime_directory"`
-	HookAddress           string        `json:"hook_address"`
-	HookPath              string        `json:"hook_path"`
-	ConnectorBindAddress  string        `json:"connector_bind_address"`
-	ConnectorTCPPort      int           `json:"connector_tcp_port"`
-	ConnectorQUICPort     int           `json:"connector_quic_port"`
-	PrivateVhostAddress   string        `json:"private_vhost_address"`
-	CaddyListenAddress    string        `json:"caddy_listen_address"`
-	CaddyAdminAddress     string        `json:"caddy_admin_address"`
-	WildcardHost          string        `json:"wildcard_host"`
-	TrustedProxyCIDRs     []string      `json:"trusted_proxy_cidrs"`
-	CertificateIssuer     string        `json:"certificate_issuer"`
-	NodeCapacity          uint32        `json:"node_capacity"`
-	ControlInterval       time.Duration `json:"control_interval"`
-	UsageInterval         time.Duration `json:"usage_interval"`
-	ControlTimeout        time.Duration `json:"control_timeout"`
+	ControlURL             string        `json:"control_url"`
+	CredentialIssuer       string        `json:"credential_issuer"`
+	ControlCredentialFile  string        `json:"control_credential_file"`
+	ControlCAFile          string        `json:"control_ca_file"`
+	JWKSFile               string        `json:"jwks_file"`
+	RevocationsFile        string        `json:"revocations_file"`
+	UsageSigningKeyFile    string        `json:"usage_signing_key_file"`
+	FRPSBinary             string        `json:"frps_binary"`
+	FRPSSHA256             string        `json:"frps_sha256"`
+	CaddyBinary            string        `json:"caddy_binary"`
+	CaddySHA256            string        `json:"caddy_sha256"`
+	RuntimeDirectory       string        `json:"runtime_directory"`
+	HookAddress            string        `json:"hook_address"`
+	HookPath               string        `json:"hook_path"`
+	ConnectorBindAddress   string        `json:"connector_bind_address"`
+	ConnectorAdvertiseHost string        `json:"connector_advertise_host"`
+	ConnectorTCPPort       int           `json:"connector_tcp_port"`
+	ConnectorQUICPort      int           `json:"connector_quic_port"`
+	PrivateVhostAddress    string        `json:"private_vhost_address"`
+	CaddyListenAddress     string        `json:"caddy_listen_address"`
+	CaddyAdminAddress      string        `json:"caddy_admin_address"`
+	WildcardHost           string        `json:"wildcard_host"`
+	TrustedProxyCIDRs      []string      `json:"trusted_proxy_cidrs"`
+	CertificateIssuer      string        `json:"certificate_issuer"`
+	NodeCapacity           uint32        `json:"node_capacity"`
+	ControlInterval        time.Duration `json:"control_interval"`
+	UsageInterval          time.Duration `json:"usage_interval"`
+	ControlTimeout         time.Duration `json:"control_timeout"`
 }
 
 func LoadDeployment(path string) (Deployment, error) {
@@ -114,6 +115,9 @@ func (d Deployment) validate() error {
 	}
 	if net.ParseIP(d.ConnectorBindAddress) == nil || d.ConnectorTCPPort < 1 || d.ConnectorTCPPort > 65535 || d.ConnectorQUICPort < 1 || d.ConnectorQUICPort > 65535 || d.ConnectorTCPPort == d.ConnectorQUICPort {
 		return errors.New("connector listener configuration is invalid")
+	}
+	if d.ConnectorAdvertiseHost == "" || len(d.ConnectorAdvertiseHost) > 253 || strings.ContainsAny(d.ConnectorAdvertiseHost, "/:@") {
+		return errors.New("connector advertised host is invalid")
 	}
 	if _, _, err := net.SplitHostPort(d.CaddyListenAddress); err != nil {
 		return errors.New("Caddy listener is invalid")

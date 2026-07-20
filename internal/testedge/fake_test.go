@@ -70,7 +70,7 @@ func TestFakeCredentialAssignmentAndNodeLifecycle(t *testing.T) {
 	if err := fake.RegisterNode(context.Background(), control.NodeRegistration{NodeID: "n", ProcessEpoch: "p", Capacity: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := fake.Heartbeat(context.Background(), control.NodeObservation{NodeID: "n", Ready: true, At: time.Unix(1, 0)}); err != nil {
+	if err := fake.Heartbeat(context.Background(), control.NodeObservation{NodeID: "n", ProcessEpoch: "p", Ready: true, At: time.Unix(1, 0)}); err != nil {
 		t.Fatal(err)
 	}
 	if node, ok := fake.Node("n"); !ok || !node.Ready {

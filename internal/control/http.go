@@ -138,6 +138,40 @@ func (c *HTTPClient) DesiredRoutes(ctx context.Context, nodeID string) ([]RouteA
 	return routes, nil
 }
 
+func (c *HTTPClient) Revocations(ctx context.Context) ([]byte, error) {
+	endpoint := c.base.ResolveReference(&url.URL{Path: "/v1/trust/revocations"})
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, ErrControlInvalid
+	}
+	request.Header.Set("Authorization", "Bearer "+c.credential)
+	request.Header.Set("Accept", "application/json")
+	response, err := c.client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrControlUnavailable, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxControlDocument))
+		return nil, ErrControlUnavailable
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxControlDocument+1))
+	if err != nil || len(data) == 0 || len(data) > maxControlDocument {
+		return nil, ErrControlUnavailable
+	}
+	return data, nil
+}
+
+func (c *HTTPClient) ObserveRoutes(ctx context.Context, nodeID string, routes []RouteObservation) error {
+	if len(routes) > 1000 {
+		return ErrControlInvalid
+	}
+	return c.post(ctx, "/v1/routes/observed", struct {
+		NodeID string             `json:"edge_node_id"`
+		Routes []RouteObservation `json:"routes"`
+	}{NodeID: nodeID, Routes: routes}, nil)
+}
+
 func (c *HTTPClient) post(ctx context.Context, path string, input, output any) error {
 	payload, err := json.Marshal(input)
 	if err != nil || len(payload) > maxControlDocument {

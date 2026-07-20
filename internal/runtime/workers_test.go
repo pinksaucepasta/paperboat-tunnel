@@ -20,6 +20,18 @@ func (f routeSourceFunc) DesiredRoutes(ctx context.Context, nodeID string) ([]co
 	return f(ctx, nodeID)
 }
 
+type routeObserver struct {
+	observations []control.RouteObservation
+	nodeID       string
+	err          error
+}
+
+func (o *routeObserver) ObserveRoutes(_ context.Context, nodeID string, observations []control.RouteObservation) error {
+	o.nodeID = nodeID
+	o.observations = append([]control.RouteObservation(nil), observations...)
+	return o.err
+}
+
 type toggledRouteSource struct {
 	mu     sync.Mutex
 	err    error
@@ -159,12 +171,16 @@ func TestRouteWorkerReplacesAuthoritativeSnapshotAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	pulse := make(chan time.Time, 1)
-	worker := &RouteWorker{Registry: registry, Source: fake, State: state, NodeID: "edge", Pulse: pulse}
+	observer := &routeObserver{}
+	worker := &RouteWorker{Registry: registry, Source: fake, Observer: observer, State: state, NodeID: "edge", Pulse: pulse}
 	if err := worker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if attachment, ok := registry.Get("route"); !ok || attachment.Revision != 2 {
 		t.Fatalf("attachment = %+v, present=%v", attachment, ok)
+	}
+	if observer.nodeID != "edge" || len(observer.observations) != 1 || observer.observations[0].RouteRevision != 2 || observer.observations[0].ConnectorGeneration != 1 {
+		t.Fatalf("observations = %#v", observer.observations)
 	}
 	close(pulse)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

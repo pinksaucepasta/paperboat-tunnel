@@ -57,6 +57,13 @@ func TestHTTPClientTypedOperationsAndAuthentication(t *testing.T) {
 			return response(http.StatusNoContent, ""), nil
 		case "/v1/routes/desired":
 			return response(http.StatusOK, `{"routes":[{"route_id":"route","route_revision":2,"environment_id":"env","connector_generation":3,"edge_node_id":"edge","kind":"helper_https_wss","public_host":"app.example.test","target":{"host":"127.0.0.1","port":8080}}]}`), nil
+		case "/v1/routes/observed":
+			return response(http.StatusNoContent, ""), nil
+		case "/v1/trust/revocations":
+			if r.Method != http.MethodGet {
+				t.Errorf("revocation method = %s", r.Method)
+			}
+			return response(http.StatusOK, `{"jtis":["jti_revoked"],"environments":[],"helper_generations":[],"key_ids":[]}`), nil
 		default:
 			return response(http.StatusNotFound, ""), nil
 		}
@@ -78,6 +85,13 @@ func TestHTTPClientTypedOperationsAndAuthentication(t *testing.T) {
 	routes, err := client.DesiredRoutes(context.Background(), "edge")
 	if err != nil || len(routes) != 1 || routes[0].Revision != 2 {
 		t.Fatalf("routes = %+v, %v", routes, err)
+	}
+	revocations, err := client.Revocations(context.Background())
+	if err != nil || !strings.Contains(string(revocations), "jti_revoked") {
+		t.Fatalf("revocations = %s, %v", revocations, err)
+	}
+	if err := client.ObserveRoutes(context.Background(), "edge", []RouteObservation{{RouteID: "route", RouteRevision: 2, EdgeNodeID: "edge", ConnectorGeneration: 3}}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -104,5 +118,8 @@ func TestHTTPClientRejectsPlaintextRedirectMalformedAndOversized(t *testing.T) {
 	})
 	if _, err := oversized.Current(context.Background(), "env", "helper"); !errors.Is(err, ErrControlUnavailable) {
 		t.Fatalf("oversized = %v", err)
+	}
+	if _, err := oversized.Revocations(context.Background()); !errors.Is(err, ErrControlUnavailable) {
+		t.Fatalf("oversized revocations = %v", err)
 	}
 }
