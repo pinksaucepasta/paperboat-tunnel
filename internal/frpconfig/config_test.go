@@ -51,12 +51,21 @@ func TestGenerateRejectsUnsafeListenersAndSecrets(t *testing.T) {
 		func() Input { i := validInput(); i.HookAddr = "0.0.0.0:19000"; return i }(),
 		func() Input { i := validInput(); i.HookPath = "/short"; return i }(),
 		func() Input { i := validInput(); i.InternalAuthToken = "short"; return i }(),
+		func() Input { i := validInput(); i.LogLevel = "debug"; return i }(),
 		func() Input { i := validInput(); i.TCPMuxHTTPPortForTest(); return i }(),
 	}
 	for _, input := range tests {
 		if _, _, err := Generate(input); err == nil || !errors.Is(err, ErrInvalid) {
 			t.Fatalf("input accepted: %+v, err=%v", input, err)
 		}
+	}
+}
+
+func TestGenerateAllowsPrivateBridgeVhost(t *testing.T) {
+	input := validInput()
+	input.PrivateProxyAddr = "172.20.0.1"
+	if _, _, err := Generate(input); err != nil {
+		t.Fatal(err)
 	}
 }
 

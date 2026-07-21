@@ -80,7 +80,7 @@ func validate(input Input) error {
 	if !strings.HasPrefix(input.WildcardHost, "*.") || !domainPattern.MatchString(baseHost) || net.ParseIP(baseHost) != nil {
 		return ErrInvalid
 	}
-	if err := validateLoopbackEndpoint(input.PrivateUpstream); err != nil {
+	if err := validatePrivateEndpoint(input.PrivateUpstream); err != nil {
 		return err
 	}
 	if input.ListenAddress == "" || input.AdminAddress == "" {
@@ -100,6 +100,15 @@ func validate(input Input) error {
 func validateLoopbackEndpoint(endpoint string) error {
 	host, port, err := net.SplitHostPort(endpoint)
 	if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() || port == "" || port == "0" {
+		return fmt.Errorf("%w: private endpoint", ErrInvalid)
+	}
+	return nil
+}
+
+func validatePrivateEndpoint(endpoint string) error {
+	host, port, err := net.SplitHostPort(endpoint)
+	ip := net.ParseIP(host)
+	if err != nil || ip == nil || (!ip.IsLoopback() && !ip.IsPrivate()) || port == "" || port == "0" {
 		return fmt.Errorf("%w: private endpoint", ErrInvalid)
 	}
 	return nil

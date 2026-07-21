@@ -134,7 +134,7 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	}
 	bundle, err := edgeruntime.PrepareBundle(edgeruntime.BundleSpec{
 		Directory: filepath.Join(deployment.RuntimeDirectory, "config"), FRPSBinary: deployment.FRPSBinary, CaddyBinary: deployment.CaddyBinary, FRPSSHA256: deployment.FRPSSHA256, CaddySHA256: deployment.CaddySHA256, MaxOutputBytes: 1 << 20,
-		FRPS:  frpconfig.Input{BindAddr: deployment.ConnectorBindAddress, BindPort: deployment.ConnectorTCPPort, QUICBindPort: deployment.ConnectorQUICPort, PrivateProxyAddr: vhostHost, VhostHTTPPort: vhostPort, HookAddr: deployment.HookAddress, HookPath: deployment.HookPath, InternalAuthToken: internalToken},
+		FRPS:  frpconfig.Input{BindAddr: deployment.ConnectorBindAddress, BindPort: deployment.ConnectorTCPPort, QUICBindPort: deployment.ConnectorQUICPort, PrivateProxyAddr: vhostHost, VhostHTTPPort: vhostPort, HookAddr: deployment.HookAddress, HookPath: deployment.HookPath, InternalAuthToken: internalToken, LogLevel: deployment.FRPSLogLevel},
 		Caddy: caddyconfig.Input{WildcardHost: deployment.WildcardHost, PrivateUpstream: deployment.PrivateVhostAddress, ListenAddress: deployment.CaddyListenAddress, AdminAddress: deployment.CaddyAdminAddress, TrustedProxies: deployment.TrustedProxyCIDRs, IssuerModule: deployment.CertificateIssuer},
 	})
 	if err != nil {
@@ -149,6 +149,9 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	assembly, err := edgeruntime.NewAssembly(edgeruntime.AssemblySpec{Persistence: persistence, Control: controlDependency, Node: nodeWorker, Routes: routeWorker, Usage: usageWorker, HookAddress: deployment.HookAddress, HookPath: deployment.HookPath, Policy: edgefrp.Policy{Adapter: adapter, Resolver: edgefrp.MetadataResolver{}, InternalAuthToken: internalToken}, HookReject: func(operation, reason string) {
 		log.Printf("frp hook rejected operation=%s reason=%s", operation, reason)
 	}, HookObserve: func(operation string, rejected bool) {
+		if !rejected && (operation == "Login" || operation == "NewProxy") {
+			log.Printf("frp hook accepted operation=%s", operation)
+		}
 		kind := map[string]observability.Kind{"Login": observability.Admission, "NewProxy": observability.Route, "NewUserConn": observability.Stream, "CloseUserConn": observability.Stream, "Traffic": observability.Usage, "CloseProxy": observability.Cleanup}[operation]
 		if kind == "" {
 			return

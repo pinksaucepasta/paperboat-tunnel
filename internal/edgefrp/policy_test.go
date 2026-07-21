@@ -62,4 +62,10 @@ func TestPolicyLoginAndProxyAllowList(t *testing.T) {
 	if _, err := policy.Handle(context.Background(), "NewProxy", unknown); err == nil {
 		t.Fatal("unknown proxy accepted")
 	}
+	if _, err := policy.Handle(context.Background(), "CloseProxy", json.RawMessage(`{"user":{"run_id":"run"},"proxy_name":"proxy"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if stats := adapter.Stats(); stats.Sessions != 0 || stats.Routes != 0 {
+		t.Fatalf("closed final proxy retained connector state: %+v", stats)
+	}
 }

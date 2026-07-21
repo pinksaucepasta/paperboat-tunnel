@@ -31,10 +31,12 @@ type TrafficRecorder interface {
 }
 
 type session struct {
-	run      admission.RunID
-	attached []route.Attachment
-	routes   []admission.Route
-	active   map[string]uint32
+	run         admission.RunID
+	environment string
+	helper      string
+	attached    []route.Attachment
+	routes      []admission.Route
+	active      map[string]uint32
 }
 
 type Stats struct {
@@ -89,7 +91,13 @@ func (a *Adapter) Login(ctx context.Context, request admission.Request) (admissi
 		}
 		return response, nil
 	}
-	if uint32(len(a.sessions)) >= a.Capacity {
+	replaced := make([]string, 0, 1)
+	for runID, current := range a.sessions {
+		if current.environment == response.Environment && current.helper == response.Helper {
+			replaced = append(replaced, runID)
+		}
+	}
+	if uint32(len(a.sessions)-len(replaced)) >= a.Capacity {
 		a.mu.Unlock()
 		return admission.Response{}, edgeerrors.New(edgeerrors.CodeServiceUnavailable, "connector capacity is exhausted", "retry admission on an available node")
 	}
@@ -106,7 +114,14 @@ func (a *Adapter) Login(ctx context.Context, request admission.Request) (admissi
 		}
 		attached = append(attached, attachedRoute)
 	}
-	a.sessions[response.RunID.Value] = session{run: response.RunID, attached: attached, routes: append([]admission.Route(nil), response.Routes...), active: make(map[string]uint32)}
+	// A refreshed admission has a new run ID but retains the helper generation.
+	// Supersede its old logical runs after the replacement routes are attached.
+	// Their FRP transports can still drain, but later close callbacks must not
+	// detach routes now owned by the replacement run.
+	for _, runID := range replaced {
+		delete(a.sessions, runID)
+	}
+	a.sessions[response.RunID.Value] = session{run: response.RunID, environment: response.Environment, helper: response.Helper, attached: attached, routes: append([]admission.Route(nil), response.Routes...), active: make(map[string]uint32)}
 	a.mu.Unlock()
 	return response, nil
 }
@@ -242,7 +257,15 @@ func (a *Adapter) CloseProxy(runID, proxyName string) {
 		}
 	}
 	current.routes, current.attached = keptRoutes, keptAttachments
-	a.sessions[runID] = current
+	if len(current.routes) == 0 {
+		// FRP sends CloseProxy when a helper drains its client. Do not retain an
+		// empty generation: stale sessions otherwise consume capacity and make a
+		// subsequent resume appear as route drift.
+		delete(a.sessions, runID)
+		current.run.Revoked = true
+	} else {
+		a.sessions[runID] = current
+	}
 	a.mu.Unlock()
 	for _, attached := range detached {
 		_ = a.Routes.Detach(attached.ID, attached.Revision)

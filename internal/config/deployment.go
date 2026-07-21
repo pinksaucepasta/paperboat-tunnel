@@ -27,6 +27,7 @@ type Deployment struct {
 	UsageSigningKeyFile    string        `json:"usage_signing_key_file"`
 	FRPSBinary             string        `json:"frps_binary"`
 	FRPSSHA256             string        `json:"frps_sha256"`
+	FRPSLogLevel           string        `json:"frps_log_level,omitempty"`
 	CaddyBinary            string        `json:"caddy_binary"`
 	CaddySHA256            string        `json:"caddy_sha256"`
 	RuntimeDirectory       string        `json:"runtime_directory"`
@@ -70,6 +71,9 @@ func LoadDeployment(path string) (Deployment, error) {
 	if deployment.CredentialIssuer == "" {
 		deployment.CredentialIssuer = deployment.ControlURL
 	}
+	if deployment.FRPSLogLevel == "" {
+		deployment.FRPSLogLevel = "error"
+	}
 	if err := deployment.validate(); err != nil {
 		return Deployment{}, invalid("deployment config", err)
 	}
@@ -100,6 +104,9 @@ func (d Deployment) validate() error {
 		if _, err := hex.DecodeString(digest); err != nil {
 			return errors.New("artifact checksums must be SHA-256")
 		}
+	}
+	if d.FRPSLogLevel != "error" && d.FRPSLogLevel != "warn" && d.FRPSLogLevel != "info" {
+		return errors.New("frps_log_level is invalid")
 	}
 	if err := privateEndpoint(d.HookAddress); err != nil {
 		return err
@@ -139,8 +146,8 @@ func (d Deployment) validate() error {
 func privateEndpoint(address string) error {
 	host, port, err := net.SplitHostPort(address)
 	ip := net.ParseIP(host)
-	if err != nil || ip == nil || !ip.IsLoopback() || port == "" || port == "0" {
-		return errors.New("private endpoint must use a fixed loopback address")
+	if err != nil || ip == nil || (!ip.IsLoopback() && !ip.IsPrivate()) || port == "" || port == "0" {
+		return errors.New("private endpoint must use a fixed loopback or private address")
 	}
 	return nil
 }

@@ -83,6 +83,14 @@ func TestGenerateCaddyPolicy(t *testing.T) {
 	}
 }
 
+func TestGenerateAcceptsPrivateUpstream(t *testing.T) {
+	input := validInput()
+	input.PrivateUpstream = "172.20.0.1:8080"
+	if _, err := Generate(input); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+}
+
 func TestRejectsHostConfusionAndPublicAdmin(t *testing.T) {
 	tests := []Input{
 		func() Input { i := validInput(); i.WildcardHost = "preview.example.test"; return i }(),

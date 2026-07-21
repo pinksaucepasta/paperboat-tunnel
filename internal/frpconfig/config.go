@@ -29,6 +29,7 @@ type Input struct {
 	HookAddr          string
 	HookPath          string
 	InternalAuthToken string
+	LogLevel          string
 }
 
 type serverConfig struct {
@@ -87,7 +88,11 @@ func Generate(input Input) ([]byte, ArtifactMetadata, error) {
 	if err := validate(input); err != nil {
 		return nil, ArtifactMetadata{}, err
 	}
-	config := serverConfig{BindAddr: input.BindAddr, BindPort: input.BindPort, QUICBindPort: input.QUICBindPort, ProxyBindAddr: input.PrivateProxyAddr, VhostHTTPPort: input.VhostHTTPPort, PreserveProto: true, DisableKeepAlives: true, Auth: authConfig{Method: "token", Token: input.InternalAuthToken}, Log: logConfig{To: "console", Level: "error", DisablePrintColor: true}, WebServer: webConfig{Addr: "127.0.0.1", Port: 0}, Transport: transport{TCPMux: true, TCPMuxKeepaliveInterval: 30}, HTTPPlugins: []httpPlugin{{Name: "paperboat-edge", Addr: input.HookAddr, Path: input.HookPath, Ops: []string{"Login", "NewProxy", "CloseProxy", "Ping", "NewWorkConn", "NewUserConn", "CloseUserConn", "Traffic"}, TLSVerify: true}}, MaxPortsPerClient: 128, UserConnTimeout: 30}
+	logLevel := input.LogLevel
+	if logLevel == "" {
+		logLevel = "error"
+	}
+	config := serverConfig{BindAddr: input.BindAddr, BindPort: input.BindPort, QUICBindPort: input.QUICBindPort, ProxyBindAddr: input.PrivateProxyAddr, VhostHTTPPort: input.VhostHTTPPort, PreserveProto: true, DisableKeepAlives: true, Auth: authConfig{Method: "token", Token: input.InternalAuthToken}, Log: logConfig{To: "console", Level: logLevel, DisablePrintColor: true}, WebServer: webConfig{Addr: "127.0.0.1", Port: 0}, Transport: transport{TCPMux: true, TCPMuxKeepaliveInterval: 30}, HTTPPlugins: []httpPlugin{{Name: "paperboat-edge", Addr: input.HookAddr, Path: input.HookPath, Ops: []string{"Login", "NewProxy", "CloseProxy", "Ping", "NewWorkConn", "NewUserConn", "CloseUserConn", "Traffic"}, TLSVerify: true}}, MaxPortsPerClient: 128, UserConnTimeout: 30}
 	encoded, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return nil, ArtifactMetadata{}, fmt.Errorf("encode frps config: %w", err)
@@ -98,13 +103,13 @@ func Generate(input Input) ([]byte, ArtifactMetadata, error) {
 }
 
 func validate(input Input) error {
-	if !validPort(input.BindPort) || !validPort(input.QUICBindPort) || !validPort(input.VhostHTTPPort) || input.BindAddr == "" || input.PrivateProxyAddr == "" || input.HookAddr == "" || !pathPattern.MatchString(input.HookPath) || len(input.InternalAuthToken) < 32 {
+	if !validPort(input.BindPort) || !validPort(input.QUICBindPort) || !validPort(input.VhostHTTPPort) || input.BindAddr == "" || input.PrivateProxyAddr == "" || input.HookAddr == "" || !pathPattern.MatchString(input.HookPath) || len(input.InternalAuthToken) < 32 || input.LogLevel != "" && input.LogLevel != "error" && input.LogLevel != "warn" && input.LogLevel != "info" {
 		return ErrInvalid
 	}
 	if err := validateBind(input.BindAddr); err != nil {
 		return err
 	}
-	if err := validateLoopback(input.PrivateProxyAddr); err != nil {
+	if err := validatePrivateBind(input.PrivateProxyAddr); err != nil {
 		return err
 	}
 	hookHost, hookPort, err := net.SplitHostPort(input.HookAddr)
@@ -123,9 +128,9 @@ func validateBind(address string) error {
 	return nil
 }
 
-func validateLoopback(address string) error {
+func validatePrivateBind(address string) error {
 	ip := net.ParseIP(address)
-	if ip == nil || !ip.IsLoopback() {
+	if ip == nil || !ip.IsLoopback() && !ip.IsPrivate() {
 		return ErrInvalid
 	}
 	return nil
