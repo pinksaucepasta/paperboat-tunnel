@@ -230,7 +230,7 @@
       "id": "session.stream",
       "path": "session/stream.md",
       "type": "specification",
-      "sha256": "87b0044cd1d1056caf61b5af0702271862ba3005197c3a190228549c199ac02c",
+      "sha256": "501602e168bf3088d912988972ac263b978b3557a0420deecf036321ce1f14cf",
       "owner": "helper",
       "review": "phase-1-draft",
       "consumers": [
@@ -254,7 +254,7 @@
       "id": "session.operation.vectors",
       "path": "fixtures/session/operations.ndjson",
       "type": "operation-vectors",
-      "sha256": "2488fff258a13434940cc2e1f6aeaaaf8408692c289b990d02f4195682fcd4fd",
+      "sha256": "0dbae524e2b92847701cfd92fb989d8bf0d17438738fbdc59aee9c2a30cd3ba3",
       "owner": "helper",
       "review": "phase-1-draft",
       "consumers": [
