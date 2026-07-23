@@ -4,28 +4,32 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/edgefrp"
 )
 
 type AssemblySpec struct {
-	Persistence Component
-	Control     Component
-	Node        Component
-	Routes      Component
-	Usage       Component
-	HookAddress string
-	HookPath    string
-	Policy      edgefrp.Policy
-	HookReject  func(operation, reason string)
-	HookObserve func(operation string, rejected bool)
-	Bundle      Bundle
+	Persistence    Component
+	Control        Component
+	Node           Component
+	Routes         Component
+	Usage          Component
+	HookAddress    string
+	GatewayAddress string
+	GatewayHandler http.Handler
+	HookPath       string
+	Policy         edgefrp.Policy
+	HookReject     func(operation, reason string)
+	HookObserve    func(operation string, rejected bool)
+	Bundle         Bundle
 }
 
 type Assembly struct {
 	dataPlane *DataPlane
 	Hook      *HTTPServer
+	Gateway   *HTTPServer
 	FRPS      *Process
 	Caddy     *Process
 	done      chan error
@@ -45,6 +49,13 @@ func NewAssembly(spec AssemblySpec) (*Assembly, error) {
 	if err != nil {
 		return nil, fmt.Errorf("assembly hook: %w", err)
 	}
+	if spec.GatewayAddress == "" || spec.GatewayHandler == nil {
+		return nil, fmt.Errorf("assembly gateway: %w", ErrProcessInvalid)
+	}
+	gateway, err := NewHTTPServer(HTTPServerSpec{Address: spec.GatewayAddress, Handler: spec.GatewayHandler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 32 << 10})
+	if err != nil {
+		return nil, fmt.Errorf("assembly gateway: %w", err)
+	}
 	frps, err := NewProcess(spec.Bundle.FRPSProcess)
 	if err != nil {
 		return nil, fmt.Errorf("assembly frps: %w", err)
@@ -60,13 +71,14 @@ func NewAssembly(spec AssemblySpec) (*Assembly, error) {
 		Routes:      spec.Routes,
 		Usage:       spec.Usage,
 		Hook:        hook,
+		Gateway:     gateway,
 		FRPS:        frps,
 		Caddy:       caddy,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("assembly lifecycle: %w", err)
 	}
-	return &Assembly{dataPlane: dataPlane, Hook: hook, FRPS: frps, Caddy: caddy, done: make(chan error, 1)}, nil
+	return &Assembly{dataPlane: dataPlane, Hook: hook, Gateway: gateway, FRPS: frps, Caddy: caddy, done: make(chan error, 1)}, nil
 }
 
 func (a *Assembly) Start(ctx context.Context) error {

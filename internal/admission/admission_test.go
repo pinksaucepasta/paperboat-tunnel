@@ -96,6 +96,26 @@ func TestAdmissionRejectsBindingAndGenerationBeforeJournalMutation(t *testing.T)
 	}
 }
 
+func TestAdmissionRejectsStaleCredentialGenerationBeforeJournalMutation(t *testing.T) {
+	now := time.Unix(100, 0).UTC()
+	claims := validClaims(now)
+	claims.ConnectorGeneration = 2
+	service := admissionService(t, now, claims)
+	request := validRequest()
+	request.Generation = 2
+
+	_, err := service.Admit(context.Background(), request)
+	if err == nil {
+		t.Fatal("stale credential generation accepted")
+	}
+	if code, _ := edgeerrors.CodeOf(err); code != edgeerrors.CodeGenerationStale {
+		t.Fatalf("wrong code: %s", code)
+	}
+	if service.Journal.Len() != 0 {
+		t.Fatal("stale admission mutated journal")
+	}
+}
+
 func TestRunIDFencesReconnect(t *testing.T) {
 	now := time.Unix(100, 0).UTC()
 	run := RunID{Value: "run_1", Generation: 3, ExpiresAt: now.Add(time.Minute)}

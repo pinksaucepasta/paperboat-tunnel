@@ -88,6 +88,21 @@ func TestUsageWorkerRetriesAndFlushesOnShutdown(t *testing.T) {
 	}
 }
 
+func TestUsageWorkerPersistsAfterAcknowledgement(t *testing.T) {
+	queue, _ := usage.NewQueue(2, 1024)
+	if err := queue.Enqueue(usage.Report{OperationID: "op_persist", Key: usage.Key{Node: "n", Epoch: "e", Environment: "env", Route: "r", Revision: 1, Direction: "egress"}, Bytes: 1, Payload: []byte("signed")}); err != nil {
+		t.Fatal(err)
+	}
+	persisted := 0
+	worker := &UsageWorker{Queue: queue, Sink: &usageSink{}, Persist: func() error { persisted++; return nil }}
+	if _, delivered, err := worker.deliver(context.Background()); err != nil || !delivered {
+		t.Fatalf("deliver = delivered:%v err:%v", delivered, err)
+	}
+	if persisted != 1 || queue.Len() != 0 {
+		t.Fatalf("persisted=%d queue=%d", persisted, queue.Len())
+	}
+}
+
 type usageSink struct {
 	mu       sync.Mutex
 	calls    int
@@ -163,7 +178,7 @@ func TestWorkersStopWhenPulseCloses(t *testing.T) {
 }
 
 func TestRouteWorkerReplacesAuthoritativeSnapshotAtomically(t *testing.T) {
-	registry := route.NewRegistry()
+	registry := route.NewRegistry("preview.example.test", "example.test")
 	state := node.New("edge")
 	state.MarkReady()
 	fake := testedge.New()
@@ -191,7 +206,7 @@ func TestRouteWorkerReplacesAuthoritativeSnapshotAtomically(t *testing.T) {
 }
 
 func TestRouteWorkerRejectsForeignNodeSnapshot(t *testing.T) {
-	registry := route.NewRegistry()
+	registry := route.NewRegistry("preview.example.test", "example.test")
 	state := node.New("edge")
 	state.MarkReady()
 	current := route.Attachment{ID: "route", Revision: 1, Environment: "env", Node: "edge", Generation: 1, Host: "app.example.test", Target: "127.0.0.1:8080", Kind: route.HelperHTTPSWSS}
@@ -214,7 +229,7 @@ func TestRouteWorkerExposesAndClearsRefreshError(t *testing.T) {
 	state.MarkReady()
 	source := &toggledRouteSource{err: errors.New("control unavailable"), called: make(chan struct{}, 4)}
 	pulse := make(chan time.Time, 1)
-	worker := &RouteWorker{Registry: route.NewRegistry(), Source: source, State: state, NodeID: "edge", Pulse: pulse}
+	worker := &RouteWorker{Registry: route.NewRegistry("preview.example.test", "example.test"), Source: source, State: state, NodeID: "edge", Pulse: pulse}
 	if err := worker.Start(context.Background()); err == nil {
 		t.Fatal("initial unavailable source accepted")
 	}

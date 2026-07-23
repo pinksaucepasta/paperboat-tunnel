@@ -2,6 +2,9 @@ package edgefrp
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
@@ -12,6 +15,8 @@ import (
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/edgeerrors"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/route"
 )
+
+var ErrRunUnknown = errors.New("connector run is unknown")
 
 // Adapter is the narrow Paperboat-owned boundary around the pinned frp server.
 // frp must not be allowed to mutate proxy state until Login has succeeded here.
@@ -37,6 +42,8 @@ type session struct {
 	attached    []route.Attachment
 	routes      []admission.Route
 	active      map[string]uint32
+	registered  map[string]bool
+	operationID string
 }
 
 type Stats struct {
@@ -102,28 +109,66 @@ func (a *Adapter) Login(ctx context.Context, request admission.Request) (admissi
 		return admission.Response{}, edgeerrors.New(edgeerrors.CodeServiceUnavailable, "connector capacity is exhausted", "retry admission on an available node")
 	}
 
+	attached, err := a.attachRoutes(response)
+	if err != nil {
+		a.mu.Unlock()
+		return admission.Response{}, err
+	}
+	// Credential refresh intentionally overlaps the old and new FRP controls.
+	// Unique physical proxy names share one strictly authorized HTTP group; the
+	// old run remains tracked until its drain callbacks arrive.
+	a.sessions[response.RunID.Value] = session{run: response.RunID, environment: response.Environment, helper: response.Helper, attached: attached, routes: append([]admission.Route(nil), response.Routes...), active: make(map[string]uint32), registered: make(map[string]bool), operationID: request.OperationID}
+	a.mu.Unlock()
+	return response, nil
+}
+
+// Resume authenticates the original admission again, then rotates the frp run
+// ID. frps replaces controls by run ID; reusing it would let delayed close
+// callbacks from the retired control tear down the replacement's routes.
+func (a *Adapter) Resume(ctx context.Context, request admission.Request, priorRunID string) (admission.Response, error) {
+	response, err := a.Admissions.Admit(ctx, request)
+	if err != nil {
+		return admission.Response{}, err
+	}
+	now := time.Now()
+	if a.Now != nil {
+		now = a.Now()
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	current, ok := a.sessions[priorRunID]
+	if !ok {
+		return admission.Response{}, ErrRunUnknown
+	}
+	if current.environment != response.Environment || current.helper != response.Helper || current.run.Generation != response.Generation {
+		return admission.Response{}, route.ErrInvalid
+	}
+	if err := current.run.Resume(priorRunID, response.Generation, now); err != nil {
+		return admission.Response{}, err
+	}
+	replacement, err := admission.NewRunID(response.Generation, current.run.ExpiresAt)
+	if err != nil {
+		return admission.Response{}, err
+	}
+	delete(a.sessions, priorRunID)
+	current.run = replacement
+	current.active = make(map[string]uint32)
+	current.registered = make(map[string]bool)
+	a.sessions[replacement.Value] = current
+	response.RunID = replacement
+	return response, nil
+}
+
+func (a *Adapter) attachRoutes(response admission.Response) ([]route.Attachment, error) {
 	attached := make([]route.Attachment, 0, len(response.Routes))
 	for _, handedOff := range response.Routes {
 		attachedRoute := route.Attachment{ID: handedOff.RouteID, Revision: handedOff.Revision, Environment: response.Environment, Node: response.EdgeNode, Generation: response.Generation, Kind: route.Kind(handedOff.Kind), Host: handedOff.PublicHost, Target: net.JoinHostPort(handedOff.TargetHost, strconv.Itoa(int(handedOff.TargetPort)))}
 		if _, err := a.Routes.Attach(attachedRoute); err != nil {
-			for _, previous := range attached {
-				_ = a.Routes.Detach(previous.ID, previous.Revision)
-			}
-			a.mu.Unlock()
-			return admission.Response{}, err
+			return nil, err
 		}
 		attached = append(attached, attachedRoute)
 	}
-	// A refreshed admission has a new run ID but retains the helper generation.
-	// Supersede its old logical runs after the replacement routes are attached.
-	// Their FRP transports can still drain, but later close callbacks must not
-	// detach routes now owned by the replacement run.
-	for _, runID := range replaced {
-		delete(a.sessions, runID)
-	}
-	a.sessions[response.RunID.Value] = session{run: response.RunID, environment: response.Environment, helper: response.Helper, attached: attached, routes: append([]admission.Route(nil), response.Routes...), active: make(map[string]uint32)}
-	a.mu.Unlock()
-	return response, nil
+	return attached, nil
 }
 
 func (a *Adapter) Revoke(runID string) {
@@ -133,13 +178,13 @@ func (a *Adapter) Revoke(runID string) {
 	a.mu.Unlock()
 	deferred.run.Revoked = true
 	for _, attached := range deferred.attached {
-		_ = a.Routes.Detach(attached.ID, attached.Revision)
+		a.detachUnlessShared(attached)
 	}
 }
 
 func (a *Adapter) Close(runID string) { a.Revoke(runID) }
 
-func (a *Adapter) AuthorizeProxy(runID, proxyName, proxyType, publicHost string) error {
+func (a *Adapter) AuthorizeProxy(runID, proxyName, proxyType, publicHost, group, groupKey string) error {
 	a.mu.Lock()
 	current, ok := a.sessions[runID]
 	a.mu.Unlock()
@@ -155,7 +200,18 @@ func (a *Adapter) AuthorizeProxy(runID, proxyName, proxyType, publicHost string)
 	}
 	publicHost = normalizePublicHost(publicHost)
 	for _, handedOff := range current.routes {
-		if handedOff.ProxyName == proxyName && normalizePublicHost(handedOff.PublicHost) == publicHost {
+		identity := frpProxyIdentity(current, handedOff)
+		if identity.name == proxyName && identity.group == group && identity.groupKey == groupKey && normalizePublicHost(handedOff.PublicHost) == publicHost {
+			a.mu.Lock()
+			latest, exists := a.sessions[runID]
+			if exists {
+				latest.registered[proxyName] = true
+				a.sessions[runID] = latest
+			}
+			a.mu.Unlock()
+			if !exists {
+				return route.ErrInvalid
+			}
 			return nil
 		}
 	}
@@ -175,7 +231,7 @@ func (a *Adapter) AuthorizeProxyRun(runID string) error {
 	}
 	currentRoute := false
 	for _, attached := range current.attached {
-		if authoritative, exists := a.Routes.Get(attached.ID); exists && authoritative == attached {
+		if a.Routes.Owns(attached) {
 			currentRoute = true
 			break
 		}
@@ -201,10 +257,9 @@ func (a *Adapter) AuthorizeStream(runID, proxyName, proxyType string) error {
 	current := a.sessions[runID]
 	a.mu.Unlock()
 	for index, handedOff := range current.routes {
-		if handedOff.ProxyName == proxyName && index < len(current.attached) {
+		if frpProxyIdentity(current, handedOff).name == proxyName && index < len(current.attached) {
 			attached := current.attached[index]
-			authoritative, exists := a.Routes.Get(attached.ID)
-			if !exists || authoritative != attached {
+			if !a.Routes.Owns(attached) {
 				return route.ErrInvalid
 			}
 			a.mu.Lock()
@@ -247,7 +302,7 @@ func (a *Adapter) CloseProxy(runID, proxyName string) {
 	keptAttachments := current.attached[:0]
 	var detached []route.Attachment
 	for i, handedOff := range current.routes {
-		if handedOff.ProxyName == proxyName && i < len(current.attached) {
+		if frpProxyIdentity(current, handedOff).name == proxyName && i < len(current.attached) {
 			detached = append(detached, current.attached[i])
 			continue
 		}
@@ -268,8 +323,42 @@ func (a *Adapter) CloseProxy(runID, proxyName string) {
 	}
 	a.mu.Unlock()
 	for _, attached := range detached {
-		_ = a.Routes.Detach(attached.ID, attached.Revision)
+		a.detachUnlessShared(attached)
 	}
+}
+
+// RouteState gates public traffic on a registered proxy belonging to the live
+// admitted connector. Preview target state remains control-plane authoritative.
+func (a *Adapter) RouteState(host string) (string, string, string, bool) {
+	kind, state, reason, found := a.Routes.RouteState(host)
+	if !found {
+		return "", "", "", false
+	}
+	normalized := normalizePublicHost(host)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, current := range a.sessions {
+		if current.run.Resume(current.run.Value, current.run.Generation, a.now()) != nil {
+			continue
+		}
+		for index, handedOff := range current.routes {
+			if normalizePublicHost(handedOff.PublicHost) != normalized || !current.registered[frpProxyIdentity(current, handedOff).name] || index >= len(current.attached) || !a.Routes.Owns(current.attached[index]) {
+				continue
+			}
+			if kind == string(route.HelperHTTPSWSS) {
+				return kind, "ready", "", true
+			}
+			return kind, state, reason, true
+		}
+	}
+	return kind, "offline", "connector_unavailable", true
+}
+
+func (a *Adapter) now() time.Time {
+	if a.Now != nil {
+		return a.Now()
+	}
+	return time.Now()
 }
 
 func (a *Adapter) RecordTraffic(runID, proxyName, proxyType string, ingress, egress uint64) error {
@@ -283,11 +372,42 @@ func (a *Adapter) RecordTraffic(runID, proxyName, proxyType string, ingress, egr
 		return route.ErrInvalid
 	}
 	for _, handedOff := range current.routes {
-		if handedOff.ProxyName == proxyName {
+		if frpProxyIdentity(current, handedOff).name == proxyName {
 			return a.Traffic.Record(current.routesEnvironment(), handedOff.RouteID, handedOff.Revision, ingress, egress)
 		}
 	}
 	return route.ErrInvalid
+}
+
+type frpIdentity struct{ name, group, groupKey string }
+
+func frpProxyIdentity(current session, handedOff admission.Route) frpIdentity {
+	stable := current.environment + "\x00" + current.helper + "\x00" + handedOff.RouteID + "\x00" + handedOff.ProxyName
+	physical := stable + "\x00" + current.operationID
+	return frpIdentity{
+		name:     "pbp_" + hashPrefix("paperboat-frp-proxy-v1\x00"+physical, 32),
+		group:    "pbg_" + hashPrefix("paperboat-frp-group-v1\x00"+stable, 32),
+		groupKey: hashPrefix("paperboat-frp-group-key-v1\x00"+stable, 64),
+	}
+}
+
+func hashPrefix(value string, length int) string {
+	digest := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("%x", digest)[:length]
+}
+
+func (a *Adapter) detachUnlessShared(attached route.Attachment) {
+	a.mu.Lock()
+	for _, current := range a.sessions {
+		for _, candidate := range current.attached {
+			if candidate == attached {
+				a.mu.Unlock()
+				return
+			}
+		}
+	}
+	a.mu.Unlock()
+	_ = a.Routes.Detach(attached.ID, attached.Revision)
 }
 
 func (s session) routesEnvironment() string {

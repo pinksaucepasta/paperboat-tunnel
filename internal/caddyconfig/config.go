@@ -25,18 +25,20 @@ const (
 var domainPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 type Input struct {
-	WildcardHost    string
-	PrivateUpstream string
-	ListenAddress   string
-	AdminAddress    string
-	TrustedProxies  []string
-	IssuerModule    string
+	PreviewBaseDomain string
+	HelperBaseDomain  string
+	PrivateUpstream   string
+	ListenAddress     string
+	AdminAddress      string
+	TrustedProxies    []string
+	IssuerModule      string
 }
 
 func Generate(input Input) ([]byte, error) {
 	if err := validate(input); err != nil {
 		return nil, err
 	}
+	wildcardHosts := []string{"*." + input.PreviewBaseDomain, "*." + input.HelperBaseDomain}
 	config := map[string]any{
 		"admin":   map[string]any{"listen": input.AdminAddress},
 		"logging": map[string]any{"logs": map[string]any{"default": map[string]any{"level": "PANIC"}}},
@@ -50,7 +52,7 @@ func Generate(input Input) ([]byte, error) {
 						"trusted_proxies_strict": 1,
 						"client_ip_headers":      []string{"X-Forwarded-For"},
 						"routes": []any{map[string]any{
-							"match": []any{map[string]any{"host": []string{input.WildcardHost}}},
+							"match": []any{map[string]any{"host": wildcardHosts}},
 							"handle": []any{
 								map[string]any{"handler": "headers", "response": map[string]any{"set": map[string][]string{
 									"X-Content-Type-Options": {"nosniff"},
@@ -67,7 +69,7 @@ func Generate(input Input) ([]byte, error) {
 		},
 	}
 	if input.IssuerModule != "" {
-		config["apps"].(map[string]any)["tls"] = map[string]any{"automation": map[string]any{"policies": []any{map[string]any{"subjects": []string{input.WildcardHost}, "issuers": []any{map[string]any{"module": input.IssuerModule}}}}}}
+		config["apps"].(map[string]any)["tls"] = map[string]any{"automation": map[string]any{"policies": []any{map[string]any{"subjects": wildcardHosts, "issuers": []any{map[string]any{"module": input.IssuerModule}}}}}}
 		if input.IssuerModule == "internal" {
 			config["apps"].(map[string]any)["pki"] = map[string]any{"certificate_authorities": map[string]any{"local": map[string]any{"install_trust": false}}}
 		}
@@ -76,8 +78,12 @@ func Generate(input Input) ([]byte, error) {
 }
 
 func validate(input Input) error {
-	baseHost := strings.TrimPrefix(strings.ToLower(input.WildcardHost), "*.")
-	if !strings.HasPrefix(input.WildcardHost, "*.") || !domainPattern.MatchString(baseHost) || net.ParseIP(baseHost) != nil {
+	for _, baseHost := range []string{input.PreviewBaseDomain, input.HelperBaseDomain} {
+		if baseHost != strings.ToLower(baseHost) || !domainPattern.MatchString(baseHost) || net.ParseIP(baseHost) != nil {
+			return ErrInvalid
+		}
+	}
+	if input.PreviewBaseDomain == input.HelperBaseDomain || strings.HasSuffix(input.PreviewBaseDomain, "."+input.HelperBaseDomain) || strings.HasSuffix(input.HelperBaseDomain, "."+input.PreviewBaseDomain) {
 		return ErrInvalid
 	}
 	if err := validatePrivateEndpoint(input.PrivateUpstream); err != nil {

@@ -11,11 +11,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
 
 const maxDeploymentBytes = 1 << 20
+
+var routeBaseDomainPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 type Deployment struct {
 	ControlURL             string        `json:"control_url"`
@@ -38,9 +41,11 @@ type Deployment struct {
 	ConnectorTCPPort       int           `json:"connector_tcp_port"`
 	ConnectorQUICPort      int           `json:"connector_quic_port"`
 	PrivateVhostAddress    string        `json:"private_vhost_address"`
+	EdgeGatewayAddress     string        `json:"edge_gateway_address"`
 	CaddyListenAddress     string        `json:"caddy_listen_address"`
 	CaddyAdminAddress      string        `json:"caddy_admin_address"`
-	WildcardHost           string        `json:"wildcard_host"`
+	PreviewBaseDomain      string        `json:"preview_base_domain"`
+	HelperBaseDomain       string        `json:"helper_base_domain"`
 	TrustedProxyCIDRs      []string      `json:"trusted_proxy_cidrs"`
 	CertificateIssuer      string        `json:"certificate_issuer"`
 	NodeCapacity           uint32        `json:"node_capacity"`
@@ -114,6 +119,9 @@ func (d Deployment) validate() error {
 	if err := privateEndpoint(d.PrivateVhostAddress); err != nil {
 		return err
 	}
+	if err := privateEndpoint(d.EdgeGatewayAddress); err != nil {
+		return err
+	}
 	if err := privateEndpoint(d.CaddyAdminAddress); err != nil {
 		return err
 	}
@@ -129,8 +137,13 @@ func (d Deployment) validate() error {
 	if _, _, err := net.SplitHostPort(d.CaddyListenAddress); err != nil {
 		return errors.New("Caddy listener is invalid")
 	}
-	if !strings.HasPrefix(d.WildcardHost, "*.") || strings.Count(d.WildcardHost, "*") != 1 {
-		return errors.New("wildcard_host is invalid")
+	for _, domain := range []string{d.PreviewBaseDomain, d.HelperBaseDomain} {
+		if !routeBaseDomainPattern.MatchString(domain) || net.ParseIP(domain) != nil {
+			return errors.New("route base domain is invalid")
+		}
+	}
+	if d.PreviewBaseDomain == d.HelperBaseDomain || strings.HasSuffix(d.PreviewBaseDomain, "."+d.HelperBaseDomain) || strings.HasSuffix(d.HelperBaseDomain, "."+d.PreviewBaseDomain) {
+		return errors.New("route base domains must not overlap")
 	}
 	for _, cidr := range d.TrustedProxyCIDRs {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {

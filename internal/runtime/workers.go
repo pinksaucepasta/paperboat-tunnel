@@ -20,6 +20,7 @@ type UsageWorker struct {
 	Queue    *usage.Queue
 	Sink     control.UsageSink
 	Prepare  interface{ Flush() error }
+	Persist  func() error
 	Interval time.Duration
 	Pulse    <-chan time.Time
 
@@ -76,7 +77,14 @@ func (w *UsageWorker) deliver(ctx context.Context) (control.UsageResult, bool, e
 			return control.UsageResult{}, false, err
 		}
 	}
-	return control.DeliverNext(ctx, w.Queue, w.Sink)
+	result, delivered, err := control.DeliverNext(ctx, w.Queue, w.Sink)
+	if err != nil || !delivered || w.Persist == nil {
+		return result, delivered, err
+	}
+	if err := w.Persist(); err != nil {
+		return control.UsageResult{}, true, err
+	}
+	return result, true, nil
 }
 
 func (w *UsageWorker) recordError(err error) {
@@ -286,7 +294,7 @@ func (w *RouteWorker) reconcile(ctx context.Context) error {
 		if assignment.NodeID != w.NodeID {
 			return route.ErrInvalid
 		}
-		attachments = append(attachments, route.Attachment{ID: assignment.RouteID, Revision: assignment.Revision, Environment: assignment.Environment, Node: assignment.NodeID, Generation: assignment.Generation, Kind: route.Kind(assignment.Kind), Host: assignment.PublicHost, Target: net.JoinHostPort(assignment.TargetHost, strconv.Itoa(int(assignment.TargetPort)))})
+		attachments = append(attachments, route.Attachment{ID: assignment.RouteID, Revision: assignment.Revision, Environment: assignment.Environment, Node: assignment.NodeID, Generation: assignment.Generation, Kind: route.Kind(assignment.Kind), Host: assignment.PublicHost, Target: net.JoinHostPort(assignment.TargetHost, strconv.Itoa(int(assignment.TargetPort))), PreviewState: assignment.PreviewState, PreviewReason: assignment.PreviewReason})
 	}
 	if err := w.Registry.Replace(attachments); err != nil {
 		return err

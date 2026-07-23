@@ -124,6 +124,8 @@ func (c *HTTPClient) DesiredRoutes(ctx context.Context, nodeID string) ([]RouteA
 				Host string `json:"host"`
 				Port uint16 `json:"port"`
 			} `json:"target"`
+			PreviewState  string `json:"preview_state"`
+			PreviewReason string `json:"preview_reason"`
 		} `json:"routes"`
 	}
 	if err := c.post(ctx, "/v1/routes/desired", struct {
@@ -133,7 +135,7 @@ func (c *HTTPClient) DesiredRoutes(ctx context.Context, nodeID string) ([]RouteA
 	}
 	routes := make([]RouteAssignment, 0, len(result.Routes))
 	for _, route := range result.Routes {
-		routes = append(routes, RouteAssignment{RouteID: route.RouteID, Revision: route.Revision, Environment: route.Environment, Generation: route.Generation, NodeID: route.NodeID, Kind: route.Kind, PublicHost: route.PublicHost, TargetHost: route.Target.Host, TargetPort: route.Target.Port})
+		routes = append(routes, RouteAssignment{RouteID: route.RouteID, Revision: route.Revision, Environment: route.Environment, Generation: route.Generation, NodeID: route.NodeID, Kind: route.Kind, PublicHost: route.PublicHost, TargetHost: route.Target.Host, TargetPort: route.Target.Port, PreviewState: route.PreviewState, PreviewReason: route.PreviewReason})
 	}
 	return routes, nil
 }

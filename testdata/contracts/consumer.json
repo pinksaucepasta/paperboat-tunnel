@@ -1,1 +1,13 @@
-{"repository":"paperboat-tunnel","contract_version":"1.0.0","canonical_source":"contracts/manifest.json","copied_manifest_sha256":"0ebf5c6d0c206fdcdfac11b17fb10d77b64698dd80f42a8ccb321526054c0900","supported":{"fixture_manifest":"1","helper_protocol":"1.0-1.0","edge_control":"1.0-1.0","frp":"v0.70.0@7b6e01f04f286632f0d23715aa17a3bc41234b5c"},"last_review":"phase-1-draft"}
+{
+  "repository": "paperboat-tunnel",
+  "contract_version": "1.0.0",
+  "canonical_source": "contracts/manifest.json",
+  "copied_manifest_sha256": "ce41a846fe23abc6e9f6c818e4fbb7f2a9cc9cae0489e048eaa81794f23598a4",
+  "supported": {
+    "fixture_manifest": "1",
+    "helper_protocol": "1.0-1.0",
+    "edge_control": "1.0-1.0",
+    "frp": "v0.70.0@7b6e01f04f286632f0d23715aa17a3bc41234b5c"
+  },
+  "last_review": "phase-6-manifest-sync"
+}

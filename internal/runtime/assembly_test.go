@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"net"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -24,15 +25,17 @@ func TestAssemblyOwnsHookAndChildProcesses(t *testing.T) {
 	var lock sync.Mutex
 	component := func(name string) Component { return orderedComponent{name: name, events: &events, mu: &lock} }
 	process := ProcessSpec{Name: "test-process", Path: "/bin/sh", Args: []string{"-c", "trap 'exit 0' TERM; while :; do sleep 1; done"}, MaxOutputBytes: 1024}
-	adapter := edgefrp.NewAdapter(&admission.Service{}, route.NewRegistry())
+	adapter := edgefrp.NewAdapter(&admission.Service{}, route.NewRegistry("preview.example.test", "example.test"))
 	assembly, err := NewAssembly(AssemblySpec{
-		Persistence: component("store"),
-		Control:     component("control"),
-		Node:        component("node"),
-		Routes:      component("routes"),
-		Usage:       component("usage"),
-		HookAddress: address,
-		HookPath:    "/private/paperboat-hook",
+		Persistence:    component("store"),
+		Control:        component("control"),
+		Node:           component("node"),
+		Routes:         component("routes"),
+		Usage:          component("usage"),
+		HookAddress:    address,
+		GatewayAddress: "127.0.0.1:19092",
+		GatewayHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		HookPath:       "/private/paperboat-hook",
 		Policy: edgefrp.Policy{Adapter: adapter, Resolver: loginResolverFunc(func(context.Context, edgefrp.LoginContent) (admission.Request, error) {
 			return admission.Request{}, nil
 		}), InternalAuthToken: "01234567890123456789012345678901"},
@@ -42,6 +45,7 @@ func TestAssemblyOwnsHookAndChildProcesses(t *testing.T) {
 		t.Fatal(err)
 	}
 	assembly.Hook.listen = func(_, _ string) (net.Listener, error) { return newBlockingListener(), nil }
+	assembly.Gateway.listen = func(_, _ string) (net.Listener, error) { return newBlockingListener(), nil }
 	if err := assembly.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}

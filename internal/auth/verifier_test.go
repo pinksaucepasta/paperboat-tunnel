@@ -39,6 +39,30 @@ func TestVerifierAcceptsExactConnectorCredential(t *testing.T) {
 	}
 }
 
+func TestVerifierAcceptsExactHelperAccessCredential(t *testing.T) {
+	public, private, _ := ed25519.GenerateKey(rand.Reader)
+	verifier := &Verifier{Issuer: "https://api.paperboat.test", Keys: StaticKeys{"key-1": public}, Now: func() time.Time { return time.Unix(1000, 0) }}
+	token := tokenFor(t, private, "key-1", func(claims map[string]any) {
+		claims["aud"] = "paperboat-helper"
+		claims["credential_class"] = "terminal_operation"
+		claims["scope"] = []string{"terminal:operate"}
+		claims["user_id"] = "usr_1"
+		claims["client_session_id"] = "acs_1"
+		claims["session_id"] = "pts_1"
+		delete(claims, "helper_id")
+		delete(claims, "connector_generation")
+		delete(claims, "edge_pool")
+		delete(claims, "edge_node_id")
+	})
+	claims, err := verifier.VerifyHelperAccess(context.Background(), token)
+	if err != nil || claims.JTI != "jti_admit_01" || claims.EnvironmentID != "env" || claims.CredentialClass != "terminal_operation" {
+		t.Fatalf("claims=%+v err=%v", claims, err)
+	}
+	if _, err := verifier.VerifyHelperAccess(context.Background(), tokenFor(t, private, "key-1", nil)); err == nil {
+		t.Fatal("connector credential accepted as helper access")
+	}
+}
+
 func TestVerifierRejectsMalformedWrongKeySignatureAndClaims(t *testing.T) {
 	public, private, _ := ed25519.GenerateKey(rand.Reader)
 	_, otherPrivate, _ := ed25519.GenerateKey(rand.Reader)

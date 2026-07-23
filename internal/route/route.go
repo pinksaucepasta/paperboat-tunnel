@@ -22,24 +22,28 @@ const (
 )
 
 type Attachment struct {
-	ID          string
-	Revision    uint64
-	Environment string
-	Node        string
-	Generation  uint64
-	Kind        Kind
-	Host        string
-	Target      string
+	ID            string
+	Revision      uint64
+	Environment   string
+	Node          string
+	Generation    uint64
+	Kind          Kind
+	Host          string
+	Target        string
+	PreviewState  string
+	PreviewReason string
 }
 
 type Registry struct {
-	mu     sync.Mutex
-	byID   map[string]Attachment
-	byHost map[string]string
+	mu                sync.Mutex
+	previewBaseDomain string
+	helperBaseDomain  string
+	byID              map[string]Attachment
+	byHost            map[string]string
 }
 
-func NewRegistry() *Registry {
-	return &Registry{byID: make(map[string]Attachment), byHost: make(map[string]string)}
+func NewRegistry(previewBaseDomain, helperBaseDomain string) *Registry {
+	return &Registry{previewBaseDomain: normalizeHost(previewBaseDomain), helperBaseDomain: normalizeHost(helperBaseDomain), byID: make(map[string]Attachment), byHost: make(map[string]string)}
 }
 
 func normalizeHost(host string) string {
@@ -53,11 +57,19 @@ func (r *Registry) Attach(a Attachment) (Attachment, error) {
 	if a.ID == "" || a.Revision == 0 || a.Environment == "" || a.Node == "" || a.Generation == 0 || a.Host == "" || a.Target == "" || (a.Kind != HelperHTTPSWSS && a.Kind != PreviewHTTPSWSS) {
 		return Attachment{}, ErrInvalid
 	}
+	expectedDomain := r.previewBaseDomain
+	if a.Kind == HelperHTTPSWSS {
+		expectedDomain = r.helperBaseDomain
+	}
+	prefix, matches := strings.CutSuffix(a.Host, "."+expectedDomain)
+	if expectedDomain == "" || !matches || prefix == "" || strings.Contains(prefix, ".") {
+		return Attachment{}, ErrInvalid
+	}
 	if current, ok := r.byID[a.ID]; ok {
 		if current == a {
 			return current, nil
 		}
-		if a.Revision <= current.Revision {
+		if a.Revision < current.Revision || a.Revision == current.Revision && !sameRoute(current, a) {
 			return Attachment{}, ErrStale
 		}
 	}
@@ -93,8 +105,26 @@ func (r *Registry) Get(id string) (Attachment, bool) {
 	return a, ok
 }
 
+func (r *Registry) Owns(a Attachment) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current, ok := r.byID[a.ID]
+	return ok && sameRoute(current, a)
+}
+
+func (r *Registry) RouteState(host string) (string, string, string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id, ok := r.byHost[normalizeHost(host)]
+	if !ok {
+		return "", "", "", false
+	}
+	a := r.byID[id]
+	return string(a.Kind), a.PreviewState, a.PreviewReason, true
+}
+
 func (r *Registry) Replace(attachments []Attachment) error {
-	next := NewRegistry()
+	next := NewRegistry(r.previewBaseDomain, r.helperBaseDomain)
 	for _, attachment := range attachments {
 		if _, err := next.Attach(attachment); err != nil {
 			return err
@@ -103,7 +133,7 @@ func (r *Registry) Replace(attachments []Attachment) error {
 	r.mu.Lock()
 	for id, current := range r.byID {
 		if replacement, ok := next.byID[id]; ok {
-			if replacement.Revision < current.Revision || replacement.Revision == current.Revision && replacement != current {
+			if replacement.Revision < current.Revision || replacement.Revision == current.Revision && !sameRoute(current, replacement) {
 				r.mu.Unlock()
 				return ErrStale
 			}
@@ -112,6 +142,12 @@ func (r *Registry) Replace(attachments []Attachment) error {
 	r.byID, r.byHost = next.byID, next.byHost
 	r.mu.Unlock()
 	return nil
+}
+
+func sameRoute(a, b Attachment) bool {
+	a.PreviewState, a.PreviewReason = "", ""
+	b.PreviewState, b.PreviewReason = "", ""
+	return a == b
 }
 
 func (r *Registry) Snapshot() []Attachment {

@@ -112,7 +112,15 @@ func (p Policy) Handle(ctx context.Context, op string, content json.RawMessage) 
 		if err != nil {
 			return nil, err
 		}
-		response, err := p.Adapter.Login(ctx, request)
+		var response admission.Response
+		if login.RunID == "" {
+			response, err = p.Adapter.Login(ctx, request)
+		} else {
+			response, err = p.Adapter.Resume(ctx, request, login.RunID)
+			if errors.Is(err, ErrRunUnknown) {
+				response, err = p.Adapter.Login(ctx, request)
+			}
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -130,9 +138,11 @@ func (p Policy) Handle(ctx context.Context, op string, content json.RawMessage) 
 			return nil, route.ErrInvalid
 		}
 		if fields := invalidProxyFields(proxy); len(fields) != 0 {
+			p.Adapter.Revoke(proxy.User.RunID)
 			return nil, proxyShapeError(fields)
 		}
-		if err := p.Adapter.AuthorizeProxy(proxy.User.RunID, proxy.ProxyName, proxy.ProxyType, proxy.CustomDomains[0]); err != nil {
+		if err := p.Adapter.AuthorizeProxy(proxy.User.RunID, proxy.ProxyName, proxy.ProxyType, proxy.CustomDomains[0], proxy.Group, proxy.GroupKey); err != nil {
+			p.Adapter.Revoke(proxy.User.RunID)
 			return nil, err
 		}
 		return content, nil
@@ -219,7 +229,7 @@ func invalidProxyFields(proxy newProxyContent) []string {
 	if proxy.BandwidthMode != "" {
 		fields = append(fields, "bandwidth_mode")
 	}
-	if proxy.Group != "" || proxy.GroupKey != "" {
+	if proxy.Group == "" || proxy.GroupKey == "" {
 		fields = append(fields, "group")
 	}
 	if len(proxy.Metas) != 0 {

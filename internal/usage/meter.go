@@ -27,6 +27,23 @@ type Meter struct {
 	last  map[Key]uint64
 }
 
+// RestoreBaseline marks durable counters as already represented by the
+// restored pending queue or by an earlier acknowledged report.
+func (m *Meter) RestoreBaseline() error {
+	if m == nil || m.Counters == nil || m.Queue == nil {
+		return ErrMeterInvalid
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.last == nil {
+		m.last = make(map[Key]uint64)
+	}
+	for _, record := range m.Counters.Snapshot() {
+		m.last[record.Key] = record.Bytes
+	}
+	return nil
+}
+
 func (m *Meter) Record(environment, route string, revision uint64, ingress, egress uint64) error {
 	if m == nil || m.Node == "" || m.Epoch == "" || environment == "" || route == "" || revision == 0 || m.Counters == nil || m.Queue == nil || m.KeyID == "" || len(m.PrivateKey) != ed25519.PrivateKeySize || m.Persist == nil {
 		return ErrMeterInvalid

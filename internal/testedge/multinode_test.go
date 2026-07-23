@@ -30,7 +30,7 @@ func TestTwoNodeReassignmentFencesStaleOwner(t *testing.T) {
 	if err := nodeTwo.AdmitConnector("connector", 2); err != nil {
 		t.Fatal(err)
 	}
-	registry := route.NewRegistry()
+	registry := route.NewRegistry("example.test", "helper.example.test")
 	first := route.Attachment{ID: "route", Revision: 1, Environment: "env", Node: "edge_one", Generation: 1, Kind: route.PreviewHTTPSWSS, Host: "preview.example.test", Target: "127.0.0.1:3000"}
 	second := first
 	second.Revision, second.Node, second.Generation = 2, "edge_two", 2

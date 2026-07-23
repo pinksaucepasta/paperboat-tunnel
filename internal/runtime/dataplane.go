@@ -13,6 +13,7 @@ type DataPlaneSpec struct {
 	Node        Component
 	Routes      Component
 	Hook        Component
+	Gateway     Component
 	FRPS        Component
 	Caddy       Component
 	Usage       Component
@@ -26,7 +27,7 @@ type DataPlane struct {
 }
 
 func NewDataPlane(spec DataPlaneSpec) (*DataPlane, error) {
-	if spec.Persistence == nil || spec.Control == nil || spec.Node == nil || spec.Routes == nil || spec.Hook == nil || spec.FRPS == nil || spec.Caddy == nil || spec.Usage == nil {
+	if spec.Persistence == nil || spec.Control == nil || spec.Node == nil || spec.Routes == nil || spec.Hook == nil || spec.Gateway == nil || spec.FRPS == nil || spec.Caddy == nil || spec.Usage == nil {
 		return nil, ErrProcessInvalid
 	}
 	return &DataPlane{spec: spec}, nil
@@ -38,7 +39,7 @@ func (d *DataPlane) Start(ctx context.Context) error {
 	if len(d.started) != 0 || d.closed {
 		return ErrProcessInvalid
 	}
-	for _, component := range []Component{d.spec.Persistence, d.spec.Control, d.spec.Node, d.spec.Routes, d.spec.Usage, d.spec.Hook, d.spec.FRPS, d.spec.Caddy} {
+	for _, component := range []Component{d.spec.Persistence, d.spec.Control, d.spec.Node, d.spec.Routes, d.spec.Usage, d.spec.Hook, d.spec.Gateway, d.spec.FRPS, d.spec.Caddy} {
 		if err := component.Start(ctx); err != nil {
 			var cleanup []error
 			for i := len(d.started) - 1; i >= 0; i-- {
@@ -64,7 +65,7 @@ func (d *DataPlane) Shutdown(ctx context.Context) error {
 	d.closed = true
 	// Public ingress and connector forwarding stop before the final accounting
 	// flush. The private hook/control/store remain available for cleanup.
-	order := []Component{d.spec.Caddy, d.spec.FRPS, d.spec.Routes, d.spec.Usage, d.spec.Node, d.spec.Hook, d.spec.Control, d.spec.Persistence}
+	order := []Component{d.spec.Caddy, d.spec.FRPS, d.spec.Gateway, d.spec.Routes, d.spec.Usage, d.spec.Node, d.spec.Hook, d.spec.Control, d.spec.Persistence}
 	var failures []error
 	for _, component := range order {
 		if err := component.Shutdown(ctx); err != nil {

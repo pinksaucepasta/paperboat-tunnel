@@ -51,6 +51,79 @@ type claims struct {
 	ConnectorGeneration uint64   `json:"connector_generation"`
 	EdgePool            string   `json:"edge_pool"`
 	EdgeNodeID          string   `json:"edge_node_id"`
+	UserID              string   `json:"user_id"`
+	ClientSessionID     string   `json:"client_session_id"`
+	SessionID           string   `json:"session_id"`
+}
+
+// VerifyHelperAccess verifies the signed credential carried by public helper
+// runtime and upload requests. The helper still enforces the complete operation
+// policy; the edge verifies enough binding to terminate revoked streams.
+func (v *Verifier) VerifyHelperAccess(ctx context.Context, token string) (admission.Claims, error) {
+	if v == nil || v.Keys == nil || v.Issuer == "" || len(token) == 0 || len(token) > maxCredentialBytes || v.ClockSkew < 0 || v.ClockSkew > time.Minute {
+		return admission.Claims{}, invalid()
+	}
+	parsedHeader, parsed, err := v.verifySigned(ctx, token)
+	if err != nil {
+		return admission.Claims{}, err
+	}
+	now := time.Now().UTC()
+	if v.Now != nil {
+		now = v.Now().UTC()
+	}
+	wantScope := ""
+	switch parsed.CredentialClass {
+	case "terminal_operation":
+		wantScope = "terminal:operate"
+	case "image_stage":
+		wantScope = "file:stage"
+	default:
+		return admission.Claims{}, invalid()
+	}
+	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-helper" || parsed.Subject == "" || parsed.JTI == "" || len(parsed.Scope) != 1 || parsed.Scope[0] != wantScope || parsed.EnvironmentID == "" || parsed.UserID == "" || parsed.ClientSessionID == "" || parsed.SessionID == "" || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 || time.Unix(parsed.IssuedAt, 0).After(now.Add(v.ClockSkew)) || !time.Unix(parsed.Expires, 0).After(now) {
+		return admission.Claims{}, invalid()
+	}
+	result := admission.Claims{KeyID: parsedHeader.KeyID, Issuer: parsed.Issuer, Audience: parsed.Audience, JTI: parsed.JTI, CredentialClass: parsed.CredentialClass, Scopes: append([]string(nil), parsed.Scope...), EnvironmentID: parsed.EnvironmentID, HelperID: parsed.HelperID, ConnectorGeneration: parsed.ConnectorGeneration, ExpiresAt: time.Unix(parsed.Expires, 0).UTC()}
+	if v.Revocations != nil {
+		revoked, err := v.Revocations.Revoked(ctx, result)
+		if err != nil {
+			return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialInvalid, "credential revocation state is unavailable", "retry after revocation synchronization")
+		}
+		result.Revoked = revoked
+	}
+	return result, nil
+}
+
+func (v *Verifier) verifySigned(ctx context.Context, token string) (header, claims, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return header{}, claims{}, invalid()
+	}
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return header{}, claims{}, invalid()
+	}
+	var parsedHeader header
+	if strictJSON(headerBytes, &parsedHeader) != nil || parsedHeader.Algorithm != "EdDSA" || parsedHeader.Type != "paperboat-credential+jwt" || parsedHeader.KeyID == "" || len(parsedHeader.KeyID) > 128 {
+		return header{}, claims{}, invalid()
+	}
+	key, err := v.Keys.Key(ctx, parsedHeader.KeyID)
+	if err != nil || len(key) != ed25519.PublicKeySize {
+		return header{}, claims{}, edgeerrors.New(edgeerrors.CodeCredentialInvalid, "credential signing key is unavailable", "retry after key synchronization")
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || !ed25519.Verify(key, []byte(parts[0]+"."+parts[1]), signature) {
+		return header{}, claims{}, invalid()
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return header{}, claims{}, invalid()
+	}
+	var parsed claims
+	if strictJSON(payload, &parsed) != nil {
+		return header{}, claims{}, invalid()
+	}
+	return parsedHeader, parsed, nil
 }
 
 func (v *Verifier) Verify(ctx context.Context, token string) (admission.Claims, error) {

@@ -27,7 +27,7 @@ func TestPolicyLoginAndProxyAllowList(t *testing.T) {
 	service := &admission.Service{Issuer: "https://api.paperboat.test", Verifier: fake, Authorizer: fake, Journal: journal, Now: func() time.Time { return now }, NewRunID: func(g uint64, expiry time.Time) (admission.RunID, error) {
 		return admission.RunID{Value: "run", Generation: g, ExpiresAt: expiry}, nil
 	}}
-	adapter := NewAdapter(service, route.NewRegistry())
+	adapter := NewAdapter(service, route.NewRegistry("preview.test", "test"))
 	adapter.Now = func() time.Time { return now }
 	policy := Policy{Adapter: adapter, InternalAuthToken: "internal-token-012345678901234567890123456789", Resolver: resolverFunc(func(context.Context, LoginContent) (admission.Request, error) {
 		return admission.Request{OperationID: "op_1", Credential: "token", Environment: "env", Helper: "helper", Generation: 3, EdgePool: "default", EdgeNode: "edge", Routes: []admission.Route{{RouteID: "route", Revision: 1, Kind: "helper_https_wss", PublicHost: "helper.test", ProxyName: "proxy", TargetHost: "127.0.0.1", TargetPort: 8080}}}, nil
@@ -40,7 +40,15 @@ func TestPolicyLoginAndProxyAllowList(t *testing.T) {
 	if err := json.Unmarshal(login, &loginFields); err != nil || loginFields["run_id"] != "run" {
 		t.Fatalf("login = %s", login)
 	}
-	validProxy := json.RawMessage(`{"user":{"run_id":"run"},"proxy_name":"proxy","proxy_type":"http","custom_domains":["helper.test"]}`)
+	restarted, err := policy.Handle(context.Background(), "Login", json.RawMessage(`{"privilege_key":"token","run_id":"run_from_prior_edge_process"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(restarted, &loginFields); err != nil || loginFields["run_id"] != "run" {
+		t.Fatalf("edge restart login = %s", restarted)
+	}
+	identity := frpProxyIdentity(adapter.sessions["run"], adapter.sessions["run"].routes[0])
+	validProxy, _ := json.Marshal(newProxyContent{User: userInfo{RunID: "run"}, ProxyName: identity.name, ProxyType: "http", CustomDomains: []string{"helper.test"}, Group: identity.group, GroupKey: identity.groupKey})
 	if _, err := policy.Handle(context.Background(), "NewProxy", validProxy); err != nil {
 		t.Fatal(err)
 	}
@@ -54,6 +62,10 @@ func TestPolicyLoginAndProxyAllowList(t *testing.T) {
 			t.Fatalf("%s = %s", operation, mutated)
 		}
 	}
+	forgedProxy, _ := json.Marshal(newProxyContent{User: userInfo{RunID: "run"}, ProxyName: identity.name, ProxyType: "http", CustomDomains: []string{"helper.test"}, Group: identity.group, GroupKey: "forged"})
+	if _, err := policy.Handle(context.Background(), "NewProxy", forgedProxy); err == nil {
+		t.Fatal("forged proxy group key accepted")
+	}
 	unsupported := json.RawMessage(`{"user":{"run_id":"run"},"proxy_name":"proxy","proxy_type":"tcp","custom_domains":["helper.test"]}`)
 	if _, err := policy.Handle(context.Background(), "NewProxy", unsupported); err == nil {
 		t.Fatal("unsupported proxy accepted")
@@ -62,10 +74,7 @@ func TestPolicyLoginAndProxyAllowList(t *testing.T) {
 	if _, err := policy.Handle(context.Background(), "NewProxy", unknown); err == nil {
 		t.Fatal("unknown proxy accepted")
 	}
-	if _, err := policy.Handle(context.Background(), "CloseProxy", json.RawMessage(`{"user":{"run_id":"run"},"proxy_name":"proxy"}`)); err != nil {
-		t.Fatal(err)
-	}
 	if stats := adapter.Stats(); stats.Sessions != 0 || stats.Routes != 0 {
-		t.Fatalf("closed final proxy retained connector state: %+v", stats)
+		t.Fatalf("rejected proxy retained connector state: %+v", stats)
 	}
 }

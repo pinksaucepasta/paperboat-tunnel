@@ -3,7 +3,7 @@ package route
 import "testing"
 
 func TestRegistryRevisionAndHostOwnership(t *testing.T) {
-	r := NewRegistry()
+	r := NewRegistry("example.test", "helper.example.test")
 	a := Attachment{ID: "r1", Revision: 1, Environment: "e1", Node: "n1", Generation: 1, Host: "Preview.Example.Test.", Target: "127.0.0.1:3000", Kind: PreviewHTTPSWSS}
 	if _, err := r.Attach(a); err != nil {
 		t.Fatal(err)
@@ -30,8 +30,21 @@ func TestRegistryRevisionAndHostOwnership(t *testing.T) {
 	}
 }
 
+func TestRegistryRejectsRouteKindDomainMismatch(t *testing.T) {
+	registry := NewRegistry("preview.example.test", "helper.example.test")
+	base := Attachment{ID: "route", Revision: 1, Environment: "env", Node: "edge", Generation: 1, Target: "127.0.0.1:8080"}
+	for _, attachment := range []Attachment{
+		func() Attachment { a := base; a.Kind = HelperHTTPSWSS; a.Host = "app.preview.example.test"; return a }(),
+		func() Attachment { a := base; a.Kind = PreviewHTTPSWSS; a.Host = "app.helper.example.test"; return a }(),
+	} {
+		if _, err := registry.Attach(attachment); err != ErrInvalid {
+			t.Fatalf("mismatched route accepted: %+v, err=%v", attachment, err)
+		}
+	}
+}
+
 func TestRegistryReplaceRejectsStaleSnapshotWithoutMutation(t *testing.T) {
-	registry := NewRegistry()
+	registry := NewRegistry("preview.example.test", "example.test")
 	current := Attachment{ID: "route", Revision: 3, Environment: "env", Node: "edge", Generation: 2, Host: "app.example.test", Target: "127.0.0.1:8080", Kind: HelperHTTPSWSS}
 	if _, err := registry.Attach(current); err != nil {
 		t.Fatal(err)
@@ -48,7 +61,7 @@ func TestRegistryReplaceRejectsStaleSnapshotWithoutMutation(t *testing.T) {
 }
 
 func TestRegistryReplaceRejectsConflictWithoutMutation(t *testing.T) {
-	registry := NewRegistry()
+	registry := NewRegistry("preview.example.test", "example.test")
 	current := Attachment{ID: "route", Revision: 1, Environment: "env", Node: "edge", Generation: 1, Host: "old.example.test", Target: "127.0.0.1:8080", Kind: HelperHTTPSWSS}
 	if _, err := registry.Attach(current); err != nil {
 		t.Fatal(err)

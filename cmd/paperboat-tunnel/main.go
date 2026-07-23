@@ -22,6 +22,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/config"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/control"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/edgefrp"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/edgehttp"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/frpconfig"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/node"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/observability"
@@ -109,7 +110,7 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	if err != nil {
 		return nil, fmt.Errorf("create node manager: %w", err)
 	}
-	routes := route.NewRegistry()
+	routes := route.NewRegistry(deployment.PreviewBaseDomain, deployment.HelperBaseDomain)
 	snapshotState := func() store.State {
 		return store.State{Version: store.CurrentVersion, CounterEpoch: epoch, Operations: journal.Snapshot(), Counters: counters.Snapshot(), PendingUsage: queue.Snapshot()}
 	}
@@ -119,6 +120,9 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	meter := &usage.Meter{Node: cfg.NodeID, Epoch: epoch, Counters: counters, Queue: queue, KeyID: trust.UsageKeyID, PrivateKey: trust.UsagePrivateKey, Persist: func() error {
 		return store.Save(cfg.StatePath, snapshotState())
 	}}
+	if err := meter.RestoreBaseline(); err != nil {
+		return nil, fmt.Errorf("restore usage baseline: %w", err)
+	}
 	adapter.Traffic = meter
 	internalToken, err := edgefrp.NewInternalAuthToken()
 	if err != nil {
@@ -135,7 +139,7 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	bundle, err := edgeruntime.PrepareBundle(edgeruntime.BundleSpec{
 		Directory: filepath.Join(deployment.RuntimeDirectory, "config"), FRPSBinary: deployment.FRPSBinary, CaddyBinary: deployment.CaddyBinary, FRPSSHA256: deployment.FRPSSHA256, CaddySHA256: deployment.CaddySHA256, MaxOutputBytes: 1 << 20,
 		FRPS:  frpconfig.Input{BindAddr: deployment.ConnectorBindAddress, BindPort: deployment.ConnectorTCPPort, QUICBindPort: deployment.ConnectorQUICPort, PrivateProxyAddr: vhostHost, VhostHTTPPort: vhostPort, HookAddr: deployment.HookAddress, HookPath: deployment.HookPath, InternalAuthToken: internalToken, LogLevel: deployment.FRPSLogLevel},
-		Caddy: caddyconfig.Input{WildcardHost: deployment.WildcardHost, PrivateUpstream: deployment.PrivateVhostAddress, ListenAddress: deployment.CaddyListenAddress, AdminAddress: deployment.CaddyAdminAddress, TrustedProxies: deployment.TrustedProxyCIDRs, IssuerModule: deployment.CertificateIssuer},
+		Caddy: caddyconfig.Input{PreviewBaseDomain: deployment.PreviewBaseDomain, HelperBaseDomain: deployment.HelperBaseDomain, PrivateUpstream: deployment.EdgeGatewayAddress, ListenAddress: deployment.CaddyListenAddress, AdminAddress: deployment.CaddyAdminAddress, TrustedProxies: deployment.TrustedProxyCIDRs, IssuerModule: deployment.CertificateIssuer},
 	})
 	if err != nil {
 		return nil, err
@@ -143,10 +147,18 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	persistence := edgeruntime.Persistence{Path: cfg.StatePath, Restore: func(store.State) error { return nil }, Snapshot: snapshotState}
 	nodeWorker := &edgeruntime.NodeWorker{Manager: manager, Sink: client, Registration: control.NodeRegistration{NodeID: cfg.NodeID, EdgePool: cfg.EdgePool, Artifact: bundle.FRPSMetadata.FRPVersion + "+" + bundle.CaddyMetadata.Version, Protocol: "1.0", ProcessEpoch: processEpoch, Capacity: deployment.NodeCapacity, Endpoint: control.ConnectorEndpoint{Host: deployment.ConnectorAdvertiseHost, TCPPort: uint16(deployment.ConnectorTCPPort), QUICPort: uint16(deployment.ConnectorQUICPort)}}, Interval: deployment.ControlInterval}
 	routeWorker := &edgeruntime.RouteWorker{Registry: routes, Source: client, Observer: client, State: state, NodeID: cfg.NodeID, Interval: deployment.ControlInterval}
-	usageWorker := &edgeruntime.UsageWorker{Queue: queue, Sink: client, Prepare: meter, Interval: deployment.UsageInterval}
+	usageWorker := &edgeruntime.UsageWorker{Queue: queue, Sink: client, Prepare: meter, Persist: meter.Persist, Interval: deployment.UsageInterval}
 	metrics := observability.NewMetrics()
 	controlDependency := &edgeruntime.ControlDependency{Source: client, TrustSource: client, ApplyTrust: trust.Snapshot.ReplaceRevocations, NodeID: cfg.NodeID, Interval: deployment.ControlInterval}
-	assembly, err := edgeruntime.NewAssembly(edgeruntime.AssemblySpec{Persistence: persistence, Control: controlDependency, Node: nodeWorker, Routes: routeWorker, Usage: usageWorker, HookAddress: deployment.HookAddress, HookPath: deployment.HookPath, Policy: edgefrp.Policy{Adapter: adapter, Resolver: edgefrp.MetadataResolver{}, InternalAuthToken: internalToken}, HookReject: func(operation, reason string) {
+	trusted, err := edgehttp.ParseTrustedProxies(append(deployment.TrustedProxyCIDRs, "127.0.0.1/32"))
+	if err != nil {
+		return nil, fmt.Errorf("parse edge trusted proxies: %w", err)
+	}
+	gateway, err := edgehttp.NewGateway(edgehttp.Config{PreviewBaseDomain: deployment.PreviewBaseDomain, HelperBaseDomain: deployment.HelperBaseDomain, TrustedProxies: trusted, MaxHeaderBytes: 32 << 10, MaxBodyBytes: 20 << 20, Readiness: adapter, HelperAccess: verifier, Revocations: trust.Snapshot, RevocationCheckInterval: deployment.ControlInterval}, deployment.PrivateVhostAddress)
+	if err != nil {
+		return nil, fmt.Errorf("create edge gateway: %w", err)
+	}
+	assembly, err := edgeruntime.NewAssembly(edgeruntime.AssemblySpec{Persistence: persistence, Control: controlDependency, Node: nodeWorker, Routes: routeWorker, Usage: usageWorker, HookAddress: deployment.HookAddress, GatewayAddress: deployment.EdgeGatewayAddress, GatewayHandler: gateway, HookPath: deployment.HookPath, Policy: edgefrp.Policy{Adapter: adapter, Resolver: edgefrp.MetadataResolver{}, InternalAuthToken: internalToken}, HookReject: func(operation, reason string) {
 		log.Printf("frp hook rejected operation=%s reason=%s", operation, reason)
 	}, HookObserve: func(operation string, rejected bool) {
 		if !rejected && (operation == "Login" || operation == "NewProxy") {
@@ -179,7 +191,7 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 		FRPRunning:    assembly.FRPS.Running,
 		CaddyRunning:  assembly.Caddy.Running,
 		CaddyTLS: func() (time.Time, error) {
-			return probeCaddyTLS(deployment.CaddyListenAddress, deployment.WildcardHost)
+			return probeCaddyTLS(deployment.CaddyListenAddress, "*."+deployment.PreviewBaseDomain)
 		},
 		Events:  metrics.Snapshot,
 		Traffic: counters.Snapshot,

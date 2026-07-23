@@ -11,7 +11,7 @@ import (
 )
 
 func validInput() Input {
-	return Input{WildcardHost: "*.preview.example.test", PrivateUpstream: "127.0.0.1:8080", ListenAddress: ":443", AdminAddress: "127.0.0.1:2019", TrustedProxies: []string{"10.0.0.0/8", "fd00::/8"}, IssuerModule: "internal"}
+	return Input{PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", PrivateUpstream: "127.0.0.1:8080", ListenAddress: ":443", AdminAddress: "127.0.0.1:2019", TrustedProxies: []string{"10.0.0.0/8", "fd00::/8"}, IssuerModule: "internal"}
 }
 
 func TestGenerateCaddyPolicy(t *testing.T) {
@@ -27,6 +27,11 @@ func TestGenerateCaddyPolicy(t *testing.T) {
 		t.Fatalf("unsafe policy: %s", data)
 	}
 	apps := document["apps"].(map[string]any)
+	policies := apps["tls"].(map[string]any)["automation"].(map[string]any)["policies"].([]any)
+	subjects := policies[0].(map[string]any)["subjects"].([]any)
+	if len(subjects) != 2 || subjects[0] != "*.preview.example.test" || subjects[1] != "*.helper.example.test" {
+		t.Fatalf("TLS subjects = %v", subjects)
+	}
 	logging := document["logging"].(map[string]any)["logs"].(map[string]any)["default"].(map[string]any)
 	if logging["level"] != "PANIC" {
 		t.Fatalf("request-bearing Caddy logs are enabled: %v", logging)
@@ -93,8 +98,11 @@ func TestGenerateAcceptsPrivateUpstream(t *testing.T) {
 
 func TestRejectsHostConfusionAndPublicAdmin(t *testing.T) {
 	tests := []Input{
-		func() Input { i := validInput(); i.WildcardHost = "preview.example.test"; return i }(),
-		func() Input { i := validInput(); i.WildcardHost = "*.127.0.0.1"; return i }(),
+		func() Input { i := validInput(); i.PreviewBaseDomain = "*.preview.example.test"; return i }(),
+		func() Input { i := validInput(); i.HelperBaseDomain = "127.0.0.1"; return i }(),
+		func() Input { i := validInput(); i.PreviewBaseDomain = "Preview.example.test"; return i }(),
+		func() Input { i := validInput(); i.HelperBaseDomain = i.PreviewBaseDomain; return i }(),
+		func() Input { i := validInput(); i.HelperBaseDomain = "internal." + i.PreviewBaseDomain; return i }(),
 		func() Input { i := validInput(); i.AdminAddress = "0.0.0.0:2019"; return i }(),
 		func() Input { i := validInput(); i.PrivateUpstream = "0.0.0.0:8080"; return i }(),
 		func() Input { i := validInput(); i.TrustedProxies = []string{"not-a-cidr"}; return i }(),

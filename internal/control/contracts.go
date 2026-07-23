@@ -33,15 +33,17 @@ type UsageResult struct {
 }
 
 type RouteAssignment struct {
-	RouteID     string `json:"route_id"`
-	Revision    uint64 `json:"route_revision"`
-	Environment string `json:"environment_id"`
-	Generation  uint64 `json:"connector_generation"`
-	NodeID      string `json:"edge_node_id"`
-	Kind        string `json:"kind"`
-	PublicHost  string `json:"public_host"`
-	TargetHost  string `json:"target_host"`
-	TargetPort  uint16 `json:"target_port"`
+	RouteID       string `json:"route_id"`
+	Revision      uint64 `json:"route_revision"`
+	Environment   string `json:"environment_id"`
+	Generation    uint64 `json:"connector_generation"`
+	NodeID        string `json:"edge_node_id"`
+	Kind          string `json:"kind"`
+	PublicHost    string `json:"public_host"`
+	TargetHost    string `json:"target_host"`
+	TargetPort    uint16 `json:"target_port"`
+	PreviewState  string `json:"preview_state,omitempty"`
+	PreviewReason string `json:"preview_reason,omitempty"`
 }
 
 type RouteSource interface {

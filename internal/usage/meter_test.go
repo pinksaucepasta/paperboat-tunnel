@@ -54,3 +54,21 @@ func TestMeterFlushesRestoredCountersWithoutPriorRecord(t *testing.T) {
 		t.Fatalf("restored report = %+v, present=%v", report, ok)
 	}
 }
+
+func TestMeterRestoreBaselineDoesNotRegenerateAcknowledgedReport(t *testing.T) {
+	_, private, _ := ed25519.GenerateKey(nil)
+	key := Key{Node: "edge", Epoch: "restored-epoch", Environment: "env", Route: "route", Revision: 1, Direction: "egress"}
+	counters := NewCounters()
+	counters.Observe(key, 42)
+	queue, _ := NewQueue(2, 1<<20)
+	meter := &Meter{Node: "edge", Epoch: "new-epoch", Counters: counters, Queue: queue, KeyID: "usage-key", PrivateKey: private, Persist: func() error { return nil }, Now: func() time.Time { return time.Unix(200, 0).UTC() }}
+	if err := meter.RestoreBaseline(); err != nil {
+		t.Fatal(err)
+	}
+	if err := meter.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if queue.Len() != 0 {
+		t.Fatalf("restored acknowledged counter was regenerated: %d reports", queue.Len())
+	}
+}
