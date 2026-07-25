@@ -60,7 +60,7 @@ func Generate(input Input) ([]byte, error) {
 									"Referrer-Policy":        {"no-referrer"},
 									"X-Frame-Options":        {"DENY"},
 								}}},
-								map[string]any{"handler": "reverse_proxy", "upstreams": []any{map[string]any{"dial": input.PrivateUpstream}}, "transport": map[string]any{"protocol": "http", "keep_alive": map[string]any{"enabled": false}}, "headers": map[string]any{"request": map[string]any{"delete": []string{"Forwarded", "X-Forwarded-Host", "X-Real-IP", "X-Paperboat-Environment", "X-Paperboat-Route"}, "set": map[string][]string{"X-Forwarded-Proto": {"https"}, "X-Real-IP": {"{http.request.client_ip}"}}}}, "flush_interval": -1},
+								map[string]any{"handler": "reverse_proxy", "upstreams": []any{map[string]any{"dial": input.PrivateUpstream}}, "transport": map[string]any{"protocol": "http", "versions": []string{"1.1"}, "keep_alive": map[string]any{"enabled": false}}, "headers": map[string]any{"request": map[string]any{"delete": []string{"Forwarded", "X-Forwarded-Host", "X-Real-IP", "X-Paperboat-Environment", "X-Paperboat-Route"}, "set": map[string][]string{"X-Forwarded-Proto": {"https"}, "X-Real-IP": {"{http.request.client_ip}"}}}}, "flush_interval": -1},
 							},
 							"terminal": true,
 						}},

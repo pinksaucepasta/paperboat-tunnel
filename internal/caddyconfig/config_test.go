@@ -60,6 +60,10 @@ func TestGenerateCaddyPolicy(t *testing.T) {
 	if keepAlive["enabled"] != false {
 		t.Fatalf("Caddy may reuse stale authorized streams: %v", keepAlive)
 	}
+	versions := proxy["transport"].(map[string]any)["versions"].([]any)
+	if len(versions) != 1 || versions[0] != "1.1" {
+		t.Fatalf("WebSocket upstream may negotiate an incompatible HTTP version: %v", versions)
+	}
 	requestHeaders := proxy["headers"].(map[string]any)["request"].(map[string]any)
 	set := requestHeaders["set"].(map[string]any)
 	proto := set["X-Forwarded-Proto"].([]any)
