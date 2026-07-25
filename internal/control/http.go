@@ -73,7 +73,7 @@ func (c *HTTPClient) Current(ctx context.Context, environment, helper string) (a
 		EdgeNode   string `json:"edge_node_id"`
 		Revoked    bool   `json:"revoked"`
 	}
-	if err := c.post(ctx, "/v1/assignment/current", request, &response); err != nil {
+	if err := c.post(ctx, "/v1/edge/assignments/current", request, &response); err != nil {
 		return admission.Current{}, err
 	}
 	if response.Generation == 0 || response.EdgePool == "" || response.EdgeNode == "" {
@@ -97,7 +97,7 @@ func (c *HTTPClient) ReportUsage(ctx context.Context, report UsageReport) (Usage
 		End         time.Time       `json:"interval_end"`
 		Payload     json.RawMessage `json:"signed_payload,omitempty"`
 	}{report.OperationID, report.Key.Node, report.Key.Epoch, report.Key.Environment, report.Key.Route, report.Key.Revision, report.Key.Direction, report.Bytes, report.Interval[0], report.Interval[1], json.RawMessage(report.Payload)}
-	if err := c.post(ctx, "/v1/usage/report", wire, &result); err != nil {
+	if err := c.post(ctx, "/v1/edge/usage-reports", wire, &result); err != nil {
 		return UsageResult{}, err
 	}
 	return result, nil
@@ -128,7 +128,7 @@ func (c *HTTPClient) DesiredRoutes(ctx context.Context, nodeID string) ([]RouteA
 			PreviewReason string `json:"preview_reason"`
 		} `json:"routes"`
 	}
-	if err := c.post(ctx, "/v1/routes/desired", struct {
+	if err := c.post(ctx, "/v1/edge/routes/desired-state", struct {
 		NodeID string `json:"edge_node_id"`
 	}{nodeID}, &result); err != nil {
 		return nil, err
@@ -168,7 +168,7 @@ func (c *HTTPClient) ObserveRoutes(ctx context.Context, nodeID string, routes []
 	if len(routes) > 1000 {
 		return ErrControlInvalid
 	}
-	return c.post(ctx, "/v1/routes/observed", struct {
+	return c.post(ctx, "/v1/edge/routes/observations", struct {
 		NodeID string             `json:"edge_node_id"`
 		Routes []RouteObservation `json:"routes"`
 	}{NodeID: nodeID, Routes: routes}, nil)

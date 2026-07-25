@@ -1,0 +1,33 @@
+services:
+  tunnel:
+    image: ${PAPERBOAT_TUNNEL_IMAGE:?set PAPERBOAT_TUNNEL_IMAGE}
+    restart: unless-stopped
+    command:
+      - -node-id
+      - ${PAPERBOAT_TUNNEL_NODE_ID:?set PAPERBOAT_TUNNEL_NODE_ID}
+      - -edge-pool
+      - ${PAPERBOAT_TUNNEL_EDGE_POOL:-default}
+      - -health-address
+      - 127.0.0.1:9090
+      - -deployment-config
+      - /etc/paperboat-tunnel/deployment.json
+      - -state-path
+      - /var/lib/paperboat-tunnel/state/state.json
+    ports:
+      - "443:443/tcp"
+      - "26022:26022/tcp"
+      - "26023:26023/udp"
+    volumes:
+      - ./deployment.json:/etc/paperboat-tunnel/deployment.json:ro
+      - ./secrets:/run/secrets:ro
+      - tunnel-runtime:/var/lib/paperboat-tunnel/runtime
+      - tunnel-state:/var/lib/paperboat-tunnel/state
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9090/readyz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  tunnel-runtime:
+  tunnel-state:

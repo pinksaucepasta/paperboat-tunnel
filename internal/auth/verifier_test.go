@@ -47,7 +47,7 @@ func TestVerifierAcceptsExactHelperAccessCredential(t *testing.T) {
 		claims["credential_class"] = "terminal_operation"
 		claims["scope"] = []string{"terminal:operate"}
 		claims["user_id"] = "usr_1"
-		claims["client_session_id"] = "acs_1"
+		claims["cli_client_session_id"] = "acs_1"
 		claims["session_id"] = "pts_1"
 		delete(claims, "helper_id")
 		delete(claims, "connector_generation")

@@ -52,7 +52,7 @@ type claims struct {
 	EdgePool            string   `json:"edge_pool"`
 	EdgeNodeID          string   `json:"edge_node_id"`
 	UserID              string   `json:"user_id"`
-	ClientSessionID     string   `json:"client_session_id"`
+	CLIClientSessionID  string   `json:"cli_client_session_id"`
 	SessionID           string   `json:"session_id"`
 }
 
@@ -80,7 +80,7 @@ func (v *Verifier) VerifyHelperAccess(ctx context.Context, token string) (admiss
 	default:
 		return admission.Claims{}, invalid()
 	}
-	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-helper" || parsed.Subject == "" || parsed.JTI == "" || len(parsed.Scope) != 1 || parsed.Scope[0] != wantScope || parsed.EnvironmentID == "" || parsed.UserID == "" || parsed.ClientSessionID == "" || parsed.SessionID == "" || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 || time.Unix(parsed.IssuedAt, 0).After(now.Add(v.ClockSkew)) || !time.Unix(parsed.Expires, 0).After(now) {
+	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-helper" || parsed.Subject == "" || parsed.JTI == "" || len(parsed.Scope) != 1 || parsed.Scope[0] != wantScope || parsed.EnvironmentID == "" || parsed.UserID == "" || parsed.CLIClientSessionID == "" || parsed.SessionID == "" || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 || time.Unix(parsed.IssuedAt, 0).After(now.Add(v.ClockSkew)) || !time.Unix(parsed.Expires, 0).After(now) {
 		return admission.Claims{}, invalid()
 	}
 	result := admission.Claims{KeyID: parsedHeader.KeyID, Issuer: parsed.Issuer, Audience: parsed.Audience, JTI: parsed.JTI, CredentialClass: parsed.CredentialClass, Scopes: append([]string(nil), parsed.Scope...), EnvironmentID: parsed.EnvironmentID, HelperID: parsed.HelperID, ConnectorGeneration: parsed.ConnectorGeneration, ExpiresAt: time.Unix(parsed.Expires, 0).UTC()}

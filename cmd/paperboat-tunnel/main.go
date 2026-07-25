@@ -76,6 +76,15 @@ func run(args []string) error {
 }
 
 func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime.Service, error) {
+	if deployment.CertificateDNSCredentialFile != "" {
+		credential, err := os.ReadFile(deployment.CertificateDNSCredentialFile)
+		if err != nil {
+			return nil, fmt.Errorf("load certificate DNS credential: %w", err)
+		}
+		if err := os.Setenv("CLOUDFLARE_API_TOKEN", strings.TrimSpace(string(credential))); err != nil {
+			return nil, fmt.Errorf("configure certificate DNS credential: %w", err)
+		}
+	}
 	credential, err := readCredential(deployment.ControlCredentialFile)
 	if err != nil {
 		return nil, fmt.Errorf("load control credential: %w", err)
@@ -139,7 +148,7 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	bundle, err := edgeruntime.PrepareBundle(edgeruntime.BundleSpec{
 		Directory: filepath.Join(deployment.RuntimeDirectory, "config"), FRPSBinary: deployment.FRPSBinary, CaddyBinary: deployment.CaddyBinary, FRPSSHA256: deployment.FRPSSHA256, CaddySHA256: deployment.CaddySHA256, MaxOutputBytes: 1 << 20,
 		FRPS:  frpconfig.Input{BindAddr: deployment.ConnectorBindAddress, BindPort: deployment.ConnectorTCPPort, QUICBindPort: deployment.ConnectorQUICPort, PrivateProxyAddr: vhostHost, VhostHTTPPort: vhostPort, HookAddr: deployment.HookAddress, HookPath: deployment.HookPath, InternalAuthToken: internalToken, LogLevel: deployment.FRPSLogLevel},
-		Caddy: caddyconfig.Input{PreviewBaseDomain: deployment.PreviewBaseDomain, HelperBaseDomain: deployment.HelperBaseDomain, PrivateUpstream: deployment.EdgeGatewayAddress, ListenAddress: deployment.CaddyListenAddress, AdminAddress: deployment.CaddyAdminAddress, TrustedProxies: deployment.TrustedProxyCIDRs, IssuerModule: deployment.CertificateIssuer},
+		Caddy: caddyconfig.Input{PreviewBaseDomain: deployment.PreviewBaseDomain, HelperBaseDomain: deployment.HelperBaseDomain, PrivateUpstream: deployment.EdgeGatewayAddress, ListenAddress: deployment.CaddyListenAddress, AdminAddress: deployment.CaddyAdminAddress, TrustedProxies: deployment.TrustedProxyCIDRs, IssuerModule: deployment.CertificateIssuer, DNSProvider: deployment.CertificateDNSProvider},
 	})
 	if err != nil {
 		return nil, err

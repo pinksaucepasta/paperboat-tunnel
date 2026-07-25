@@ -96,6 +96,19 @@ func TestGenerateAcceptsPrivateUpstream(t *testing.T) {
 	}
 }
 
+func TestGenerateCloudflareDNSChallenge(t *testing.T) {
+	input := validInput()
+	input.IssuerModule = "acme"
+	input.DNSProvider = "cloudflare"
+	data, err := Generate(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"name": "cloudflare"`) || !strings.Contains(string(data), `"api_token": "{env.CLOUDFLARE_API_TOKEN}"`) {
+		t.Fatalf("Cloudflare DNS challenge missing: %s", data)
+	}
+}
+
 func TestRejectsHostConfusionAndPublicAdmin(t *testing.T) {
 	tests := []Input{
 		func() Input { i := validInput(); i.PreviewBaseDomain = "*.preview.example.test"; return i }(),
@@ -119,17 +132,21 @@ func TestGeneratedConfigPassesNativeCaddy(t *testing.T) {
 	if binary == "" {
 		t.Skip("CADDY_BIN not set")
 	}
-	data, err := Generate(validInput())
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), "caddy.json")
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	command := exec.Command(binary, "validate", "--config", path)
-	command.Env = append(os.Environ(), "XDG_DATA_HOME="+filepath.Join(t.TempDir(), "data"), "XDG_CONFIG_HOME="+filepath.Join(t.TempDir(), "config"))
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("caddy rejected generated config: %v\n%s", err, output)
+	cloudflare := validInput()
+	cloudflare.IssuerModule, cloudflare.DNSProvider = "acme", "cloudflare"
+	for _, input := range []Input{validInput(), cloudflare} {
+		data, err := Generate(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "caddy.json")
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		command := exec.Command(binary, "validate", "--config", path)
+		command.Env = append(os.Environ(), "XDG_DATA_HOME="+filepath.Join(t.TempDir(), "data"), "XDG_CONFIG_HOME="+filepath.Join(t.TempDir(), "config"), "CLOUDFLARE_API_TOKEN=test-token")
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("caddy rejected generated config: %v\n%s", err, output)
+		}
 	}
 }

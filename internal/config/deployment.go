@@ -21,37 +21,39 @@ const maxDeploymentBytes = 1 << 20
 var routeBaseDomainPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 type Deployment struct {
-	ControlURL             string        `json:"control_url"`
-	CredentialIssuer       string        `json:"credential_issuer"`
-	ControlCredentialFile  string        `json:"control_credential_file"`
-	ControlCAFile          string        `json:"control_ca_file"`
-	JWKSFile               string        `json:"jwks_file"`
-	RevocationsFile        string        `json:"revocations_file"`
-	UsageSigningKeyFile    string        `json:"usage_signing_key_file"`
-	FRPSBinary             string        `json:"frps_binary"`
-	FRPSSHA256             string        `json:"frps_sha256"`
-	FRPSLogLevel           string        `json:"frps_log_level,omitempty"`
-	CaddyBinary            string        `json:"caddy_binary"`
-	CaddySHA256            string        `json:"caddy_sha256"`
-	RuntimeDirectory       string        `json:"runtime_directory"`
-	HookAddress            string        `json:"hook_address"`
-	HookPath               string        `json:"hook_path"`
-	ConnectorBindAddress   string        `json:"connector_bind_address"`
-	ConnectorAdvertiseHost string        `json:"connector_advertise_host"`
-	ConnectorTCPPort       int           `json:"connector_tcp_port"`
-	ConnectorQUICPort      int           `json:"connector_quic_port"`
-	PrivateVhostAddress    string        `json:"private_vhost_address"`
-	EdgeGatewayAddress     string        `json:"edge_gateway_address"`
-	CaddyListenAddress     string        `json:"caddy_listen_address"`
-	CaddyAdminAddress      string        `json:"caddy_admin_address"`
-	PreviewBaseDomain      string        `json:"preview_base_domain"`
-	HelperBaseDomain       string        `json:"helper_base_domain"`
-	TrustedProxyCIDRs      []string      `json:"trusted_proxy_cidrs"`
-	CertificateIssuer      string        `json:"certificate_issuer"`
-	NodeCapacity           uint32        `json:"node_capacity"`
-	ControlInterval        time.Duration `json:"control_interval"`
-	UsageInterval          time.Duration `json:"usage_interval"`
-	ControlTimeout         time.Duration `json:"control_timeout"`
+	ControlURL                   string        `json:"control_url"`
+	CredentialIssuer             string        `json:"credential_issuer"`
+	ControlCredentialFile        string        `json:"control_credential_file"`
+	ControlCAFile                string        `json:"control_ca_file"`
+	JWKSFile                     string        `json:"jwks_file"`
+	RevocationsFile              string        `json:"revocations_file"`
+	UsageSigningKeyFile          string        `json:"usage_signing_key_file"`
+	FRPSBinary                   string        `json:"frps_binary"`
+	FRPSSHA256                   string        `json:"frps_sha256"`
+	FRPSLogLevel                 string        `json:"frps_log_level,omitempty"`
+	CaddyBinary                  string        `json:"caddy_binary"`
+	CaddySHA256                  string        `json:"caddy_sha256"`
+	RuntimeDirectory             string        `json:"runtime_directory"`
+	HookAddress                  string        `json:"hook_address"`
+	HookPath                     string        `json:"hook_path"`
+	ConnectorBindAddress         string        `json:"connector_bind_address"`
+	ConnectorAdvertiseHost       string        `json:"connector_advertise_host"`
+	ConnectorTCPPort             int           `json:"connector_tcp_port"`
+	ConnectorQUICPort            int           `json:"connector_quic_port"`
+	PrivateVhostAddress          string        `json:"private_vhost_address"`
+	EdgeGatewayAddress           string        `json:"edge_gateway_address"`
+	CaddyListenAddress           string        `json:"caddy_listen_address"`
+	CaddyAdminAddress            string        `json:"caddy_admin_address"`
+	PreviewBaseDomain            string        `json:"preview_base_domain"`
+	HelperBaseDomain             string        `json:"helper_base_domain"`
+	TrustedProxyCIDRs            []string      `json:"trusted_proxy_cidrs"`
+	CertificateIssuer            string        `json:"certificate_issuer"`
+	CertificateDNSProvider       string        `json:"certificate_dns_provider,omitempty"`
+	CertificateDNSCredentialFile string        `json:"certificate_dns_credential_file,omitempty"`
+	NodeCapacity                 uint32        `json:"node_capacity"`
+	ControlInterval              time.Duration `json:"control_interval"`
+	UsageInterval                time.Duration `json:"usage_interval"`
+	ControlTimeout               time.Duration `json:"control_timeout"`
 }
 
 func LoadDeployment(path string) (Deployment, error) {
@@ -102,7 +104,13 @@ func (d Deployment) validate() error {
 	if d.ControlCAFile != "" && (!filepath.IsAbs(d.ControlCAFile) || len(d.ControlCAFile) > 4096) {
 		return errors.New("control_ca_file must be a bounded absolute path")
 	}
+	if d.CertificateDNSCredentialFile != "" && (!filepath.IsAbs(d.CertificateDNSCredentialFile) || len(d.CertificateDNSCredentialFile) > 4096) {
+		return errors.New("certificate_dns_credential_file must be a bounded absolute path")
+	}
 	for _, digest := range []string{d.FRPSSHA256, d.CaddySHA256} {
+		if digest == "" {
+			continue
+		}
 		if len(digest) != sha256.Size*2 {
 			return errors.New("artifact checksums must be SHA-256")
 		}
@@ -150,7 +158,7 @@ func (d Deployment) validate() error {
 			return errors.New("trusted proxy CIDR is invalid")
 		}
 	}
-	if d.CertificateIssuer == "" || d.NodeCapacity == 0 || d.NodeCapacity > 10000 || d.ControlInterval <= 0 || d.ControlInterval > time.Minute || d.UsageInterval <= 0 || d.UsageInterval > time.Minute || d.ControlTimeout <= 0 || d.ControlTimeout > 30*time.Second {
+	if d.CertificateIssuer == "" || (d.CertificateDNSProvider != "" && (d.CertificateIssuer != "acme" || d.CertificateDNSCredentialFile == "")) || d.NodeCapacity == 0 || d.NodeCapacity > 10000 || d.ControlInterval <= 0 || d.ControlInterval > time.Minute || d.UsageInterval <= 0 || d.UsageInterval > time.Minute || d.ControlTimeout <= 0 || d.ControlTimeout > 30*time.Second {
 		return errors.New("deployment bounds are invalid")
 	}
 	return nil

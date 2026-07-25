@@ -32,6 +32,7 @@ type Input struct {
 	AdminAddress      string
 	TrustedProxies    []string
 	IssuerModule      string
+	DNSProvider       string
 }
 
 func Generate(input Input) ([]byte, error) {
@@ -69,7 +70,11 @@ func Generate(input Input) ([]byte, error) {
 		},
 	}
 	if input.IssuerModule != "" {
-		config["apps"].(map[string]any)["tls"] = map[string]any{"automation": map[string]any{"policies": []any{map[string]any{"subjects": wildcardHosts, "issuers": []any{map[string]any{"module": input.IssuerModule}}}}}}
+		issuer := map[string]any{"module": input.IssuerModule}
+		if input.DNSProvider != "" {
+			issuer["challenges"] = map[string]any{"dns": map[string]any{"provider": map[string]any{"name": input.DNSProvider, "api_token": "{env.CLOUDFLARE_API_TOKEN}"}}}
+		}
+		config["apps"].(map[string]any)["tls"] = map[string]any{"automation": map[string]any{"policies": []any{map[string]any{"subjects": wildcardHosts, "issuers": []any{issuer}}}}}
 		if input.IssuerModule == "internal" {
 			config["apps"].(map[string]any)["pki"] = map[string]any{"certificate_authorities": map[string]any{"local": map[string]any{"install_trust": false}}}
 		}
@@ -99,6 +104,9 @@ func validate(input Input) error {
 		if _, _, err := net.ParseCIDR(proxy); err != nil {
 			return ErrInvalid
 		}
+	}
+	if input.DNSProvider != "" && input.DNSProvider != "cloudflare" {
+		return ErrInvalid
 	}
 	return nil
 }

@@ -100,6 +100,9 @@ func environmentWith(current []string, values map[string]string) []string {
 }
 
 func verifySHA256(path, expected string) error {
+	if expected == "" {
+		return nil
+	}
 	if len(expected) != sha256.Size*2 {
 		return ErrProcessInvalid
 	}

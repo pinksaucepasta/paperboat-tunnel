@@ -27,7 +27,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var err error
 	switch r.URL.Path {
-	case "/v1/assignment/current":
+	case "/v1/edge/assignments/current":
 		var request struct {
 			Environment string `json:"environment_id"`
 			Helper      string `json:"helper_id"`
@@ -41,7 +41,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeHTTP(w, map[string]any{"connector_generation": current.Generation, "edge_pool": current.EdgePool, "edge_node_id": current.EdgeNode, "revoked": current.Revoked})
 			return
 		}
-	case "/v1/usage/report":
+	case "/v1/edge/usage-reports":
 		type wire struct {
 			OperationID string          `json:"operation_id"`
 			Node        string          `json:"edge_node_id"`
@@ -83,7 +83,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-	case "/v1/routes/desired":
+	case "/v1/edge/routes/desired-state":
 		var request struct {
 			NodeID string `json:"edge_node_id"`
 		}

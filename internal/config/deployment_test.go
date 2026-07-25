@@ -13,7 +13,7 @@ func TestLoadDeploymentStrictProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if deployment.ConnectorTCPPort != 26022 || deployment.PreviewBaseDomain != "preview.hexwagon.com" || deployment.HelperBaseDomain != "helper.hexwagon.com" || deployment.NodeCapacity != 128 {
+	if deployment.ConnectorTCPPort != 26022 || deployment.PreviewBaseDomain != "preview.example.test" || deployment.HelperBaseDomain != "helper.example.test" || deployment.NodeCapacity != 128 {
 		t.Fatalf("deployment = %+v", deployment)
 	}
 }
@@ -29,10 +29,10 @@ func TestLoadDeploymentRejectsUnsafeProfiles(t *testing.T) {
 			return strings.Replace(value, `"node_capacity":128`, `"node_capacity":0`, 1)
 		},
 		func(value string) string {
-			return strings.Replace(value, `"preview_base_domain":"preview.hexwagon.com"`, `"preview_base_domain":"PREVIEW.hexwagon.com"`, 1)
+			return strings.Replace(value, `"preview_base_domain":"preview.example.test"`, `"preview_base_domain":"PREVIEW.example.test"`, 1)
 		},
 		func(value string) string {
-			return strings.Replace(value, `"helper_base_domain":"helper.hexwagon.com"`, `"helper_base_domain":"hexwagon.com"`, 1)
+			return strings.Replace(value, `"helper_base_domain":"helper.example.test"`, `"helper_base_domain":"example.test"`, 1)
 		},
 		func(value string) string { return strings.TrimSuffix(value, "}") + `,"unknown":true}` },
 	} {
@@ -43,7 +43,7 @@ func TestLoadDeploymentRejectsUnsafeProfiles(t *testing.T) {
 }
 
 func validDeploymentJSON() string {
-	return `{"control_url":"https://edge-control.hexwagon.com","control_credential_file":"/opt/paperboat-tunnel/private/control.credential","jwks_file":"/opt/paperboat-tunnel/private/jwks.json","revocations_file":"/opt/paperboat-tunnel/private/revocations.json","usage_signing_key_file":"/opt/paperboat-tunnel/private/usage.key","frps_binary":"/opt/paperboat-tunnel/bin/frps","frps_sha256":"` + strings.Repeat("a", 64) + `","caddy_binary":"/opt/paperboat-tunnel/bin/caddy","caddy_sha256":"` + strings.Repeat("b", 64) + `","runtime_directory":"/opt/paperboat-tunnel/runtime","hook_address":"127.0.0.1:18082","hook_path":"/private/paperboat-hook-0123456789abcdef","connector_bind_address":"0.0.0.0","connector_advertise_host":"edge.hexwagon.com","connector_tcp_port":26022,"connector_quic_port":26023,"private_vhost_address":"127.0.0.1:18083","edge_gateway_address":"127.0.0.1:18085","caddy_listen_address":"127.0.0.1:18443","caddy_admin_address":"127.0.0.1:18084","preview_base_domain":"preview.hexwagon.com","helper_base_domain":"helper.hexwagon.com","trusted_proxy_cidrs":["127.0.0.1/32"],"certificate_issuer":"internal","node_capacity":128,"control_interval":5000000000,"usage_interval":10000000000,"control_timeout":5000000000}`
+	return `{"control_url":"https://edge-control.example.test","control_credential_file":"/opt/paperboat-tunnel/private/control.credential","jwks_file":"/opt/paperboat-tunnel/private/jwks.json","revocations_file":"/opt/paperboat-tunnel/private/revocations.json","usage_signing_key_file":"/opt/paperboat-tunnel/private/usage.key","frps_binary":"/opt/paperboat-tunnel/bin/frps","frps_sha256":"` + strings.Repeat("a", 64) + `","caddy_binary":"/opt/paperboat-tunnel/bin/caddy","caddy_sha256":"` + strings.Repeat("b", 64) + `","runtime_directory":"/opt/paperboat-tunnel/runtime","hook_address":"127.0.0.1:18082","hook_path":"/private/paperboat-hook-0123456789abcdef","connector_bind_address":"0.0.0.0","connector_advertise_host":"edge.example.test","connector_tcp_port":26022,"connector_quic_port":26023,"private_vhost_address":"127.0.0.1:18083","edge_gateway_address":"127.0.0.1:18085","caddy_listen_address":"127.0.0.1:18443","caddy_admin_address":"127.0.0.1:18084","preview_base_domain":"preview.example.test","helper_base_domain":"helper.example.test","trusted_proxy_cidrs":["127.0.0.1/32"],"certificate_issuer":"internal","node_capacity":128,"control_interval":5000000000,"usage_interval":10000000000,"control_timeout":5000000000}`
 }
 
 func writeDeployment(t *testing.T, value string) string {

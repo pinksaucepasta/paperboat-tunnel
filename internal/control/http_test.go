@@ -43,10 +43,10 @@ func TestHTTPClientTypedOperationsAndAuthentication(t *testing.T) {
 			return response(http.StatusUnauthorized, ""), nil
 		}
 		switch r.URL.Path {
-		case "/v1/assignment/current":
+		case "/v1/edge/assignments/current":
 			data, _ := json.Marshal(map[string]any{"connector_generation": 3, "edge_pool": "default", "edge_node_id": "edge_1", "revoked": false})
 			return response(http.StatusOK, string(data)), nil
-		case "/v1/usage/report":
+		case "/v1/edge/usage-reports":
 			var wire map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&wire); err != nil || wire["edge_node_id"] != "edge" || wire["route_id"] != "route" || wire["counter_epoch"] != "epoch" {
 				t.Errorf("usage wire = %#v", wire)
@@ -55,9 +55,9 @@ func TestHTTPClientTypedOperationsAndAuthentication(t *testing.T) {
 			return response(http.StatusOK, string(data)), nil
 		case "/v1/nodes/register", "/v1/nodes/heartbeat":
 			return response(http.StatusNoContent, ""), nil
-		case "/v1/routes/desired":
+		case "/v1/edge/routes/desired-state":
 			return response(http.StatusOK, `{"routes":[{"route_id":"route","route_revision":2,"environment_id":"env","connector_generation":3,"edge_node_id":"edge","kind":"helper_https_wss","public_host":"app.example.test","target":{"host":"127.0.0.1","port":8080}}]}`), nil
-		case "/v1/routes/observed":
+		case "/v1/edge/routes/observations":
 			return response(http.StatusNoContent, ""), nil
 		case "/v1/trust/revocations":
 			if r.Method != http.MethodGet {

@@ -197,10 +197,6 @@ func (p Policy) Handle(ctx context.Context, op string, content json.RawMessage) 
 	}
 }
 
-func exactHTTPProxy(proxy newProxyContent) bool {
-	return len(invalidProxyFields(proxy)) == 0
-}
-
 type proxyShapeError []string
 
 func (e proxyShapeError) Error() string      { return "proxy shape rejected" }
