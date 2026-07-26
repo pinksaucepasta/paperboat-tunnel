@@ -65,18 +65,14 @@ func TestUsageWorkerRetriesAndFlushesOnShutdown(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("worker did not attempt delivery")
 	}
-	if worker.LastError() == nil {
-		t.Fatal("uncertain delivery not exposed")
-	}
+	waitForUsageWorkerError(t, worker, true)
 	pulse <- time.Unix(4, 0)
 	select {
 	case <-sink.signal:
 	case <-time.After(time.Second):
 		t.Fatal("worker did not retry delivery")
 	}
-	if worker.LastError() != nil {
-		t.Fatalf("delivery error not cleared: %v", worker.LastError())
-	}
+	waitForUsageWorkerError(t, worker, false)
 	if err := worker.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +81,21 @@ func TestUsageWorkerRetriesAndFlushesOnShutdown(t *testing.T) {
 	sink.mu.Unlock()
 	if queue.Len() != 0 || calls != 2 {
 		t.Fatalf("queue=%d calls=%d", queue.Len(), calls)
+	}
+}
+
+func waitForUsageWorkerError(t *testing.T, worker *UsageWorker, wantError bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		err := worker.LastError()
+		if (err != nil) == wantError {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("delivery error state: got %v, want error=%t", err, wantError)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
