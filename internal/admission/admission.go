@@ -97,6 +97,9 @@ func (s *Service) Admit(ctx context.Context, request Request) (Response, error) 
 	}
 	claims, err := s.Verifier.Verify(ctx, request.Credential)
 	if err != nil {
+		if _, typed := edgeerrors.CodeOf(err); typed {
+			return Response{}, err
+		}
 		return Response{}, edgeerrors.Wrap(edgeerrors.CodeCredentialInvalid, "credential verification failed", "request a fresh admission", err)
 	}
 	if err := validateClaims(claims, request, s.Issuer, now); err != nil {

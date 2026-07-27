@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/edgeerrors"
 )
 
 func TestHookRequiresPrivatePathAndValidVersion(t *testing.T) {
@@ -57,6 +59,26 @@ func TestHookRejectsWithoutLeakingErrorContent(t *testing.T) {
 	}
 	if !response.Reject || response.RejectReason != "request rejected" {
 		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestHookReportsBoundedTypedErrorCode(t *testing.T) {
+	hook := Hook{Path: "/hook", Handle: func(_ context.Context, _ string, _ json.RawMessage) (json.RawMessage, error) {
+		return nil, edgeerrors.Wrap(edgeerrors.CodeCredentialExpired, "credential=secret-token", "request a fresh admission", errors.New("private cause"))
+	}}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/hook", bytes.NewBufferString(`{"version":"0.1.0","op":"Login","content":{}}`))
+	request.Header.Set("Content-Type", "application/json")
+	hook.ServeHTTP(recorder, request)
+	var response wireResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.RejectReason != "request rejected:credential_expired" {
+		t.Fatalf("reject reason = %q", response.RejectReason)
+	}
+	if bytes.Contains(recorder.Body.Bytes(), []byte("secret-token")) || bytes.Contains(recorder.Body.Bytes(), []byte("private cause")) {
+		t.Fatalf("response leaks error: %s", recorder.Body.String())
 	}
 }
 

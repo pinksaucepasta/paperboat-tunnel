@@ -69,6 +69,19 @@ func TestGenerateAllowsPrivateBridgeVhost(t *testing.T) {
 	}
 }
 
+func TestGenerateAllowsDedicatedTCPWorkConnections(t *testing.T) {
+	input := validInput()
+	disabled := false
+	input.TCPMux = &disabled
+	encoded, _, err := Generate(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"tcpMux": false`)) {
+		t.Fatalf("tcpMux is not disabled: %s", encoded)
+	}
+}
+
 func TestGeneratedConfigPassesPinnedFrpsVerifier(t *testing.T) {
 	frps := filepath.Join("..", "..", "bin", "frps")
 	if _, err := os.Stat(frps); err != nil {

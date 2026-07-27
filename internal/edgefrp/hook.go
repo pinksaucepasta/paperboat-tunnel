@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/edgeerrors"
 )
 
 const APIVersion = "0.1.0"
@@ -87,6 +89,9 @@ func safeReason(err error) string {
 	}
 	if safe, ok := err.(interface{ SafeReason() string }); ok {
 		return safe.SafeReason()
+	}
+	if code, ok := edgeerrors.CodeOf(err); ok {
+		return "request rejected:" + string(code)
 	}
 	return "request rejected"
 }

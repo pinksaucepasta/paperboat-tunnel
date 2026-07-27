@@ -40,6 +40,7 @@ type Deployment struct {
 	ConnectorAdvertiseHost       string        `json:"connector_advertise_host"`
 	ConnectorTCPPort             int           `json:"connector_tcp_port"`
 	ConnectorQUICPort            int           `json:"connector_quic_port"`
+	ConnectorTCPMux              *bool         `json:"connector_tcp_mux,omitempty"`
 	PrivateVhostAddress          string        `json:"private_vhost_address"`
 	EdgeGatewayAddress           string        `json:"edge_gateway_address"`
 	CaddyListenAddress           string        `json:"caddy_listen_address"`
@@ -80,6 +81,10 @@ func LoadDeployment(path string) (Deployment, error) {
 	}
 	if deployment.FRPSLogLevel == "" {
 		deployment.FRPSLogLevel = "error"
+	}
+	if deployment.ConnectorTCPMux == nil {
+		enabled := true
+		deployment.ConnectorTCPMux = &enabled
 	}
 	if err := deployment.validate(); err != nil {
 		return Deployment{}, invalid("deployment config", err)

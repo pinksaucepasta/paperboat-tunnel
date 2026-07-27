@@ -127,49 +127,58 @@ func (v *Verifier) verifySigned(ctx context.Context, token string) (header, clai
 }
 
 func (v *Verifier) Verify(ctx context.Context, token string) (admission.Claims, error) {
-	if v == nil || v.Keys == nil || v.Issuer == "" || len(token) == 0 || len(token) > maxCredentialBytes || v.ClockSkew < 0 || v.ClockSkew > time.Minute {
-		return admission.Claims{}, invalid()
+	if v == nil || v.Keys == nil || v.Issuer == "" || v.ClockSkew < 0 || v.ClockSkew > time.Minute {
+		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeServiceUnavailable, "credential verifier is unavailable", "retry after edge recovery")
+	}
+	if len(token) == 0 || len(token) > maxCredentialBytes {
+		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialMalformed, "credential size is invalid", "request a fresh admission")
 	}
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return admission.Claims{}, invalid()
+		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialMalformed, "credential structure is invalid", "request a fresh admission")
 	}
 	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return admission.Claims{}, invalid()
+		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialMalformed, "credential header is malformed", "request a fresh admission")
 	}
 	var parsedHeader header
 	if strictJSON(headerBytes, &parsedHeader) != nil || parsedHeader.Algorithm != "EdDSA" || parsedHeader.Type != "paperboat-credential+jwt" || parsedHeader.KeyID == "" || len(parsedHeader.KeyID) > 128 {
-		return admission.Claims{}, invalid()
+		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialMalformed, "credential header is invalid", "request a fresh admission")
 	}
 	key, err := v.Keys.Key(ctx, parsedHeader.KeyID)
 	if err != nil || len(key) != ed25519.PublicKeySize {
-		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialInvalid, "credential signing key is unavailable", "retry after key synchronization")
+		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialKeyUnavailable, "credential signing key is unavailable", "retry after key synchronization")
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil || !ed25519.Verify(key, []byte(parts[0]+"."+parts[1]), signature) {
-		return admission.Claims{}, invalid()
+		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialSignatureInvalid, "credential signature is invalid", "request a fresh admission")
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return admission.Claims{}, invalid()
+		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialMalformed, "credential payload is malformed", "request a fresh admission")
 	}
 	var parsed claims
 	if strictJSON(payload, &parsed) != nil {
-		return admission.Claims{}, invalid()
+		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialMalformed, "credential payload is malformed", "request a fresh admission")
 	}
 	now := time.Now().UTC()
 	if v.Now != nil {
 		now = v.Now().UTC()
 	}
-	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-edge" || parsed.Subject == "" || parsed.JTI == "" || parsed.CredentialClass != "connector_admission" || len(parsed.Scope) != 1 || parsed.Scope[0] != "connector:admit" || parsed.EnvironmentID == "" || parsed.HelperID == "" || parsed.ConnectorGeneration == 0 || parsed.EdgePool == "" || parsed.EdgeNodeID == "" || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 || time.Unix(parsed.IssuedAt, 0).After(now.Add(v.ClockSkew)) || !time.Unix(parsed.Expires, 0).After(now) {
-		return admission.Claims{}, invalid()
+	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-edge" || parsed.Subject == "" || parsed.JTI == "" || parsed.CredentialClass != "connector_admission" || len(parsed.Scope) != 1 || parsed.Scope[0] != "connector:admit" || parsed.EnvironmentID == "" || parsed.HelperID == "" || parsed.ConnectorGeneration == 0 || parsed.EdgePool == "" || parsed.EdgeNodeID == "" || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 {
+		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeBindingInvalid, "credential claims are invalid", "request a fresh admission")
+	}
+	if time.Unix(parsed.IssuedAt, 0).After(now.Add(v.ClockSkew)) {
+		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialNotYetValid, "credential is not yet valid", "synchronize clocks and request a fresh admission")
+	}
+	if !time.Unix(parsed.Expires, 0).After(now) {
+		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialExpired, "credential is expired", "request a fresh admission")
 	}
 	result := admission.Claims{KeyID: parsedHeader.KeyID, Issuer: parsed.Issuer, Audience: parsed.Audience, JTI: parsed.JTI, CredentialClass: parsed.CredentialClass, Scopes: append([]string(nil), parsed.Scope...), EnvironmentID: parsed.EnvironmentID, HelperID: parsed.HelperID, ConnectorGeneration: parsed.ConnectorGeneration, EdgePool: parsed.EdgePool, EdgeNodeID: parsed.EdgeNodeID, ExpiresAt: time.Unix(parsed.Expires, 0).UTC()}
 	if v.Revocations != nil {
 		revoked, err := v.Revocations.Revoked(ctx, result)
 		if err != nil {
-			return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialInvalid, "credential revocation state is unavailable", "retry after revocation synchronization")
+			return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialRevocationUnavailable, "credential revocation state is unavailable", "retry after revocation synchronization")
 		}
 		if revoked {
 			result.Revoked = true

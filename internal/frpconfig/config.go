@@ -30,6 +30,7 @@ type Input struct {
 	HookPath          string
 	InternalAuthToken string
 	LogLevel          string
+	TCPMux            *bool
 }
 
 type serverConfig struct {
@@ -92,7 +93,11 @@ func Generate(input Input) ([]byte, ArtifactMetadata, error) {
 	if logLevel == "" {
 		logLevel = "error"
 	}
-	config := serverConfig{BindAddr: input.BindAddr, BindPort: input.BindPort, QUICBindPort: input.QUICBindPort, ProxyBindAddr: input.PrivateProxyAddr, VhostHTTPPort: input.VhostHTTPPort, PreserveProto: true, DisableKeepAlives: true, Auth: authConfig{Method: "token", Token: input.InternalAuthToken}, Log: logConfig{To: "console", Level: logLevel, DisablePrintColor: true}, WebServer: webConfig{Addr: "127.0.0.1", Port: 0}, Transport: transport{TCPMux: true, TCPMuxKeepaliveInterval: 30}, HTTPPlugins: []httpPlugin{{Name: "paperboat-edge", Addr: input.HookAddr, Path: input.HookPath, Ops: []string{"Login", "NewProxy", "CloseProxy", "Ping", "NewWorkConn", "NewUserConn", "CloseUserConn", "Traffic"}, TLSVerify: true}}, MaxPortsPerClient: 128, UserConnTimeout: 30}
+	tcpMux := true
+	if input.TCPMux != nil {
+		tcpMux = *input.TCPMux
+	}
+	config := serverConfig{BindAddr: input.BindAddr, BindPort: input.BindPort, QUICBindPort: input.QUICBindPort, ProxyBindAddr: input.PrivateProxyAddr, VhostHTTPPort: input.VhostHTTPPort, PreserveProto: true, DisableKeepAlives: true, Auth: authConfig{Method: "token", Token: input.InternalAuthToken}, Log: logConfig{To: "console", Level: logLevel, DisablePrintColor: true}, WebServer: webConfig{Addr: "127.0.0.1", Port: 0}, Transport: transport{TCPMux: tcpMux, TCPMuxKeepaliveInterval: 30}, HTTPPlugins: []httpPlugin{{Name: "paperboat-edge", Addr: input.HookAddr, Path: input.HookPath, Ops: []string{"Login", "NewProxy", "CloseProxy", "Ping", "NewWorkConn", "NewUserConn", "CloseUserConn", "Traffic"}, TLSVerify: true}}, MaxPortsPerClient: 128, UserConnTimeout: 30}
 	encoded, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return nil, ArtifactMetadata{}, fmt.Errorf("encode frps config: %w", err)

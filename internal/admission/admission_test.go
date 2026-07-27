@@ -96,6 +96,18 @@ func TestAdmissionRejectsBindingAndGenerationBeforeJournalMutation(t *testing.T)
 	}
 }
 
+func TestAdmissionPreservesTypedVerifierFailure(t *testing.T) {
+	now := time.Unix(100, 0).UTC()
+	service := admissionService(t, now, validClaims(now))
+	service.Verifier = verifierFunc(func(context.Context, string) (Claims, error) {
+		return Claims{}, edgeerrors.New(edgeerrors.CodeCredentialSignatureInvalid, "signature invalid", "request a fresh admission")
+	})
+	_, err := service.Admit(context.Background(), validRequest())
+	if code, _ := edgeerrors.CodeOf(err); code != edgeerrors.CodeCredentialSignatureInvalid {
+		t.Fatalf("wrong code: %s", code)
+	}
+}
+
 func TestAdmissionRejectsStaleCredentialGenerationBeforeJournalMutation(t *testing.T) {
 	now := time.Unix(100, 0).UTC()
 	claims := validClaims(now)

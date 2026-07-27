@@ -258,26 +258,32 @@ func TestRouteWorkerExposesAndClearsRefreshError(t *testing.T) {
 	source.mu.Unlock()
 	pulse <- time.Now()
 	<-source.called
-	if worker.LastError() == nil {
-		t.Fatal("refresh error not exposed")
-	}
-	if state.Snapshot().Ready {
-		t.Fatal("control failure did not clear readiness")
-	}
+	waitForRouteWorkerState(t, worker, state, true, false)
 	source.mu.Lock()
 	source.err = nil
 	source.mu.Unlock()
 	pulse <- time.Now()
 	<-source.called
-	if worker.LastError() != nil {
-		t.Fatalf("refresh error not cleared: %v", worker.LastError())
-	}
-	if !state.Snapshot().Ready {
-		t.Fatal("control recovery did not restore readiness")
-	}
+	waitForRouteWorkerState(t, worker, state, false, true)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := worker.Shutdown(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func waitForRouteWorkerState(t *testing.T, worker *RouteWorker, state *node.State, wantError, wantReady bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		err := worker.LastError()
+		ready := state.Snapshot().Ready
+		if (err != nil) == wantError && ready == wantReady {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("route worker state: error=%v ready=%t, want error=%t ready=%t", err, ready, wantError, wantReady)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
