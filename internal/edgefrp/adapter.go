@@ -63,17 +63,10 @@ func NewAdapter(admissions *admission.Service, routes *route.Registry, capacity 
 func (a *Adapter) Stats() Stats {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	now := time.Now()
-	if a.Now != nil {
-		now = a.Now()
-	}
 	stats := Stats{}
 	for _, current := range a.sessions {
 		for _, count := range current.active {
 			stats.ActiveStreams += count
-		}
-		if current.run.Resume(current.run.Value, current.run.Generation, now) != nil {
-			continue
 		}
 		stats.Sessions++
 		stats.Routes += len(current.attached)
@@ -239,11 +232,7 @@ func (a *Adapter) AuthorizeProxyRun(runID string) error {
 	if !currentRoute {
 		return route.ErrInvalid
 	}
-	now := time.Now()
-	if a.Now != nil {
-		now = a.Now()
-	}
-	return current.run.Resume(runID, current.run.Generation, now)
+	return nil
 }
 
 func (a *Adapter) AuthorizeStream(runID, proxyName, proxyType string) error {
@@ -338,9 +327,6 @@ func (a *Adapter) RouteState(host string) (string, string, string, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, current := range a.sessions {
-		if current.run.Resume(current.run.Value, current.run.Generation, a.now()) != nil {
-			continue
-		}
 		for index, handedOff := range current.routes {
 			if normalizePublicHost(handedOff.PublicHost) != normalized || !current.registered[frpProxyIdentity(current, handedOff).name] || index >= len(current.attached) || !a.Routes.Owns(current.attached[index]) {
 				continue
@@ -352,13 +338,6 @@ func (a *Adapter) RouteState(host string) (string, string, string, bool) {
 		}
 	}
 	return kind, "offline", "connector_unavailable", true
-}
-
-func (a *Adapter) now() time.Time {
-	if a.Now != nil {
-		return a.Now()
-	}
-	return time.Now()
 }
 
 func (a *Adapter) RecordTraffic(runID, proxyName, proxyType string, ingress, egress uint64) error {

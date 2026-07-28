@@ -62,9 +62,19 @@ func TestLoginAttachesOnlyAfterAdmissionAndRevokeCleansUp(t *testing.T) {
 		t.Fatalf("closed stream stats = %+v", stats)
 	}
 	adapter.Now = func() time.Time { return now.Add(2 * time.Minute) }
-	if stats := adapter.Stats(); stats.Sessions != 0 || stats.Routes != 0 {
-		t.Fatalf("expired session stats = %+v", stats)
+	if stats := adapter.Stats(); stats.Sessions != 1 || stats.Routes != 1 {
+		t.Fatalf("established session disappeared after admission expiry: %+v", stats)
 	}
+	if kind, state, reason, found := adapter.RouteState("helper.example.test"); !found || kind != "helper_https_wss" || state != "ready" || reason != "" {
+		t.Fatalf("expired admission disabled established route: kind=%q state=%q reason=%q found=%v", kind, state, reason, found)
+	}
+	if err := adapter.AuthorizeProxyRun(response.RunID.Value); err != nil {
+		t.Fatalf("expired admission disabled established work connection: %v", err)
+	}
+	if err := adapter.AuthorizeStream(response.RunID.Value, identity.name, "http"); err != nil {
+		t.Fatalf("expired admission disabled established proxy stream: %v", err)
+	}
+	adapter.CloseStream(response.RunID.Value, identity.name)
 	adapter.Now = func() time.Time { return now }
 	if err := adapter.RecordTraffic(response.RunID.Value, identity.name, "http", 10, 20); err != nil {
 		t.Fatal(err)

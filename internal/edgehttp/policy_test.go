@@ -289,6 +289,45 @@ func TestHelperAccessRequiresCredentialAndCancelsWhenRevoked(t *testing.T) {
 	<-done
 }
 
+func TestEstablishedHelperAccessSurvivesCredentialExpiry(t *testing.T) {
+	var revoked atomic.Bool
+	config := previewConfig()
+	config.HelperAccess = helperAccessFunc(func(context.Context, string) (admission.Claims, error) {
+		return admission.Claims{JTI: "jti_expiring_stream", EnvironmentID: "env_stream", ExpiresAt: time.Now().Add(5 * time.Millisecond)}, nil
+	})
+	config.Revocations = revocationFunc(func(context.Context, admission.Claims) (bool, error) { return revoked.Load(), nil })
+	config.RevocationCheckInterval = time.Millisecond
+	cancelled := make(chan struct{})
+	policy, err := New(config, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		close(cancelled)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/runtime", nil)
+	request.Host = "environment.helper.example.test"
+	request.Header.Set("Authorization", "Bearer signed-test-credential")
+	done := make(chan struct{})
+	go func() {
+		policy.ServeHTTP(httptest.NewRecorder(), request)
+		close(done)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	select {
+	case <-cancelled:
+		t.Fatal("established helper stream was cancelled at credential expiry")
+	default:
+	}
+	revoked.Store(true)
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("established helper stream was not cancelled after revocation")
+	}
+	<-done
+}
+
 func TestGatewayClosesUpgradedHelperConnectionWhenRevoked(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		connection, buffer, err := w.(http.Hijacker).Hijack()

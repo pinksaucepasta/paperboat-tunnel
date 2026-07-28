@@ -132,7 +132,7 @@ func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 		r = r.WithContext(ctx)
-		go p.cancelWhenRevoked(ctx, cancel, claims)
+		go p.cancelWhenAccessRevoked(ctx, cancel, claims)
 	}
 	p.next.ServeHTTP(w, r)
 }
@@ -156,7 +156,7 @@ func (p *Policy) authorizeHelperAccess(w http.ResponseWriter, r *http.Request) (
 	return claims, true
 }
 
-func (p *Policy) cancelWhenRevoked(ctx context.Context, cancel context.CancelFunc, claims admission.Claims) {
+func (p *Policy) cancelWhenAccessRevoked(ctx context.Context, cancel context.CancelFunc, claims admission.Claims) {
 	ticker := time.NewTicker(p.config.RevocationCheckInterval)
 	defer ticker.Stop()
 	for {
@@ -165,7 +165,7 @@ func (p *Policy) cancelWhenRevoked(ctx context.Context, cancel context.CancelFun
 			return
 		case <-ticker.C:
 			revoked, err := p.config.Revocations.Revoked(ctx, claims)
-			if err != nil || revoked || time.Now().UTC().After(claims.ExpiresAt) {
+			if err != nil || revoked {
 				cancel()
 				return
 			}
