@@ -8,18 +8,18 @@ module, or downstream-patch change. `MAINTENANCE.md` defines the procedure.
 
 | Field | Value |
 | --- | --- |
-| Release tag | `2026.07.29.3` |
-| Tunnel commit | `e6a471278370e42d12199929587a2f9019b5e570` |
-| frp upstream release | `v0.70.0` |
-| frp fork commit | `3d8e03cb1e81d7a4bb1afaec472c5649e0deac43` |
+| Release tag | `2026.07.29.5` |
+| Tunnel commit | `ed4a050064ec99428bfc0739b272b326d4b221fa` |
+| frp upstream release | `v0.70.1` |
+| frp fork commit | `f090f4a41868888d2e3b270ec6e7ad0a31d8d65e` |
 | Caddy | `v2.11.4` |
-| Caddy builder image | `caddy:2.11.4-builder` (the released Dockerfile was not digest-pinned) |
+| Caddy builder image | `caddy:2.11.4-builder@sha256:198d47eaee306d4d0c38a9960c89ff2c959aa29ad51d3e2dafa3e93ac961782a` |
 | Caddy plugins | `github.com/caddy-dns/cloudflare@v0.2.4` |
-| Runtime image | `debian:bookworm-slim` (the released Dockerfile was not digest-pinned) |
-| Rollback release | First recorded container release; use the pre-release deployment digest from operator evidence |
+| Runtime image | `debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818` |
+| Rollback release | `2026.07.29.3`; deploy its recorded immutable image digest |
 
-The production tag predates the local `paperboat_quic` Caddy module and immutable base
-image pins. That gap is closed by the next candidate and must not be reintroduced.
+The production tag includes the local `paperboat_quic` Caddy module and immutable base
+image pins. Those properties must not be reintroduced as candidate-only behavior.
 
 ## Main Candidate
 
