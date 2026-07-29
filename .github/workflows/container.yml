@@ -17,7 +17,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
       - name: Fetch frp provenance tags
-        run: git -C frp fetch --tags origin
+        run: git -C frp fetch https://github.com/fatedier/frp.git tag v0.70.1
       - name: Fetch production branch
         run: git fetch --no-tags origin main:refs/remotes/origin/main
       - name: Validate release version

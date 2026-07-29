@@ -8,7 +8,7 @@ module, or downstream-patch change. `MAINTENANCE.md` defines the procedure.
 
 | Field | Value |
 | --- | --- |
-| Release tag | `2026.07.29.2` |
+| Release tag | `2026.07.29.3` |
 | Tunnel commit | `e6a471278370e42d12199929587a2f9019b5e570` |
 | frp upstream release | `v0.70.0` |
 | frp fork commit | `3d8e03cb1e81d7a4bb1afaec472c5649e0deac43` |
