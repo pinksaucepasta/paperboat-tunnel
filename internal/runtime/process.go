@@ -22,6 +22,9 @@ type ProcessSpec struct {
 	Env            []string
 	MaxOutputBytes int64
 	StartupGrace   time.Duration
+	RestartLimit   int
+	RestartBackoff time.Duration
+	RestartMaxWait time.Duration
 }
 
 type Process struct {
@@ -36,7 +39,7 @@ type Process struct {
 }
 
 func NewProcess(spec ProcessSpec) (*Process, error) {
-	if strings.TrimSpace(spec.Name) == "" || spec.Path == "" || spec.MaxOutputBytes < 0 {
+	if strings.TrimSpace(spec.Name) == "" || spec.Path == "" || spec.MaxOutputBytes < 0 || spec.RestartLimit < 0 || spec.RestartBackoff < 0 || spec.RestartMaxWait < 0 {
 		return nil, ErrProcessInvalid
 	}
 	return &Process{spec: spec}, nil

@@ -39,7 +39,10 @@ func (d *DataPlane) Start(ctx context.Context) error {
 	if len(d.started) != 0 || d.closed {
 		return ErrProcessInvalid
 	}
-	for _, component := range []Component{d.spec.Persistence, d.spec.Control, d.spec.Node, d.spec.Routes, d.spec.Usage, d.spec.Hook, d.spec.Gateway, d.spec.FRPS, d.spec.Caddy} {
+	// Static ingress must be available before control synchronization because a
+	// single-ingress deployment can route its control origin through this Caddy.
+	// Managed routes remain non-ready until the control and route workers start.
+	for _, component := range []Component{d.spec.Persistence, d.spec.Hook, d.spec.Gateway, d.spec.FRPS, d.spec.Caddy, d.spec.Control, d.spec.Node, d.spec.Routes, d.spec.Usage} {
 		if err := component.Start(ctx); err != nil {
 			var cleanup []error
 			for i := len(d.started) - 1; i >= 0; i-- {

@@ -68,3 +68,18 @@ func TestCounterAndQueueSnapshotsRestore(t *testing.T) {
 		t.Fatalf("got = %+v", got)
 	}
 }
+
+func TestQueueCoalescesNewestAbsoluteSnapshot(t *testing.T) {
+	queue, _ := NewQueue(1, 1024)
+	key := Key{Node: "n", Epoch: "e", Environment: "env", Route: "r", Direction: "ingress"}
+	if err := queue.EnqueueLatest(Report{OperationID: "old", Key: key, Bytes: 10, Payload: []byte("old")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.EnqueueLatest(Report{OperationID: "new", Key: key, Bytes: 20, Payload: []byte("new")}); err != nil {
+		t.Fatal(err)
+	}
+	report, ok := queue.Next()
+	if !ok || report.OperationID != "new" || report.Bytes != 20 || string(report.Payload) != "new" {
+		t.Fatalf("report=%+v present=%v", report, ok)
+	}
+}

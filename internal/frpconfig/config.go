@@ -7,11 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"regexp"
 )
 
-const FRPCommit = "3d8e03cb1e81d7a4bb1afaec472c5649e0deac43"
-const FRPVersion = "v0.70.0"
+const FRPCommit = "d8132a31265c0b5a6df76401476854550583319a"
+const FRPVersion = "v0.70.1"
 
 var pathPattern = regexp.MustCompile(`^/[a-zA-Z0-9/_-]{16,255}$`)
 
@@ -28,6 +29,7 @@ type Input struct {
 	VhostHTTPPort     int
 	HookAddr          string
 	HookPath          string
+	StreamBrokerPath  string
 	InternalAuthToken string
 	LogLevel          string
 	TCPMux            *bool
@@ -41,7 +43,7 @@ type serverConfig struct {
 	ProxyBindAddr     string       `json:"proxyBindAddr"`
 	VhostHTTPPort     int          `json:"vhostHTTPPort"`
 	PreserveProto     bool         `json:"vhostHTTPPreserveXForwardedProto"`
-	DisableKeepAlives bool         `json:"vhostHTTPDisableKeepAlives"`
+	StreamBrokerPath  string       `json:"paperboatStreamBrokerPath"`
 	VhostHTTPSPort    int          `json:"vhostHTTPSPort"`
 	TCPMuxHTTPPort    int          `json:"tcpmuxHTTPConnectPort"`
 	EnablePrometheus  bool         `json:"enablePrometheus"`
@@ -97,7 +99,7 @@ func Generate(input Input) ([]byte, ArtifactMetadata, error) {
 	if input.TCPMux != nil {
 		tcpMux = *input.TCPMux
 	}
-	config := serverConfig{BindAddr: input.BindAddr, BindPort: input.BindPort, QUICBindPort: input.QUICBindPort, ProxyBindAddr: input.PrivateProxyAddr, VhostHTTPPort: input.VhostHTTPPort, PreserveProto: true, DisableKeepAlives: true, Auth: authConfig{Method: "token", Token: input.InternalAuthToken}, Log: logConfig{To: "console", Level: logLevel, DisablePrintColor: true}, WebServer: webConfig{Addr: "127.0.0.1", Port: 0}, Transport: transport{TCPMux: tcpMux, TCPMuxKeepaliveInterval: 30}, HTTPPlugins: []httpPlugin{{Name: "paperboat-edge", Addr: input.HookAddr, Path: input.HookPath, Ops: []string{"Login", "NewProxy", "CloseProxy", "Ping", "NewWorkConn", "NewUserConn", "CloseUserConn", "Traffic"}, TLSVerify: true}}, MaxPortsPerClient: 128, UserConnTimeout: 30}
+	config := serverConfig{BindAddr: input.BindAddr, BindPort: input.BindPort, QUICBindPort: input.QUICBindPort, ProxyBindAddr: input.PrivateProxyAddr, VhostHTTPPort: input.VhostHTTPPort, PreserveProto: true, StreamBrokerPath: input.StreamBrokerPath, Auth: authConfig{Method: "token", Token: input.InternalAuthToken}, Log: logConfig{To: "console", Level: logLevel, DisablePrintColor: true}, WebServer: webConfig{Addr: "127.0.0.1", Port: 0}, Transport: transport{TCPMux: tcpMux, TCPMuxKeepaliveInterval: 30}, HTTPPlugins: []httpPlugin{{Name: "paperboat-edge", Addr: input.HookAddr, Path: input.HookPath, Ops: []string{"Login", "NewProxy", "CloseProxy", "Ping", "NewWorkConn", "NewUserConn", "CloseUserConn", "Traffic"}, TLSVerify: true}}, MaxPortsPerClient: 128, UserConnTimeout: 30}
 	encoded, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return nil, ArtifactMetadata{}, fmt.Errorf("encode frps config: %w", err)
@@ -108,7 +110,7 @@ func Generate(input Input) ([]byte, ArtifactMetadata, error) {
 }
 
 func validate(input Input) error {
-	if !validPort(input.BindPort) || !validPort(input.QUICBindPort) || !validPort(input.VhostHTTPPort) || input.BindAddr == "" || input.PrivateProxyAddr == "" || input.HookAddr == "" || !pathPattern.MatchString(input.HookPath) || len(input.InternalAuthToken) < 32 || input.LogLevel != "" && input.LogLevel != "error" && input.LogLevel != "warn" && input.LogLevel != "info" {
+	if !validPort(input.BindPort) || !validPort(input.QUICBindPort) || !validPort(input.VhostHTTPPort) || input.BindAddr == "" || input.PrivateProxyAddr == "" || input.HookAddr == "" || !pathPattern.MatchString(input.HookPath) || !filepath.IsAbs(input.StreamBrokerPath) || len(input.StreamBrokerPath) > 100 || len(input.InternalAuthToken) < 32 || input.LogLevel != "" && input.LogLevel != "error" && input.LogLevel != "warn" && input.LogLevel != "info" {
 		return ErrInvalid
 	}
 	if err := validateBind(input.BindAddr); err != nil {

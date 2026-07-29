@@ -30,8 +30,8 @@ type Assembly struct {
 	dataPlane *DataPlane
 	Hook      *HTTPServer
 	Gateway   *HTTPServer
-	FRPS      *Process
-	Caddy     *Process
+	FRPS      *SupervisedProcess
+	Caddy     *SupervisedProcess
 	done      chan error
 }
 
@@ -56,11 +56,11 @@ func NewAssembly(spec AssemblySpec) (*Assembly, error) {
 	if err != nil {
 		return nil, fmt.Errorf("assembly gateway: %w", err)
 	}
-	frps, err := NewProcess(spec.Bundle.FRPSProcess)
+	frps, err := NewSupervisedProcess(spec.Bundle.FRPSProcess)
 	if err != nil {
 		return nil, fmt.Errorf("assembly frps: %w", err)
 	}
-	caddy, err := NewProcess(spec.Bundle.CaddyProcess)
+	caddy, err := NewSupervisedProcess(spec.Bundle.CaddyProcess)
 	if err != nil {
 		return nil, fmt.Errorf("assembly Caddy: %w", err)
 	}
@@ -93,7 +93,7 @@ func (a *Assembly) Start(ctx context.Context) error {
 	return nil
 }
 
-func (a *Assembly) watchChild(name string, process *Process) {
+func (a *Assembly) watchChild(name string, process *SupervisedProcess) {
 	<-process.Done()
 	err := process.Err()
 	if err == nil {

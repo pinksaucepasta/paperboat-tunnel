@@ -45,7 +45,7 @@ func TestDataPlaneOrdersStartupAndAccountingSafeShutdown(t *testing.T) {
 	if err := dataPlane.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"start:store", "start:control", "start:node", "start:routes", "start:usage", "start:hook", "start:gateway", "start:frps", "start:caddy", "stop:caddy", "stop:frps", "stop:gateway", "stop:routes", "stop:usage", "stop:node", "stop:hook", "stop:control", "stop:store"}
+	want := []string{"start:store", "start:hook", "start:gateway", "start:frps", "start:caddy", "start:control", "start:node", "start:routes", "start:usage", "stop:caddy", "stop:frps", "stop:gateway", "stop:routes", "stop:usage", "stop:node", "stop:hook", "stop:control", "stop:store"}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v", events)
 	}
@@ -57,11 +57,11 @@ func TestDataPlaneCleansPartialStartupInReverse(t *testing.T) {
 	component := func(name string, fail bool) Component {
 		return orderedComponent{name: name, events: &events, mu: &mu, fail: fail}
 	}
-	dataPlane, _ := NewDataPlane(DataPlaneSpec{Persistence: component("store", false), Control: component("control", false), Node: component("node", false), Routes: component("routes", false), Hook: component("hook", true), Gateway: component("gateway", false), FRPS: component("frps", false), Caddy: component("caddy", false), Usage: component("usage", false)})
+	dataPlane, _ := NewDataPlane(DataPlaneSpec{Persistence: component("store", false), Control: component("control", false), Node: component("node", false), Routes: component("routes", false), Hook: component("hook", false), Gateway: component("gateway", false), FRPS: component("frps", false), Caddy: component("caddy", true), Usage: component("usage", false)})
 	if err := dataPlane.Start(context.Background()); err == nil {
 		t.Fatal("partial startup succeeded")
 	}
-	want := []string{"start:store", "start:control", "start:node", "start:routes", "start:usage", "start:hook", "stop:usage", "stop:routes", "stop:node", "stop:control", "stop:store"}
+	want := []string{"start:store", "start:hook", "start:gateway", "start:frps", "start:caddy", "stop:frps", "stop:gateway", "stop:hook", "stop:store"}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v", events)
 	}

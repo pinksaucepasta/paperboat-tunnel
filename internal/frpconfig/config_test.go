@@ -11,7 +11,7 @@ import (
 )
 
 func validInput() Input {
-	return Input{BindAddr: "0.0.0.0", BindPort: 7000, QUICBindPort: 7001, PrivateProxyAddr: "127.0.0.1", VhostHTTPPort: 8080, HookAddr: "127.0.0.1:19000", HookPath: "/paperboat/hook/0123456789abcdef", InternalAuthToken: "internal-token-012345678901234567890123456789"}
+	return Input{BindAddr: "0.0.0.0", BindPort: 7000, QUICBindPort: 7001, PrivateProxyAddr: "127.0.0.1", VhostHTTPPort: 8080, HookAddr: "127.0.0.1:19000", HookPath: "/paperboat/hook/0123456789abcdef", StreamBrokerPath: "/run/paperboat/frps-stream.sock", InternalAuthToken: "internal-token-012345678901234567890123456789"}
 }
 
 func TestGenerateIsDeterministicAndRestrictive(t *testing.T) {
@@ -33,8 +33,16 @@ func TestGenerateIsDeterministicAndRestrictive(t *testing.T) {
 	if decoded["vhostHTTPPreserveXForwardedProto"] != true {
 		t.Fatalf("trusted public scheme is not preserved: %s", first)
 	}
-	if decoded["vhostHTTPDisableKeepAlives"] != true {
-		t.Fatalf("stale HTTP work connections can be reused: %s", first)
+	if decoded["paperboatStreamBrokerPath"] != "/run/paperboat/frps-stream.sock" {
+		t.Fatalf("private stream broker is not configured: %s", first)
+	}
+	if _, present := decoded["vhostHTTPDisableKeepAlives"]; present {
+		t.Fatalf("global keepalive disabling is configured: %s", first)
+	}
+	plugins := decoded["httpPlugins"].([]any)
+	ops := plugins[0].(map[string]any)["ops"].([]any)
+	if ops[len(ops)-1] != "Traffic" {
+		t.Fatalf("asynchronous traffic reporting is not configured: %s", first)
 	}
 	logConfig, ok := decoded["log"].(map[string]any)
 	if !ok || logConfig["to"] != "console" || logConfig["level"] != "error" || logConfig["disablePrintColor"] != true {

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -28,43 +29,49 @@ type Key struct {
 }
 
 type Counters struct {
-	mu     sync.Mutex
-	values map[Key]uint64
+	values sync.Map
 }
+
+type atomicCounter struct{ value atomic.Uint64 }
 
 type CounterRecord struct {
 	Key   Key    `json:"key"`
 	Bytes uint64 `json:"bytes"`
 }
 
-func NewCounters() *Counters { return &Counters{values: make(map[Key]uint64)} }
+func NewCounters() *Counters { return &Counters{} }
 
 // Add records bytes observed at the edge. Counters never decrease.
 func (c *Counters) Add(k Key, bytes uint64) uint64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.values[k] += bytes
-	return c.values[k]
+	value, _ := c.values.LoadOrStore(k, &atomicCounter{})
+	return value.(*atomicCounter).value.Add(bytes)
 }
 
 func (c *Counters) Observe(k Key, absolute uint64) uint64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if absolute > c.values[k] {
-		c.values[k] = absolute
+	value, _ := c.values.LoadOrStore(k, &atomicCounter{})
+	counter := value.(*atomicCounter)
+	for current := counter.value.Load(); absolute > current; current = counter.value.Load() {
+		if counter.value.CompareAndSwap(current, absolute) {
+			return absolute
+		}
 	}
-	return c.values[k]
+	return counter.value.Load()
 }
 
-func (c *Counters) Get(k Key) uint64 { c.mu.Lock(); defer c.mu.Unlock(); return c.values[k] }
+func (c *Counters) Get(k Key) uint64 {
+	value, ok := c.values.Load(k)
+	if !ok {
+		return 0
+	}
+	return value.(*atomicCounter).value.Load()
+}
 
 func (c *Counters) Snapshot() []CounterRecord {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	result := make([]CounterRecord, 0, len(c.values))
-	for key, bytes := range c.values {
-		result = append(result, CounterRecord{Key: key, Bytes: bytes})
-	}
+	result := make([]CounterRecord, 0)
+	c.values.Range(func(key, value any) bool {
+		result = append(result, CounterRecord{Key: key.(Key), Bytes: value.(*atomicCounter).value.Load()})
+		return true
+	})
 	return result
 }
 
@@ -74,23 +81,24 @@ func RestoreCounters(records []CounterRecord) *Counters {
 		if record.Key.Node == "" || record.Key.Epoch == "" || record.Key.Environment == "" || record.Key.Route == "" || (record.Key.Direction != "ingress" && record.Key.Direction != "egress") {
 			continue
 		}
-		if record.Bytes > counters.values[record.Key] {
-			counters.values[record.Key] = record.Bytes
-		}
+		counters.Observe(record.Key, record.Bytes)
 	}
 	return counters
 }
 
 // Reconcile applies an absolute observation and returns the newly observed delta.
 func (c *Counters) Reconcile(k Key, absolute uint64) (delta uint64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if absolute <= c.values[k] {
-		return 0
+	value, _ := c.values.LoadOrStore(k, &atomicCounter{})
+	counter := value.(*atomicCounter)
+	for {
+		current := counter.value.Load()
+		if absolute <= current {
+			return 0
+		}
+		if counter.value.CompareAndSwap(current, absolute) {
+			return absolute - current
+		}
 	}
-	delta = absolute - c.values[k]
-	c.values[k] = absolute
-	return delta
 }
 
 type Report struct {
@@ -140,6 +148,47 @@ func (q *Queue) Enqueue(report Report) error {
 			return nil
 		}
 		return ErrQueueFull
+	}
+	if len(q.pending) >= q.maxReports || q.bytes+len(report.Payload) > q.maxBytes {
+		return ErrQueueFull
+	}
+	report.Payload = append([]byte(nil), report.Payload...)
+	q.pending[report.OperationID] = report
+	q.order = append(q.order, report.OperationID)
+	q.bytes += len(report.Payload)
+	return nil
+}
+
+// EnqueueLatest coalesces one absolute snapshot per usage key. A newer
+// absolute replaces the pending report without growing the bounded queue.
+func (q *Queue) EnqueueLatest(report Report) error {
+	if report.OperationID == "" || len(report.Payload) == 0 {
+		return ErrQueueFull
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for id, current := range q.pending {
+		if current.Key != report.Key {
+			continue
+		}
+		if report.Bytes <= current.Bytes {
+			return nil
+		}
+		newBytes := q.bytes - len(current.Payload) + len(report.Payload)
+		if newBytes > q.maxBytes {
+			return ErrQueueFull
+		}
+		delete(q.pending, id)
+		report.Payload = append([]byte(nil), report.Payload...)
+		q.pending[report.OperationID] = report
+		q.bytes = newBytes
+		for index, ordered := range q.order {
+			if ordered == id {
+				q.order[index] = report.OperationID
+				break
+			}
+		}
+		return nil
 	}
 	if len(q.pending) >= q.maxReports || q.bytes+len(report.Payload) > q.maxBytes {
 		return ErrQueueFull

@@ -48,26 +48,13 @@ func (m *Meter) Record(environment, route string, revision uint64, ingress, egre
 	if m == nil || m.Node == "" || m.Epoch == "" || environment == "" || route == "" || revision == 0 || m.Counters == nil || m.Queue == nil || m.KeyID == "" || len(m.PrivateKey) != ed25519.PrivateKeySize || m.Persist == nil {
 		return ErrMeterInvalid
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.start == nil {
-		m.start = make(map[Key]time.Time)
+	if ingress != 0 {
+		m.Counters.Add(Key{Node: m.Node, Epoch: m.Epoch, Environment: environment, Route: route, Revision: revision, Direction: "ingress"}, ingress)
 	}
-	now := time.Now().UTC()
-	if m.Now != nil {
-		now = m.Now().UTC()
+	if egress != 0 {
+		m.Counters.Add(Key{Node: m.Node, Epoch: m.Epoch, Environment: environment, Route: route, Revision: revision, Direction: "egress"}, egress)
 	}
-	for direction, delta := range map[string]uint64{"ingress": ingress, "egress": egress} {
-		if delta == 0 {
-			continue
-		}
-		key := Key{Node: m.Node, Epoch: m.Epoch, Environment: environment, Route: route, Revision: revision, Direction: direction}
-		m.Counters.Add(key, delta)
-		if m.start[key].IsZero() {
-			m.start[key] = now
-		}
-	}
-	return m.Persist()
+	return nil
 }
 
 func (m *Meter) Flush() error {
@@ -87,7 +74,7 @@ func (m *Meter) Flush() error {
 		now = m.Now().UTC()
 	}
 	for _, record := range m.Counters.Snapshot() {
-		if record.Bytes == 0 || record.Bytes <= m.last[record.Key] || m.Queue.HasKey(record.Key) {
+		if record.Bytes == 0 || record.Bytes <= m.last[record.Key] {
 			continue
 		}
 		start := m.start[record.Key]
@@ -99,7 +86,7 @@ func (m *Meter) Flush() error {
 		if err != nil {
 			return err
 		}
-		if err := m.Queue.Enqueue(report); err != nil {
+		if err := m.Queue.EnqueueLatest(report); err != nil {
 			return err
 		}
 		m.last[record.Key] = record.Bytes

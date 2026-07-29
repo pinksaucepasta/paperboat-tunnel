@@ -81,8 +81,8 @@ func PrepareBundle(spec BundleSpec) (Bundle, error) {
 		return Bundle{}, err
 	}
 	return Bundle{FRPSConfigPath: frpsPath, CaddyConfigPath: caddyPath, FRPSMetadata: metadata, CaddyMetadata: CaddyArtifactMetadata{Version: caddyconfig.CaddyVersion, Commit: caddyconfig.CaddyCommit, LinuxAMD64SHA256: caddyconfig.CaddyLinuxAMD64SHA256, LinuxARM64SHA256: caddyconfig.CaddyLinuxARM64SHA256, MacARM64SHA256: caddyconfig.CaddyMacARM64SHA256},
-		FRPSProcess:  ProcessSpec{Name: "frps", Path: spec.FRPSBinary, Args: []string{"--config", frpsPath}, Env: os.Environ(), MaxOutputBytes: spec.MaxOutputBytes, StartupGrace: 500 * time.Millisecond},
-		CaddyProcess: ProcessSpec{Name: "caddy", Path: spec.CaddyBinary, Args: []string{"run", "--config", caddyPath}, Env: environmentWith(os.Environ(), map[string]string{"XDG_DATA_HOME": caddyDataDirectory, "XDG_CONFIG_HOME": caddyConfigDirectory}), MaxOutputBytes: spec.MaxOutputBytes, StartupGrace: 500 * time.Millisecond}}, nil
+		FRPSProcess:  ProcessSpec{Name: "frps", Path: spec.FRPSBinary, Args: []string{"--config", frpsPath}, Env: os.Environ(), MaxOutputBytes: spec.MaxOutputBytes, StartupGrace: 500 * time.Millisecond, RestartLimit: 3, RestartBackoff: 250 * time.Millisecond, RestartMaxWait: 2 * time.Second},
+		CaddyProcess: ProcessSpec{Name: "caddy", Path: spec.CaddyBinary, Args: []string{"run", "--config", caddyPath}, Env: environmentWith(os.Environ(), map[string]string{"XDG_DATA_HOME": caddyDataDirectory, "XDG_CONFIG_HOME": caddyConfigDirectory}), MaxOutputBytes: spec.MaxOutputBytes, StartupGrace: 500 * time.Millisecond, RestartLimit: 3, RestartBackoff: 250 * time.Millisecond, RestartMaxWait: 2 * time.Second}}, nil
 }
 
 func environmentWith(current []string, values map[string]string) []string {

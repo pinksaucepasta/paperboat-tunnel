@@ -17,13 +17,13 @@ func TestMeterQueuesSignedAbsoluteReportsAndPersists(t *testing.T) {
 	if err := meter.Record("env", "route", 2, 5, 0); err != nil {
 		t.Fatal(err)
 	}
-	if persisted != 2 || queue.Len() != 0 {
+	if persisted != 0 || queue.Len() != 0 {
 		t.Fatalf("persisted=%d queued=%d", persisted, queue.Len())
 	}
 	if err := meter.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	if persisted != 3 || queue.Len() != 2 {
+	if persisted != 1 || queue.Len() != 2 {
 		t.Fatalf("persisted=%d queued=%d", persisted, queue.Len())
 	}
 	for queue.Len() > 0 {

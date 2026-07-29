@@ -76,11 +76,19 @@ func TestProcessHelper(t *testing.T) {
 	if os.Getenv("PAPERBOAT_PROCESS_HELPER") != "1" {
 		return
 	}
-	if len(os.Args) == 0 || os.Args[len(os.Args)-1] != "ignore" {
+	mode := os.Args[len(os.Args)-1]
+	if mode == "ignore" {
 		signal.Ignore(syscall.SIGTERM)
 	}
-	if len(os.Args) > 0 && os.Args[len(os.Args)-1] == "graceful" {
+	if mode == "graceful" || mode == "exit" {
 		return
+	}
+	if mode == "recover" {
+		marker := os.Getenv("PAPERBOAT_RECOVERY_MARKER")
+		if _, err := os.Stat(marker); err != nil {
+			_ = os.WriteFile(marker, []byte("started"), 0600)
+			return
+		}
 	}
 	select {}
 }

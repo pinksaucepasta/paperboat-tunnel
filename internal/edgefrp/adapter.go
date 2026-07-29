@@ -43,7 +43,9 @@ type session struct {
 	routes      []admission.Route
 	active      map[string]uint32
 	registered  map[string]bool
+	traffic     map[string][2]uint64
 	operationID string
+	retired     bool
 }
 
 type Stats struct {
@@ -64,13 +66,17 @@ func (a *Adapter) Stats() Stats {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	stats := Stats{}
+	routes := make(map[string]struct{})
 	for _, current := range a.sessions {
 		for _, count := range current.active {
 			stats.ActiveStreams += count
 		}
 		stats.Sessions++
-		stats.Routes += len(current.attached)
+		for _, attached := range current.attached {
+			routes[attached.ID] = struct{}{}
+		}
 	}
+	stats.Routes = len(routes)
 	return stats
 }
 
@@ -107,11 +113,26 @@ func (a *Adapter) Login(ctx context.Context, request admission.Request) (admissi
 		a.mu.Unlock()
 		return admission.Response{}, err
 	}
-	// Credential refresh intentionally overlaps the old and new FRP controls.
-	// Unique physical proxy names share one strictly authorized HTTP group; the
-	// old run remains tracked until its drain callbacks arrive.
-	a.sessions[response.RunID.Value] = session{run: response.RunID, environment: response.Environment, helper: response.Helper, attached: attached, routes: append([]admission.Route(nil), response.Routes...), active: make(map[string]uint32), registered: make(map[string]bool), operationID: request.OperationID}
+	// Credential refresh overlaps old and new controls only while an old stream
+	// is active. Idle retired runs are removed here because frp does not
+	// guarantee a later CloseProxy callback after control replacement.
+	a.sessions[response.RunID.Value] = session{run: response.RunID, environment: response.Environment, helper: response.Helper, attached: attached, routes: append([]admission.Route(nil), response.Routes...), active: make(map[string]uint32), registered: make(map[string]bool), traffic: make(map[string][2]uint64), operationID: request.OperationID}
+	var retiredAttachments []route.Attachment
+	for _, runID := range replaced {
+		current := a.sessions[runID]
+		current.retired = true
+		if !sessionHasActiveStreams(current) {
+			delete(a.sessions, runID)
+			current.run.Revoked = true
+			retiredAttachments = append(retiredAttachments, current.attached...)
+			continue
+		}
+		a.sessions[runID] = current
+	}
 	a.mu.Unlock()
+	for _, retired := range retiredAttachments {
+		a.detachUnlessShared(retired)
+	}
 	return response, nil
 }
 
@@ -147,6 +168,7 @@ func (a *Adapter) Resume(ctx context.Context, request admission.Request, priorRu
 	current.run = replacement
 	current.active = make(map[string]uint32)
 	current.registered = make(map[string]bool)
+	current.traffic = make(map[string][2]uint64)
 	a.sessions[replacement.Value] = current
 	response.RunID = replacement
 	return response, nil
@@ -219,7 +241,7 @@ func (a *Adapter) AuthorizeProxyRun(runID string) error {
 	a.mu.Lock()
 	current, ok := a.sessions[runID]
 	a.mu.Unlock()
-	if !ok {
+	if !ok || current.retired {
 		return route.ErrInvalid
 	}
 	currentRoute := false
@@ -230,6 +252,18 @@ func (a *Adapter) AuthorizeProxyRun(runID string) error {
 		}
 	}
 	if !currentRoute {
+		return route.ErrInvalid
+	}
+	return nil
+}
+
+// AuthorizeHeartbeat keeps a retired control alive only while established
+// streams still belong to it. New work remains fenced by AuthorizeProxyRun.
+func (a *Adapter) AuthorizeHeartbeat(runID string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	current, ok := a.sessions[runID]
+	if !ok || current.retired && !sessionHasActiveStreams(current) {
 		return route.ErrInvalid
 	}
 	return nil
@@ -268,16 +302,35 @@ func (a *Adapter) AuthorizeStream(runID, proxyName, proxyType string) error {
 
 func (a *Adapter) CloseStream(runID, proxyName string) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	current, ok := a.sessions[runID]
 	if !ok || current.active[proxyName] == 0 {
+		a.mu.Unlock()
 		return
 	}
 	current.active[proxyName]--
 	if current.active[proxyName] == 0 {
 		delete(current.active, proxyName)
 	}
+	if current.retired && !sessionHasActiveStreams(current) {
+		delete(a.sessions, runID)
+		current.run.Revoked = true
+		a.mu.Unlock()
+		for _, attached := range current.attached {
+			a.detachUnlessShared(attached)
+		}
+		return
+	}
 	a.sessions[runID] = current
+	a.mu.Unlock()
+}
+
+func sessionHasActiveStreams(current session) bool {
+	for _, count := range current.active {
+		if count > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Adapter) CloseProxy(runID, proxyName string) {
@@ -301,7 +354,7 @@ func (a *Adapter) CloseProxy(runID, proxyName string) {
 		}
 	}
 	current.routes, current.attached = keptRoutes, keptAttachments
-	if len(current.routes) == 0 {
+	if len(current.routes) == 0 && (!current.retired || !sessionHasActiveStreams(current)) {
 		// FRP sends CloseProxy when a helper drains its client. Do not retain an
 		// empty generation: stale sessions otherwise consume capacity and make a
 		// subsequent resume appear as route drift.
@@ -354,6 +407,43 @@ func (a *Adapter) RecordTraffic(runID, proxyName, proxyType string, ingress, egr
 		if frpProxyIdentity(current, handedOff).name == proxyName {
 			return a.Traffic.Record(current.routesEnvironment(), handedOff.RouteID, handedOff.Revision, ingress, egress)
 		}
+	}
+	return route.ErrInvalid
+}
+
+// RecordTrafficSnapshot accepts cumulative counters from one frps proxy
+// generation. Repeated or reordered snapshots are idempotent.
+func (a *Adapter) RecordTrafficSnapshot(runID, proxyName, proxyType string, ingress, egress uint64) error {
+	if a.Traffic == nil || proxyType != "http" {
+		return route.ErrInvalid
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	current, ok := a.sessions[runID]
+	if !ok {
+		return route.ErrInvalid
+	}
+	for _, handedOff := range current.routes {
+		if frpProxyIdentity(current, handedOff).name != proxyName {
+			continue
+		}
+		previous := current.traffic[proxyName]
+		if ingress < previous[0] || egress < previous[1] {
+			return route.ErrInvalid
+		}
+		deltaIngress, deltaEgress := ingress-previous[0], egress-previous[1]
+		if deltaIngress == 0 && deltaEgress == 0 {
+			return nil
+		}
+		if err := a.Traffic.Record(current.routesEnvironment(), handedOff.RouteID, handedOff.Revision, deltaIngress, deltaEgress); err != nil {
+			return err
+		}
+		if current.traffic == nil {
+			current.traffic = make(map[string][2]uint64)
+		}
+		current.traffic[proxyName] = [2]uint64{ingress, egress}
+		a.sessions[runID] = current
+		return nil
 	}
 	return route.ErrInvalid
 }

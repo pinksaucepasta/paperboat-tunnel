@@ -2,18 +2,22 @@ ARG GO_VERSION=1.25.7
 ARG CADDY_VERSION=2.11.4
 ARG PAPERBOAT_VERSION
 
-FROM golang:${GO_VERSION}-bookworm AS go-build
+FROM golang:${GO_VERSION}-bookworm@sha256:564e366a28ad1d70f460a2b97d1d299a562f08707eb0ecb24b659e5bd6c108e1 AS go-build
 ARG PAPERBOAT_VERSION
 WORKDIR /src
 COPY . .
 RUN printf '%s\n' "${PAPERBOAT_VERSION}" | grep -Eq '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.(0|[1-9][0-9]*)$' \
-  && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/paperboat-tunnel ./cmd/paperboat-tunnel
-RUN cd frp && CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags='-s -w' -tags='frps,noweb' -o /out/frps ./cmd/frps
+  && CGO_ENABLED=0 go build -p=2 -trimpath -ldflags='-s -w' -o /out/paperboat-tunnel ./cmd/paperboat-tunnel
+RUN cd frp && CGO_ENABLED=0 go build -p=2 -trimpath -buildvcs=false -ldflags='-s -w' -tags='frps,noweb' -o /out/frps ./cmd/frps
 
-FROM caddy:${CADDY_VERSION}-builder AS caddy-build
-RUN xcaddy build --with github.com/caddy-dns/cloudflare@v0.2.4
+FROM caddy:${CADDY_VERSION}-builder@sha256:198d47eaee306d4d0c38a9960c89ff2c959aa29ad51d3e2dafa3e93ac961782a AS caddy-build
+WORKDIR /src
+COPY caddymodules/paperboatquic ./caddymodules/paperboatquic
+RUN xcaddy build \
+  --with github.com/caddy-dns/cloudflare@v0.2.4 \
+  --with github.com/pinksaucepasta/paperboat-tunnel/caddymodules/paperboatquic=./caddymodules/paperboatquic
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
 ARG PAPERBOAT_VERSION
 LABEL org.opencontainers.image.version="${PAPERBOAT_VERSION}"
 RUN apt-get update \
@@ -22,7 +26,7 @@ RUN apt-get update \
   && useradd --system --home /var/lib/paperboat-tunnel --create-home paperboat-tunnel
 COPY --from=go-build /out/paperboat-tunnel /usr/local/bin/paperboat-tunnel
 COPY --from=go-build /out/frps /usr/local/bin/frps
-COPY --from=caddy-build /usr/bin/caddy /usr/local/bin/caddy
+COPY --from=caddy-build /src/caddy /usr/local/bin/caddy
 RUN install -d -o paperboat-tunnel -g paperboat-tunnel /var/lib/paperboat-tunnel/runtime /var/lib/paperboat-tunnel/state
 USER paperboat-tunnel
 ENTRYPOINT ["/usr/bin/tini", "--", "paperboat-tunnel"]

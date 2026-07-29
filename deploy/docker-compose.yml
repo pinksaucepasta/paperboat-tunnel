@@ -14,8 +14,10 @@ services:
       - -state-path
       - /var/lib/paperboat-tunnel/state/state.json
     ports:
+      - "80:80/tcp"
       - "443:443/tcp"
-      - "26022:26022/tcp"
+      - "443:443/udp"
+      - "26023:26023/tcp"
       - "26023:26023/udp"
     volumes:
       - ./deployment.json:/etc/paperboat-tunnel/deployment.json:ro
@@ -27,7 +29,6 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-
 volumes:
   tunnel-runtime:
   tunnel-state:

@@ -146,12 +146,26 @@ func (p Policy) Handle(ctx context.Context, op string, content json.RawMessage) 
 			return nil, err
 		}
 		return content, nil
-	case "NewWorkConn", "Ping":
+	case "NewWorkConn":
 		var event runContent
 		if err := json.Unmarshal(content, &event); err != nil {
 			return nil, route.ErrInvalid
 		}
 		if err := p.Adapter.AuthorizeProxyRun(event.User.RunID); err != nil {
+			return nil, err
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(content, &raw); err != nil {
+			return nil, route.ErrInvalid
+		}
+		raw["privilege_key"] = internalAuthKey(p.InternalAuthToken, event.Timestamp)
+		return json.Marshal(raw)
+	case "Ping":
+		var event runContent
+		if err := json.Unmarshal(content, &event); err != nil {
+			return nil, route.ErrInvalid
+		}
+		if err := p.Adapter.AuthorizeHeartbeat(event.User.RunID); err != nil {
 			return nil, err
 		}
 		var raw map[string]any
@@ -188,7 +202,7 @@ func (p Policy) Handle(ctx context.Context, op string, content json.RawMessage) 
 		if err := json.Unmarshal(content, &event); err != nil {
 			return nil, route.ErrInvalid
 		}
-		if err := p.Adapter.RecordTraffic(event.User.RunID, event.ProxyName, event.ProxyType, event.TrafficIn, event.TrafficOut); err != nil {
+		if err := p.Adapter.RecordTrafficSnapshot(event.User.RunID, event.ProxyName, event.ProxyType, event.TrafficIn, event.TrafficOut); err != nil {
 			return nil, err
 		}
 		return content, nil
@@ -272,7 +286,7 @@ func NewInternalAuthToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(value[:]), nil
 }
 
-// frp v0.70.0 requires this legacy digest for its built-in verifier. It only
+// frp v0.70.1 requires this legacy digest for its built-in verifier. It only
 // authenticates the private plugin-to-frps bridge; Paperboat admission remains
 // the authoritative Ed25519 decision.
 func internalAuthKey(token string, timestamp int64) string {

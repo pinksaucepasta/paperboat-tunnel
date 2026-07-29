@@ -2,16 +2,23 @@ GO_VERSION := 1.25.7
 GO := GOTOOLCHAIN=local go
 GOFMT := $(shell GOTOOLCHAIN=local go env GOROOT 2>/dev/null)/bin/gofmt
 FRP_DIR := frp
-FRP_VERSION := v0.70.0
-FRP_COMMIT := 3d8e03cb1e81d7a4bb1afaec472c5649e0deac43
+CADDY_MODULE_DIR := caddymodules/paperboatquic
+FRP_VERSION := v0.70.1
+FRP_COMMIT := f090f4a41868888d2e3b270ec6e7ad0a31d8d65e
 FRP_TAGS := noweb
 BUILD_FLAGS := -trimpath -buildvcs=false
 OWNED_GO_FILES := $(shell find . -path ./frp -prune -o -name '*.go' -print)
 
-.PHONY: build check clean contracts fmt fmt-check generate race submodule-check test tidy verify-toolchain vet
+.PHONY: build caddy-module-test check clean contracts fmt fmt-check generate maintenance-check race release-check submodule-check test tidy verify-toolchain vet
 
 contracts:
 	@./testdata/contracts/validate.sh
+
+maintenance-check:
+	@./tools/verify-repository-state.sh development
+
+release-check:
+	@./tools/verify-repository-state.sh release
 
 verify-toolchain:
 	@test "$$(GOTOOLCHAIN=local go env GOVERSION)" = "go$(GO_VERSION)" || { echo "required Go $(GO_VERSION), found $$(GOTOOLCHAIN=local go env GOVERSION)" >&2; exit 1; }
@@ -44,6 +51,9 @@ test: submodule-check
 	$(GO) test ./...
 	cd $(FRP_DIR) && $(GO) test -tags "$(FRP_TAGS)" ./assets/... ./cmd/... ./client/... ./server/... ./pkg/...
 
+caddy-module-test:
+	cd $(CADDY_MODULE_DIR) && $(GO) test ./...
+
 race: submodule-check
 	$(GO) test -race ./...
 	cd $(FRP_DIR) && $(GO) test -race -tags "$(FRP_TAGS)" ./assets/... ./cmd/... ./client/... ./server/... ./pkg/...
@@ -51,7 +61,7 @@ race: submodule-check
 tidy:
 	$(GO) mod tidy
 
-check: verify-toolchain contracts submodule-check fmt-check vet test build
+check: maintenance-check verify-toolchain contracts submodule-check fmt-check vet test caddy-module-test build
 
 clean:
 	rm -rf bin dist coverage.out

@@ -34,7 +34,8 @@ func TestLoginAttachesOnlyAfterAdmissionAndRevokeCleansUp(t *testing.T) {
 	if attached, ok := registry.Get("rte_1"); !ok || attached.Target != "127.0.0.1:8080" {
 		t.Fatal("route was not attached")
 	}
-	if _, err := adapter.Login(context.Background(), request); err != nil {
+	_, err = adapter.Login(context.Background(), request)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if kind, state, _, found := adapter.RouteState("helper.example.test"); !found || kind != "helper_https_wss" || state != "offline" {
@@ -82,6 +83,21 @@ func TestLoginAttachesOnlyAfterAdmissionAndRevokeCleansUp(t *testing.T) {
 	if recorder.environment != "env_test_01" || recorder.route != "rte_1" || recorder.revision != 1 || recorder.ingress != 10 || recorder.egress != 20 {
 		t.Fatalf("traffic = %+v", recorder)
 	}
+	if err := adapter.RecordTrafficSnapshot(response.RunID.Value, identity.name, "http", 15, 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.RecordTrafficSnapshot(response.RunID.Value, identity.name, "http", 15, 25); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.calls != 2 || recorder.ingress != 15 || recorder.egress != 25 {
+		t.Fatalf("duplicate snapshot was not idempotent: %+v", recorder)
+	}
+	if err := adapter.RecordTrafficSnapshot(response.RunID.Value, identity.name, "http", 18, 29); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.calls != 3 || recorder.ingress != 3 || recorder.egress != 4 {
+		t.Fatalf("snapshot delta = %+v", recorder)
+	}
 	if err := registry.Replace(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -124,6 +140,13 @@ func TestLoginRefreshOverlapsRunsForAtomicFRPReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	firstIdentity := frpProxyIdentity(adapter.sessions[first.RunID.Value], request.Routes[0])
+	if err := adapter.AuthorizeProxy(first.RunID.Value, firstIdentity.name, "http", request.Routes[0].PublicHost, firstIdentity.group, firstIdentity.groupKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.AuthorizeStream(first.RunID.Value, firstIdentity.name, "http"); err != nil {
+		t.Fatal(err)
+	}
 	service.NewRunID = func(_ uint64, _ time.Time) (admission.RunID, error) {
 		return admission.RunID{Value: "run_2", Generation: 3, ExpiresAt: now.Add(5 * time.Minute)}, nil
 	}
@@ -136,10 +159,9 @@ func TestLoginRefreshOverlapsRunsForAtomicFRPReplacement(t *testing.T) {
 	if second.RunID.Value == first.RunID.Value {
 		t.Fatalf("refresh reused run ID: first=%q second=%q", first.RunID.Value, second.RunID.Value)
 	}
-	if stats := adapter.Stats(); stats.Sessions != 2 || stats.Routes != 2 {
+	if stats := adapter.Stats(); stats.Sessions != 2 || stats.Routes != 1 || stats.ActiveStreams != 1 {
 		t.Fatalf("replacement stats = %+v", stats)
 	}
-	firstIdentity := frpProxyIdentity(adapter.sessions[first.RunID.Value], request.Routes[0])
 	secondIdentity := frpProxyIdentity(adapter.sessions[second.RunID.Value], request.Routes[0])
 	if firstIdentity.name == secondIdentity.name || firstIdentity.group != secondIdentity.group || firstIdentity.groupKey != secondIdentity.groupKey {
 		t.Fatalf("replacement identities: first=%+v second=%+v", firstIdentity, secondIdentity)
@@ -147,11 +169,40 @@ func TestLoginRefreshOverlapsRunsForAtomicFRPReplacement(t *testing.T) {
 	if err := adapter.AuthorizeProxy(second.RunID.Value, secondIdentity.name, "http", request.Routes[0].PublicHost, secondIdentity.group, secondIdentity.groupKey); err != nil {
 		t.Fatal(err)
 	}
+	if err := adapter.AuthorizeHeartbeat(first.RunID.Value); err != nil {
+		t.Fatalf("retired heartbeat rejected with active stream: %v", err)
+	}
+	if err := adapter.AuthorizeProxyRun(first.RunID.Value); err == nil {
+		t.Fatal("retired run accepted new work")
+	}
+	adapter.CloseProxy(first.RunID.Value, firstIdentity.name)
+	if stats := adapter.Stats(); stats.Sessions != 2 || stats.ActiveStreams != 1 {
+		t.Fatalf("proxy retirement closed active stream: %+v", stats)
+	}
+	adapter.CloseStream(first.RunID.Value, firstIdentity.name)
+	if stats := adapter.Stats(); stats.Sessions != 1 || stats.ActiveStreams != 0 {
+		t.Fatalf("drained replacement stats = %+v", stats)
+	}
+	if err := adapter.AuthorizeHeartbeat(first.RunID.Value); err == nil {
+		t.Fatal("idle retired heartbeat remained authorized")
+	}
+	service.NewRunID = func(_ uint64, _ time.Time) (admission.RunID, error) {
+		return admission.RunID{Value: "run_3", Generation: 3, ExpiresAt: now.Add(5 * time.Minute)}, nil
+	}
+	request.OperationID = "op_admit_0003"
+	request.Credential = "jti_admit_0003"
+	third, err := adapter.Login(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats := adapter.Stats(); stats.Sessions != 1 {
+		t.Fatalf("idle replacement stats = %+v", stats)
+	}
 	adapter.CloseProxy(first.RunID.Value, firstIdentity.name)
 	if _, ok := registry.Get(request.Routes[0].RouteID); !ok {
 		t.Fatal("retired proxy detached the replacement route")
 	}
-	if err := adapter.AuthorizeProxyRun(second.RunID.Value); err != nil {
+	if err := adapter.AuthorizeProxyRun(third.RunID.Value); err != nil {
 		t.Fatalf("replacement run authorization: %v", err)
 	}
 }
@@ -223,9 +274,11 @@ type trafficRecorder struct {
 	environment, route string
 	revision           uint64
 	ingress, egress    uint64
+	calls              int
 }
 
 func (r *trafficRecorder) Record(environment, route string, revision uint64, ingress, egress uint64) error {
+	r.calls++
 	r.environment, r.route, r.revision, r.ingress, r.egress = environment, route, revision, ingress, egress
 	return nil
 }

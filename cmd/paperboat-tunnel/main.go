@@ -147,8 +147,8 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	}
 	bundle, err := edgeruntime.PrepareBundle(edgeruntime.BundleSpec{
 		Directory: filepath.Join(deployment.RuntimeDirectory, "config"), FRPSBinary: deployment.FRPSBinary, CaddyBinary: deployment.CaddyBinary, FRPSSHA256: deployment.FRPSSHA256, CaddySHA256: deployment.CaddySHA256, MaxOutputBytes: 1 << 20,
-		FRPS:  frpconfig.Input{BindAddr: deployment.ConnectorBindAddress, BindPort: deployment.ConnectorTCPPort, QUICBindPort: deployment.ConnectorQUICPort, PrivateProxyAddr: vhostHost, VhostHTTPPort: vhostPort, HookAddr: deployment.HookAddress, HookPath: deployment.HookPath, InternalAuthToken: internalToken, LogLevel: deployment.FRPSLogLevel, TCPMux: deployment.ConnectorTCPMux},
-		Caddy: caddyconfig.Input{PreviewBaseDomain: deployment.PreviewBaseDomain, HelperBaseDomain: deployment.HelperBaseDomain, PrivateUpstream: deployment.EdgeGatewayAddress, ListenAddress: deployment.CaddyListenAddress, AdminAddress: deployment.CaddyAdminAddress, TrustedProxies: deployment.TrustedProxyCIDRs, IssuerModule: deployment.CertificateIssuer, DNSProvider: deployment.CertificateDNSProvider},
+		FRPS:  frpconfig.Input{BindAddr: deployment.ConnectorBindAddress, BindPort: deployment.ConnectorTCPPort, QUICBindPort: deployment.ConnectorQUICPort, PrivateProxyAddr: vhostHost, VhostHTTPPort: vhostPort, HookAddr: deployment.HookAddress, HookPath: deployment.HookPath, StreamBrokerPath: filepath.Join(deployment.RuntimeDirectory, "config", "frps-stream.sock"), InternalAuthToken: internalToken, LogLevel: deployment.FRPSLogLevel, TCPMux: deployment.ConnectorTCPMux},
+		Caddy: caddyconfig.Input{PreviewBaseDomain: deployment.PreviewBaseDomain, HelperBaseDomain: deployment.HelperBaseDomain, PrivateUpstream: deployment.EdgeGatewayAddress, ListenAddress: deployment.CaddyListenAddress, HTTPListenAddress: deployment.CaddyHTTPListenAddress, AdminAddress: deployment.CaddyAdminAddress, TrustedProxies: deployment.TrustedProxyCIDRs, IssuerModule: deployment.CertificateIssuer, DNSProvider: deployment.CertificateDNSProvider, CertificateAskURL: "http://" + deployment.EdgeGatewayAddress + "/private/certificate-ask", StreamBrokerPath: filepath.Join(deployment.RuntimeDirectory, "config", "frps-stream.sock"), PublicRoutes: publicCaddyRoutes(deployment.PublicRoutes)},
 	})
 	if err != nil {
 		return nil, err
@@ -156,8 +156,12 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	persistence := edgeruntime.Persistence{Path: cfg.StatePath, Restore: func(store.State) error { return nil }, Snapshot: snapshotState}
 	nodeWorker := &edgeruntime.NodeWorker{Manager: manager, Sink: client, Registration: control.NodeRegistration{NodeID: cfg.NodeID, EdgePool: cfg.EdgePool, Artifact: bundle.FRPSMetadata.FRPVersion + "+" + bundle.CaddyMetadata.Version, Protocol: "1.0", ProcessEpoch: processEpoch, Capacity: deployment.NodeCapacity, Endpoint: control.ConnectorEndpoint{Host: deployment.ConnectorAdvertiseHost, TCPPort: uint16(deployment.ConnectorTCPPort), QUICPort: uint16(deployment.ConnectorQUICPort)}}, Interval: deployment.ControlInterval}
 	routeWorker := &edgeruntime.RouteWorker{Registry: routes, Source: client, Observer: client, State: state, NodeID: cfg.NodeID, Interval: deployment.ControlInterval}
-	usageWorker := &edgeruntime.UsageWorker{Queue: queue, Sink: client, Prepare: meter, Persist: meter.Persist, Interval: deployment.UsageInterval}
+	usageWorker := &edgeruntime.UsageWorker{Queue: queue, Sink: client, Prepare: meter, Persist: meter.Persist, Interval: 250 * time.Millisecond}
 	metrics := observability.NewMetrics()
+	tlsProbeHost := "probe." + deployment.PreviewBaseDomain
+	if len(deployment.PublicRoutes) > 0 {
+		tlsProbeHost = deployment.PublicRoutes[0].Host
+	}
 	controlDependency := &edgeruntime.ControlDependency{Source: client, TrustSource: client, ApplyTrust: trust.Snapshot.ReplaceRevocations, NodeID: cfg.NodeID, Interval: deployment.ControlInterval}
 	trusted, err := edgehttp.ParseTrustedProxies(append(deployment.TrustedProxyCIDRs, "127.0.0.1/32"))
 	if err != nil {
@@ -167,7 +171,8 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	if err != nil {
 		return nil, fmt.Errorf("create edge gateway: %w", err)
 	}
-	assembly, err := edgeruntime.NewAssembly(edgeruntime.AssemblySpec{Persistence: persistence, Control: controlDependency, Node: nodeWorker, Routes: routeWorker, Usage: usageWorker, HookAddress: deployment.HookAddress, GatewayAddress: deployment.EdgeGatewayAddress, GatewayHandler: gateway, HookPath: deployment.HookPath, Policy: edgefrp.Policy{Adapter: adapter, Resolver: edgefrp.MetadataResolver{}, InternalAuthToken: internalToken}, HookReject: func(operation, reason string) {
+	gatewayHandler := edgehttp.WithCertificateAsk(gateway, adapter)
+	assembly, err := edgeruntime.NewAssembly(edgeruntime.AssemblySpec{Persistence: persistence, Control: controlDependency, Node: nodeWorker, Routes: routeWorker, Usage: usageWorker, HookAddress: deployment.HookAddress, GatewayAddress: deployment.EdgeGatewayAddress, GatewayHandler: gatewayHandler, HookPath: deployment.HookPath, Policy: edgefrp.Policy{Adapter: adapter, Resolver: edgefrp.MetadataResolver{}, InternalAuthToken: internalToken}, HookReject: func(operation, reason string) {
 		log.Printf("frp hook rejected operation=%s reason=%s", operation, reason)
 	}, HookObserve: func(operation string, rejected bool) {
 		if !rejected && (operation == "Login" || operation == "NewProxy") {
@@ -200,7 +205,7 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 		FRPRunning:    assembly.FRPS.Running,
 		CaddyRunning:  assembly.Caddy.Running,
 		CaddyTLS: func() (time.Time, error) {
-			return probeCaddyTLS(deployment.CaddyListenAddress, "*."+deployment.PreviewBaseDomain)
+			return probeCaddyTLS(deployment.CaddyListenAddress, tlsProbeHost)
 		},
 		Events:  metrics.Snapshot,
 		Traffic: counters.Snapshot,
@@ -215,8 +220,15 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	return service, nil
 }
 
-func probeCaddyTLS(address, wildcard string) (time.Time, error) {
-	serverName := "probe." + strings.TrimPrefix(wildcard, "*.")
+func publicCaddyRoutes(routes []config.PublicRoute) []caddyconfig.PublicRoute {
+	result := make([]caddyconfig.PublicRoute, len(routes))
+	for index, route := range routes {
+		result[index] = caddyconfig.PublicRoute{Host: route.Host, PathPrefix: route.PathPrefix, StripPrefix: route.StripPrefix, Upstream: route.Upstream}
+	}
+	return result
+}
+
+func probeCaddyTLS(address, serverName string) (time.Time, error) {
 	dialer := &net.Dialer{Timeout: time.Second}
 	// The owned Caddy uses a private issuer. Verify its hostname and validity
 	// explicitly while leaving chain trust to the private deployment boundary.

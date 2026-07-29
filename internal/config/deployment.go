@@ -44,6 +44,7 @@ type Deployment struct {
 	PrivateVhostAddress          string        `json:"private_vhost_address"`
 	EdgeGatewayAddress           string        `json:"edge_gateway_address"`
 	CaddyListenAddress           string        `json:"caddy_listen_address"`
+	CaddyHTTPListenAddress       string        `json:"caddy_http_listen_address"`
 	CaddyAdminAddress            string        `json:"caddy_admin_address"`
 	PreviewBaseDomain            string        `json:"preview_base_domain"`
 	HelperBaseDomain             string        `json:"helper_base_domain"`
@@ -51,10 +52,18 @@ type Deployment struct {
 	CertificateIssuer            string        `json:"certificate_issuer"`
 	CertificateDNSProvider       string        `json:"certificate_dns_provider,omitempty"`
 	CertificateDNSCredentialFile string        `json:"certificate_dns_credential_file,omitempty"`
+	PublicRoutes                 []PublicRoute `json:"public_routes,omitempty"`
 	NodeCapacity                 uint32        `json:"node_capacity"`
 	ControlInterval              time.Duration `json:"control_interval"`
 	UsageInterval                time.Duration `json:"usage_interval"`
 	ControlTimeout               time.Duration `json:"control_timeout"`
+}
+
+type PublicRoute struct {
+	Host        string `json:"host"`
+	PathPrefix  string `json:"path_prefix,omitempty"`
+	StripPrefix bool   `json:"strip_prefix,omitempty"`
+	Upstream    string `json:"upstream"`
 }
 
 func LoadDeployment(path string) (Deployment, error) {
@@ -141,7 +150,7 @@ func (d Deployment) validate() error {
 	if d.HookPath == "" || !strings.HasPrefix(d.HookPath, "/") || len(d.HookPath) > 256 {
 		return errors.New("hook_path is invalid")
 	}
-	if net.ParseIP(d.ConnectorBindAddress) == nil || d.ConnectorTCPPort < 1 || d.ConnectorTCPPort > 65535 || d.ConnectorQUICPort < 1 || d.ConnectorQUICPort > 65535 || d.ConnectorTCPPort == d.ConnectorQUICPort {
+	if net.ParseIP(d.ConnectorBindAddress) == nil || d.ConnectorTCPPort < 1 || d.ConnectorTCPPort > 65535 || d.ConnectorQUICPort < 1 || d.ConnectorQUICPort > 65535 {
 		return errors.New("connector listener configuration is invalid")
 	}
 	if d.ConnectorAdvertiseHost == "" || len(d.ConnectorAdvertiseHost) > 253 || strings.ContainsAny(d.ConnectorAdvertiseHost, "/:@") {
@@ -149,6 +158,9 @@ func (d Deployment) validate() error {
 	}
 	if _, _, err := net.SplitHostPort(d.CaddyListenAddress); err != nil {
 		return errors.New("Caddy listener is invalid")
+	}
+	if _, _, err := net.SplitHostPort(d.CaddyHTTPListenAddress); err != nil || d.CaddyHTTPListenAddress == d.CaddyListenAddress {
+		return errors.New("Caddy HTTP listener is invalid")
 	}
 	for _, domain := range []string{d.PreviewBaseDomain, d.HelperBaseDomain} {
 		if !routeBaseDomainPattern.MatchString(domain) || net.ParseIP(domain) != nil {
@@ -163,6 +175,26 @@ func (d Deployment) validate() error {
 			return errors.New("trusted proxy CIDR is invalid")
 		}
 	}
+	seenPublicHosts := make(map[string]struct{}, len(d.PublicRoutes))
+	for _, route := range d.PublicRoutes {
+		if route.Host != strings.ToLower(route.Host) || !routeBaseDomainPattern.MatchString(route.Host) || net.ParseIP(route.Host) != nil || strings.HasSuffix(route.Host, "."+d.PreviewBaseDomain) || strings.HasSuffix(route.Host, "."+d.HelperBaseDomain) {
+			return errors.New("public route host is invalid or overlaps managed routes")
+		}
+		key := route.Host + "\x00" + route.PathPrefix
+		if _, exists := seenPublicHosts[key]; exists {
+			return errors.New("public route is duplicated")
+		}
+		seenPublicHosts[key] = struct{}{}
+		if err := privateRouteEndpoint(route.Upstream); err != nil {
+			return errors.New("public route upstream must use a private address or service name")
+		}
+		if route.PathPrefix != "" && (!strings.HasPrefix(route.PathPrefix, "/") || strings.Contains(route.PathPrefix, "..") || strings.ContainsAny(route.PathPrefix, "?#")) {
+			return errors.New("public route path prefix is invalid")
+		}
+		if route.StripPrefix && route.PathPrefix == "" {
+			return errors.New("public route cannot strip an empty prefix")
+		}
+	}
 	if d.CertificateIssuer == "" || (d.CertificateDNSProvider != "" && (d.CertificateIssuer != "acme" || d.CertificateDNSCredentialFile == "")) || d.NodeCapacity == 0 || d.NodeCapacity > 10000 || d.ControlInterval <= 0 || d.ControlInterval > time.Minute || d.UsageInterval <= 0 || d.UsageInterval > time.Minute || d.ControlTimeout <= 0 || d.ControlTimeout > 30*time.Second {
 		return errors.New("deployment bounds are invalid")
 	}
@@ -174,6 +206,20 @@ func privateEndpoint(address string) error {
 	ip := net.ParseIP(host)
 	if err != nil || ip == nil || (!ip.IsLoopback() && !ip.IsPrivate()) || port == "" || port == "0" {
 		return errors.New("private endpoint must use a fixed loopback or private address")
+	}
+	return nil
+}
+
+func privateRouteEndpoint(address string) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || port == "" || port == "0" {
+		return errors.New("private route endpoint is invalid")
+	}
+	if net.ParseIP(host) != nil {
+		return privateEndpoint(address)
+	}
+	if !regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`).MatchString(host) {
+		return errors.New("private route service name is invalid")
 	}
 	return nil
 }

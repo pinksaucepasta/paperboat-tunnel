@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -62,6 +63,45 @@ func TestAssemblyOwnsHookAndChildProcesses(t *testing.T) {
 func TestAssemblyRejectsIncompletePolicyAndBundle(t *testing.T) {
 	if _, err := NewAssembly(AssemblySpec{}); err == nil {
 		t.Fatal("incomplete assembly accepted")
+	}
+}
+
+func TestAssemblySurfacesExhaustedChildRestart(t *testing.T) {
+	address := freeLoopbackAddress(t)
+	var events []string
+	var lock sync.Mutex
+	component := func(name string) Component { return orderedComponent{name: name, events: &events, mu: &lock} }
+	exiting := ProcessSpec{Name: "frps", Path: "/bin/sh", Args: []string{"-c", "exit 1"}, MaxOutputBytes: 1024, RestartLimit: 1, RestartBackoff: time.Millisecond, RestartMaxWait: time.Millisecond}
+	running := ProcessSpec{Name: "caddy", Path: "/bin/sh", Args: []string{"-c", "trap 'exit 0' TERM; while :; do sleep 1; done"}, MaxOutputBytes: 1024}
+	adapter := edgefrp.NewAdapter(&admission.Service{}, route.NewRegistry("preview.example.test", "example.test"))
+	assembly, err := NewAssembly(AssemblySpec{
+		Persistence: component("store"), Control: component("control"), Node: component("node"), Routes: component("routes"), Usage: component("usage"),
+		HookAddress: address, GatewayAddress: "127.0.0.1:19092", GatewayHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), HookPath: "/private/paperboat-hook",
+		Policy: edgefrp.Policy{Adapter: adapter, Resolver: loginResolverFunc(func(context.Context, edgefrp.LoginContent) (admission.Request, error) {
+			return admission.Request{}, nil
+		}), InternalAuthToken: "01234567890123456789012345678901"},
+		Bundle: Bundle{FRPSProcess: exiting, CaddyProcess: running},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assembly.Hook.listen = func(_, _ string) (net.Listener, error) { return newBlockingListener(), nil }
+	assembly.Gateway.listen = func(_, _ string) (net.Listener, error) { return newBlockingListener(), nil }
+	if err := assembly.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-assembly.Done():
+		if err == nil || !strings.Contains(err.Error(), "frps") {
+			t.Fatalf("unexpected assembly error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("assembly did not surface exhausted child restart")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := assembly.Shutdown(ctx); err != nil {
+		t.Fatal(err)
 	}
 }
 
