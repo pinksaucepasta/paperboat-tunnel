@@ -167,7 +167,7 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	if err != nil {
 		return nil, fmt.Errorf("parse edge trusted proxies: %w", err)
 	}
-	gateway, err := edgehttp.NewGateway(edgehttp.Config{PreviewBaseDomain: deployment.PreviewBaseDomain, HelperBaseDomain: deployment.HelperBaseDomain, TrustedProxies: trusted, MaxHeaderBytes: 32 << 10, MaxBodyBytes: 20 << 20, Readiness: adapter, HelperAccess: verifier, Revocations: trust.Snapshot, RevocationCheckInterval: deployment.ControlInterval}, deployment.PrivateVhostAddress)
+	gateway, err := edgehttp.NewGateway(edgehttp.Config{PreviewBaseDomain: deployment.PreviewBaseDomain, HelperBaseDomain: deployment.HelperBaseDomain, TrustedProxies: trusted, MaxHeaderBytes: 32 << 10, MaxBodyBytes: 50 << 20, Readiness: adapter, HelperAccess: verifier, Revocations: trust.Snapshot, RevocationCheckInterval: deployment.ControlInterval}, deployment.PrivateVhostAddress)
 	if err != nil {
 		return nil, fmt.Errorf("create edge gateway: %w", err)
 	}

@@ -67,6 +67,9 @@ hashes above are navigation aids. When an upstream release replaces any behavior
   managed certificate state and HTTP server ownership.
 - Owned Caddy configuration applies Paperboat route authorization, public preview safety
   headers, trusted proxy behavior, streaming, and bounded transport policy.
+- The public HTTP server enables HTTP/3 alongside HTTP/2 for resumable file-transfer
+  streaming; edge policy authorizes the complete `/v1/file-transfers` resource tree and
+  preserves Range, ETag, PATCH, offset, cancellation, and operation headers without buffering.
 - The module is source-built into Caddy with xcaddy; there is no separate Caddy fork.
 
 ### Compatibility And Rollback

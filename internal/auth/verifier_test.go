@@ -61,6 +61,37 @@ func TestVerifierAcceptsExactHelperAccessCredential(t *testing.T) {
 	if _, err := verifier.VerifyHelperAccess(context.Background(), tokenFor(t, private, "key-1", nil)); err == nil {
 		t.Fatal("connector credential accepted as helper access")
 	}
+	fileToken := tokenFor(t, private, "key-1", func(claims map[string]any) {
+		claims["aud"] = "paperboat-helper"
+		claims["credential_class"] = "file_transfer"
+		claims["scope"] = []string{"file:transfer"}
+		claims["user_id"] = "usr_1"
+		claims["cli_client_session_id"] = "acs_1"
+		claims["session_id"] = "pts_1"
+		delete(claims, "helper_id")
+		delete(claims, "connector_generation")
+		delete(claims, "edge_pool")
+		delete(claims, "edge_node_id")
+	})
+	claims, err = verifier.VerifyHelperAccess(context.Background(), fileToken)
+	if err != nil || claims.CredentialClass != "file_transfer" || len(claims.Scopes) != 1 || claims.Scopes[0] != "file:transfer" {
+		t.Fatalf("file claims=%+v err=%v", claims, err)
+	}
+	wrongScope := tokenFor(t, private, "key-1", func(claims map[string]any) {
+		claims["aud"] = "paperboat-helper"
+		claims["credential_class"] = "file_transfer"
+		claims["scope"] = []string{"file:stage"}
+		claims["user_id"] = "usr_1"
+		claims["cli_client_session_id"] = "acs_1"
+		claims["session_id"] = "pts_1"
+		delete(claims, "helper_id")
+		delete(claims, "connector_generation")
+		delete(claims, "edge_pool")
+		delete(claims, "edge_node_id")
+	})
+	if _, err := verifier.VerifyHelperAccess(context.Background(), wrongScope); err == nil {
+		t.Fatal("retired file:stage scope accepted")
+	}
 }
 
 func TestVerifierRejectsMalformedWrongKeySignatureAndClaims(t *testing.T) {

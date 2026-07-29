@@ -56,7 +56,7 @@ func TestGenerateCaddyPolicy(t *testing.T) {
 	}
 	server := servers["paperboat_public"].(map[string]any)
 	protocols := server["protocols"].([]any)
-	if len(protocols) != 2 || protocols[0] != "h1" || protocols[1] != "h2" {
+	if len(protocols) != 3 || protocols[0] != "h1" || protocols[1] != "h2" || protocols[2] != "h3" {
 		t.Fatalf("normal HTTP server protocols = %v", protocols)
 	}
 	if server["trusted_proxies_strict"].(float64) != 1 {

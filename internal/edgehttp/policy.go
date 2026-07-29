@@ -124,6 +124,10 @@ func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if expectedKind == "helper_https_wss" && !helperPublicPath(r.URL.Path) {
+		http.NotFound(w, r)
+		return
+	}
 	if expectedKind == "helper_https_wss" && helperAccessPath(r.URL.Path) {
 		claims, ok := p.authorizeHelperAccess(w, r)
 		if !ok {
@@ -135,6 +139,10 @@ func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		go p.cancelWhenAccessRevoked(ctx, cancel, claims)
 	}
 	p.next.ServeHTTP(w, r)
+}
+
+func helperPublicPath(path string) bool {
+	return path == "/healthz" || helperAccessPath(path)
 }
 
 func (p *Policy) authorizeHelperAccess(w http.ResponseWriter, r *http.Request) (admission.Claims, bool) {
@@ -174,7 +182,7 @@ func (p *Policy) cancelWhenAccessRevoked(ctx context.Context, cancel context.Can
 }
 
 func helperAccessPath(path string) bool {
-	return path == "/v1/runtime" || path == "/v1/uploads"
+	return path == "/v1/runtime" || path == "/v1/file-transfers" || strings.HasPrefix(path, "/v1/file-transfers/")
 }
 
 func closeRetryableWebSocket(w http.ResponseWriter, r *http.Request) bool {

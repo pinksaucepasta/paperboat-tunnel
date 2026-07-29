@@ -57,7 +57,7 @@ type claims struct {
 }
 
 // VerifyHelperAccess verifies the signed credential carried by public helper
-// runtime and upload requests. The helper still enforces the complete operation
+// runtime and file-transfer requests. The helper still enforces the complete operation
 // policy; the edge verifies enough binding to terminate revoked streams.
 func (v *Verifier) VerifyHelperAccess(ctx context.Context, token string) (admission.Claims, error) {
 	if v == nil || v.Keys == nil || v.Issuer == "" || len(token) == 0 || len(token) > maxCredentialBytes || v.ClockSkew < 0 || v.ClockSkew > time.Minute {
@@ -75,8 +75,8 @@ func (v *Verifier) VerifyHelperAccess(ctx context.Context, token string) (admiss
 	switch parsed.CredentialClass {
 	case "terminal_operation":
 		wantScope = "terminal:operate"
-	case "file_stage":
-		wantScope = "file:stage"
+	case "file_transfer":
+		wantScope = "file:transfer"
 	default:
 		return admission.Claims{}, invalid()
 	}

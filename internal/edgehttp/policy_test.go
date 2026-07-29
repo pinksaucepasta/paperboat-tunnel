@@ -209,40 +209,64 @@ func TestPreservesRequestAndSanitizesHeaders(t *testing.T) {
 	}
 }
 
-func TestHelperRoutePreservesOnlyOperationHeaders(t *testing.T) {
-	var seen http.Header
+func TestRetiredUploadRouteIsRejectedBeforeUpstream(t *testing.T) {
+	seen := false
 	policy := policyFor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen = r.Header.Clone()
+		seen = true
 		w.WriteHeader(http.StatusCreated)
 	}))
 	request := httptest.NewRequest(http.MethodPost, "/v1/uploads", strings.NewReader("payload"))
 	request.Host = "environment.helper.example.test"
-	request.Header.Set("Authorization", "Bearer signed-test-credential")
-	request.Header.Set("X-Paperboat-Request-ID", "req_1")
-	request.Header.Set("X-Paperboat-Operation-ID", "upload_1")
-	request.Header.Set("X-Paperboat-Deadline-Ms", "30000")
-	request.Header.Set("X-Paperboat-File-Name", "image.png")
-	request.Header.Set("X-Paperboat-File-Mime", "image/png")
-	request.Header.Set("X-Paperboat-File-Size", "7")
-	request.Header.Set("X-Paperboat-File-Sha256", strings.Repeat("a", 64))
-	request.Header.Set("X-Paperboat-Environment", "spoofed")
 	recorder := httptest.NewRecorder()
 	policy.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("status = %d", recorder.Code)
+	if recorder.Code != http.StatusNotFound || seen {
+		t.Fatalf("status=%d upstream_seen=%t", recorder.Code, seen)
 	}
-	for name, want := range map[string]string{
-		"X-Paperboat-Request-ID": "req_1", "X-Paperboat-Operation-ID": "upload_1",
-		"X-Paperboat-Deadline-Ms": "30000", "X-Paperboat-File-Name": "image.png",
-		"X-Paperboat-File-Mime": "image/png", "X-Paperboat-File-Size": "7",
-		"X-Paperboat-File-Sha256": strings.Repeat("a", 64),
-	} {
-		if got := seen.Get(name); got != want {
-			t.Fatalf("%s = %q, want %q", name, got, want)
+}
+
+func TestFileTransferRoutesRequireAccessAndPreserveResumeHeaders(t *testing.T) {
+	var seen *http.Request
+	config := previewConfig()
+	config.HelperAccess = helperAccessFunc(func(_ context.Context, token string) (admission.Claims, error) {
+		if token != "signed-test-credential" {
+			return admission.Claims{}, errors.New("invalid")
+		}
+		return admission.Claims{JTI: "jti_transfer", EnvironmentID: "env_1", ExpiresAt: time.Now().Add(time.Minute)}, nil
+	})
+	config.Revocations = revocationFunc(func(context.Context, admission.Claims) (bool, error) { return false, nil })
+	config.RevocationCheckInterval = time.Second
+	policy, err := New(config, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Clone(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPatch, "/v1/file-transfers/ft_1/content", strings.NewReader("chunk"))
+	request.Host = "environment.helper.example.test"
+	request.Header.Set("Authorization", "Bearer signed-test-credential")
+	request.Header.Set("Content-Type", "application/offset+octet-stream")
+	request.Header.Set("Upload-Offset", "17")
+	request.Header.Set("If-Match", `"sha256:abc"`)
+	request.Header.Set("Range", "bytes=17-")
+	request.Header.Set("X-Paperboat-Request-ID", "req_transfer")
+	request.Header.Set("X-Paperboat-Operation-ID", "op_transfer")
+	recorder := httptest.NewRecorder()
+	policy.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent || seen == nil {
+		t.Fatalf("status=%d seen=%v", recorder.Code, seen)
+	}
+	for name, want := range map[string]string{"Content-Type": "application/offset+octet-stream", "Upload-Offset": "17", "If-Match": `"sha256:abc"`, "Range": "bytes=17-", "X-Paperboat-Request-ID": "req_transfer", "X-Paperboat-Operation-ID": "op_transfer"} {
+		if got := seen.Header.Get(name); got != want {
+			t.Fatalf("%s=%q want=%q", name, got, want)
 		}
 	}
-	if got := seen.Get("X-Paperboat-Environment"); got != "" {
-		t.Fatalf("private header retained: %q", got)
+	unauthorized := httptest.NewRequest(http.MethodGet, "/v1/file-transfers/pending", nil)
+	unauthorized.Host = request.Host
+	recorder = httptest.NewRecorder()
+	policy.ServeHTTP(recorder, unauthorized)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d", recorder.Code)
 	}
 }
 

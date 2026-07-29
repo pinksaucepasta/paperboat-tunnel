@@ -99,7 +99,7 @@ func Generate(input Input) ([]byte, error) {
 					},
 					"paperboat_public": map[string]any{
 						"listen":                 []string{input.ListenAddress},
-						"protocols":              []string{"h1", "h2"},
+						"protocols":              []string{"h1", "h2", "h3"},
 						"allow_0rtt":             false,
 						"automatic_https":        map[string]any{"disable_redirects": true},
 						"trusted_proxies":        map[string]any{"source": "static", "ranges": input.TrustedProxies},
