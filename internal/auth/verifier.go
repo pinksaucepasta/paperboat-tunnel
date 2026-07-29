@@ -37,23 +37,34 @@ type header struct {
 	KeyID     string `json:"kid"`
 	Type      string `json:"typ"`
 }
+type fileTransferPolicy struct {
+	Revision               string `json:"revision"`
+	MaxFileBytes           int64  `json:"max_file_bytes"`
+	MaxBatchFiles          int    `json:"max_batch_files"`
+	MaxBatchBytes          int64  `json:"max_batch_bytes"`
+	MaxConcurrentTransfers int    `json:"max_concurrent_transfers"`
+	RetentionSeconds       int64  `json:"retention_seconds"`
+	DeliveryTimeoutSeconds int64  `json:"delivery_timeout_seconds"`
+	MaxPendingSpoolBytes   int64  `json:"max_pending_spool_bytes"`
+}
 type claims struct {
-	Issuer              string   `json:"iss"`
-	Audience            string   `json:"aud"`
-	Subject             string   `json:"sub"`
-	JTI                 string   `json:"jti"`
-	IssuedAt            int64    `json:"iat"`
-	Expires             int64    `json:"exp"`
-	Scope               []string `json:"scope"`
-	CredentialClass     string   `json:"credential_class"`
-	EnvironmentID       string   `json:"environment_id"`
-	HelperID            string   `json:"helper_id"`
-	ConnectorGeneration uint64   `json:"connector_generation"`
-	EdgePool            string   `json:"edge_pool"`
-	EdgeNodeID          string   `json:"edge_node_id"`
-	UserID              string   `json:"user_id"`
-	CLIClientSessionID  string   `json:"cli_client_session_id"`
-	SessionID           string   `json:"session_id"`
+	Issuer              string              `json:"iss"`
+	Audience            string              `json:"aud"`
+	Subject             string              `json:"sub"`
+	JTI                 string              `json:"jti"`
+	IssuedAt            int64               `json:"iat"`
+	Expires             int64               `json:"exp"`
+	Scope               []string            `json:"scope"`
+	CredentialClass     string              `json:"credential_class"`
+	EnvironmentID       string              `json:"environment_id"`
+	HelperID            string              `json:"helper_id"`
+	ConnectorGeneration uint64              `json:"connector_generation"`
+	EdgePool            string              `json:"edge_pool"`
+	EdgeNodeID          string              `json:"edge_node_id"`
+	FileTransferPolicy  *fileTransferPolicy `json:"file_transfer_policy"`
+	UserID              string              `json:"user_id"`
+	CLIClientSessionID  string              `json:"cli_client_session_id"`
+	SessionID           string              `json:"session_id"`
 }
 
 // VerifyHelperAccess verifies the signed credential carried by public helper
@@ -165,7 +176,7 @@ func (v *Verifier) Verify(ctx context.Context, token string) (admission.Claims, 
 	if v.Now != nil {
 		now = v.Now().UTC()
 	}
-	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-edge" || parsed.Subject == "" || parsed.JTI == "" || parsed.CredentialClass != "connector_admission" || len(parsed.Scope) != 1 || parsed.Scope[0] != "connector:admit" || parsed.EnvironmentID == "" || parsed.HelperID == "" || parsed.ConnectorGeneration == 0 || parsed.EdgePool == "" || parsed.EdgeNodeID == "" || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 {
+	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-edge" || parsed.Subject == "" || parsed.JTI == "" || parsed.CredentialClass != "connector_admission" || len(parsed.Scope) != 1 || parsed.Scope[0] != "connector:admit" || parsed.EnvironmentID == "" || parsed.HelperID == "" || parsed.ConnectorGeneration == 0 || parsed.EdgePool == "" || parsed.EdgeNodeID == "" || !validFileTransferPolicy(parsed.FileTransferPolicy) || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 {
 		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeBindingInvalid, "credential claims are invalid", "request a fresh admission")
 	}
 	if time.Unix(parsed.IssuedAt, 0).After(now.Add(v.ClockSkew)) {
@@ -185,6 +196,10 @@ func (v *Verifier) Verify(ctx context.Context, token string) (admission.Claims, 
 		}
 	}
 	return result, nil
+}
+
+func validFileTransferPolicy(policy *fileTransferPolicy) bool {
+	return policy != nil && policy.Revision != "" && policy.MaxFileBytes > 0 && policy.MaxFileBytes <= 50<<20 && policy.MaxBatchFiles > 0 && policy.MaxBatchFiles <= 10 && policy.MaxBatchBytes >= policy.MaxFileBytes && policy.MaxBatchBytes <= 500<<20 && policy.MaxConcurrentTransfers > 0 && policy.MaxConcurrentTransfers <= 2 && policy.RetentionSeconds > 0 && policy.DeliveryTimeoutSeconds > 0 && policy.MaxPendingSpoolBytes >= policy.MaxBatchBytes
 }
 
 func strictJSON(data []byte, target any) error {

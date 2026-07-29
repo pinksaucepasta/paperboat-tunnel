@@ -17,7 +17,7 @@ func tokenFor(t *testing.T, private ed25519.PrivateKey, keyID string, mutate fun
 	t.Helper()
 	now := time.Unix(1000, 0)
 	header := map[string]any{"alg": "EdDSA", "kid": keyID, "typ": "paperboat-credential+jwt"}
-	claims := map[string]any{"iss": "https://api.paperboat.test", "aud": "paperboat-edge", "sub": "helper", "jti": "jti_admit_01", "iat": now.Unix(), "exp": now.Add(time.Minute).Unix(), "scope": []string{"connector:admit"}, "credential_class": "connector_admission", "environment_id": "env", "helper_id": "helper", "connector_generation": 3, "edge_pool": "default", "edge_node_id": "edge"}
+	claims := map[string]any{"iss": "https://api.paperboat.test", "aud": "paperboat-edge", "sub": "helper", "jti": "jti_admit_01", "iat": now.Unix(), "exp": now.Add(time.Minute).Unix(), "scope": []string{"connector:admit"}, "credential_class": "connector_admission", "environment_id": "env", "helper_id": "helper", "connector_generation": 3, "edge_pool": "default", "edge_node_id": "edge", "file_transfer_policy": map[string]any{"revision": "file-transfer-v1", "max_file_bytes": 50 << 20, "max_batch_files": 10, "max_batch_bytes": 500 << 20, "max_concurrent_transfers": 2, "retention_seconds": 604800, "delivery_timeout_seconds": 600, "max_pending_spool_bytes": 1 << 30}}
 	if mutate != nil {
 		mutate(claims)
 	}
@@ -53,6 +53,7 @@ func TestVerifierAcceptsExactHelperAccessCredential(t *testing.T) {
 		delete(claims, "connector_generation")
 		delete(claims, "edge_pool")
 		delete(claims, "edge_node_id")
+		delete(claims, "file_transfer_policy")
 	})
 	claims, err := verifier.VerifyHelperAccess(context.Background(), token)
 	if err != nil || claims.JTI != "jti_admit_01" || claims.EnvironmentID != "env" || claims.CredentialClass != "terminal_operation" {
@@ -72,6 +73,7 @@ func TestVerifierAcceptsExactHelperAccessCredential(t *testing.T) {
 		delete(claims, "connector_generation")
 		delete(claims, "edge_pool")
 		delete(claims, "edge_node_id")
+		delete(claims, "file_transfer_policy")
 	})
 	claims, err = verifier.VerifyHelperAccess(context.Background(), fileToken)
 	if err != nil || claims.CredentialClass != "file_transfer" || len(claims.Scopes) != 1 || claims.Scopes[0] != "file:transfer" {
@@ -88,6 +90,7 @@ func TestVerifierAcceptsExactHelperAccessCredential(t *testing.T) {
 		delete(claims, "connector_generation")
 		delete(claims, "edge_pool")
 		delete(claims, "edge_node_id")
+		delete(claims, "file_transfer_policy")
 	})
 	if _, err := verifier.VerifyHelperAccess(context.Background(), wrongScope); err == nil {
 		t.Fatal("retired file:stage scope accepted")
@@ -102,6 +105,19 @@ func TestVerifierRejectsMalformedWrongKeySignatureAndClaims(t *testing.T) {
 	for _, token := range tokens {
 		if _, err := verifier.Verify(context.Background(), token); err == nil {
 			t.Fatal("invalid token accepted")
+		}
+	}
+}
+
+func TestVerifierRejectsMissingOrInvalidFileTransferPolicy(t *testing.T) {
+	public, private, _ := ed25519.GenerateKey(rand.Reader)
+	verifier := &Verifier{Issuer: "https://api.paperboat.test", Keys: StaticKeys{"key-1": public}, Now: func() time.Time { return time.Unix(1000, 0) }, ClockSkew: time.Minute}
+	for _, mutate := range []func(map[string]any){
+		func(claims map[string]any) { delete(claims, "file_transfer_policy") },
+		func(claims map[string]any) { claims["file_transfer_policy"].(map[string]any)["max_file_bytes"] = 0 },
+	} {
+		if _, err := verifier.Verify(context.Background(), tokenFor(t, private, "key-1", mutate)); err == nil {
+			t.Fatal("invalid file transfer policy accepted")
 		}
 	}
 }
