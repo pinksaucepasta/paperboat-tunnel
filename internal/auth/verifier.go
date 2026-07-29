@@ -75,7 +75,7 @@ func (v *Verifier) VerifyHelperAccess(ctx context.Context, token string) (admiss
 	switch parsed.CredentialClass {
 	case "terminal_operation":
 		wantScope = "terminal:operate"
-	case "image_stage":
+	case "file_stage":
 		wantScope = "file:stage"
 	default:
 		return admission.Claims{}, invalid()
