@@ -35,7 +35,7 @@ func TestDataPlaneOrdersStartupAndAccountingSafeShutdown(t *testing.T) {
 	var mu sync.Mutex
 	var events []string
 	component := func(name string) Component { return orderedComponent{name: name, events: &events, mu: &mu} }
-	dataPlane, err := NewDataPlane(DataPlaneSpec{Persistence: component("store"), Control: component("control"), Node: component("node"), Routes: component("routes"), Hook: component("hook"), Gateway: component("gateway"), FRPS: component("frps"), Caddy: component("caddy"), Usage: component("usage")})
+	dataPlane, err := NewDataPlane(DataPlaneSpec{Persistence: component("store"), Control: component("control"), Node: component("node"), Routes: component("routes"), Hook: component("hook"), Gateway: component("gateway"), FRPS: component("frps"), Caddy: component("caddy"), CaddyReady: component("caddy-ready"), Usage: component("usage")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestDataPlaneOrdersStartupAndAccountingSafeShutdown(t *testing.T) {
 	if err := dataPlane.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"start:store", "start:hook", "start:gateway", "start:frps", "start:caddy", "start:control", "start:node", "start:routes", "start:usage", "stop:caddy", "stop:frps", "stop:gateway", "stop:routes", "stop:usage", "stop:node", "stop:hook", "stop:control", "stop:store"}
+	want := []string{"start:store", "start:hook", "start:gateway", "start:frps", "start:caddy", "start:caddy-ready", "start:control", "start:node", "start:routes", "start:usage", "stop:caddy", "stop:caddy-ready", "stop:frps", "stop:gateway", "stop:routes", "stop:usage", "stop:node", "stop:hook", "stop:control", "stop:store"}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v", events)
 	}
@@ -57,7 +57,7 @@ func TestDataPlaneCleansPartialStartupInReverse(t *testing.T) {
 	component := func(name string, fail bool) Component {
 		return orderedComponent{name: name, events: &events, mu: &mu, fail: fail}
 	}
-	dataPlane, _ := NewDataPlane(DataPlaneSpec{Persistence: component("store", false), Control: component("control", false), Node: component("node", false), Routes: component("routes", false), Hook: component("hook", false), Gateway: component("gateway", false), FRPS: component("frps", false), Caddy: component("caddy", true), Usage: component("usage", false)})
+	dataPlane, _ := NewDataPlane(DataPlaneSpec{Persistence: component("store", false), Control: component("control", false), Node: component("node", false), Routes: component("routes", false), Hook: component("hook", false), Gateway: component("gateway", false), FRPS: component("frps", false), Caddy: component("caddy", true), CaddyReady: component("caddy-ready", false), Usage: component("usage", false)})
 	if err := dataPlane.Start(context.Background()); err == nil {
 		t.Fatal("partial startup succeeded")
 	}

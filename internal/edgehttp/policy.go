@@ -107,7 +107,7 @@ func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		if kind == "helper_https_wss" && state != "ready" {
+		if kind == "runtime_https_wss" && state != "ready" {
 			w.Header().Set("Retry-After", "5")
 			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 			return
@@ -124,11 +124,11 @@ func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if expectedKind == "helper_https_wss" && !helperPublicPath(r.URL.Path) {
+	if expectedKind == "runtime_https_wss" && !helperPublicPath(r.URL.Path) {
 		http.NotFound(w, r)
 		return
 	}
-	if expectedKind == "helper_https_wss" && helperAccessPath(r.URL.Path) {
+	if expectedKind == "runtime_https_wss" && helperAccessPath(r.URL.Path) {
 		claims, ok := p.authorizeHelperAccess(w, r)
 		if !ok {
 			return
@@ -254,7 +254,7 @@ func (p *Policy) allowedHost(value string) (string, string, bool) {
 	}
 	for _, candidate := range []struct{ domain, kind string }{
 		{p.config.PreviewBaseDomain, "preview_public_https_wss"},
-		{p.config.HelperBaseDomain, "helper_https_wss"},
+		{p.config.HelperBaseDomain, "runtime_https_wss"},
 	} {
 		suffix := "." + strings.ToLower(candidate.domain)
 		prefix, ok := strings.CutSuffix(host, suffix)
@@ -332,7 +332,7 @@ func stripPrivate(headers http.Header, routeKind string) {
 			continue
 		}
 		_, helperOperationHeader := helperOperationHeaders[normalized]
-		if routeKind != "helper_https_wss" || !helperOperationHeader {
+		if routeKind != "runtime_https_wss" || !helperOperationHeader {
 			headers.Del(name)
 		}
 	}

@@ -17,7 +17,7 @@ var (
 type Kind string
 
 const (
-	HelperHTTPSWSS  Kind = "helper_https_wss"
+	HelperHTTPSWSS  Kind = "runtime_https_wss"
 	PreviewHTTPSWSS Kind = "preview_public_https_wss"
 )
 

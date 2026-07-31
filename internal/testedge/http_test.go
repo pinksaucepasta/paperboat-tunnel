@@ -23,8 +23,8 @@ func (t handlerTransport) RoundTrip(request *http.Request) (*http.Response, erro
 func TestHTTPHandlerMatchesControlClient(t *testing.T) {
 	const credential = "fake-edge-control-credential-01234567890123456789"
 	fake := New()
-	fake.SetAssignment("env", "helper", admission.Current{Generation: 3, EdgePool: "default", EdgeNode: "edge"})
-	if err := fake.SetRoute(control.RouteAssignment{RouteID: "route", Revision: 2, Environment: "env", Generation: 3, NodeID: "edge", Kind: "helper_https_wss", PublicHost: "app.example.test", TargetHost: "127.0.0.1", TargetPort: 8080}); err != nil {
+	fake.SetAssignment("env", "machine", "runtime", admission.Current{Generation: 3, EdgePool: "default", EdgeNode: "edge"})
+	if err := fake.SetRoute(control.RouteAssignment{RouteID: "route", Revision: 2, Environment: "env", Generation: 3, NodeID: "edge", Kind: "runtime_https_wss", PublicHost: "app.example.test", TargetHost: "127.0.0.1", TargetPort: 8080}); err != nil {
 		t.Fatal(err)
 	}
 	httpClient := &http.Client{Transport: handlerTransport{handler: Handler{Fake: fake, Credential: credential}}}
@@ -33,7 +33,7 @@ func TestHTTPHandlerMatchesControlClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	current, err := client.Current(ctx, "env", "helper")
+	current, err := client.Current(ctx, "env", "machine", "runtime")
 	if err != nil || current.Generation != 3 {
 		t.Fatalf("current = %+v, %v", current, err)
 	}

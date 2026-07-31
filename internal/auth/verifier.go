@@ -48,23 +48,27 @@ type fileTransferPolicy struct {
 	MaxPendingSpoolBytes   int64  `json:"max_pending_spool_bytes"`
 }
 type claims struct {
-	Issuer              string              `json:"iss"`
-	Audience            string              `json:"aud"`
-	Subject             string              `json:"sub"`
-	JTI                 string              `json:"jti"`
-	IssuedAt            int64               `json:"iat"`
-	Expires             int64               `json:"exp"`
-	Scope               []string            `json:"scope"`
-	CredentialClass     string              `json:"credential_class"`
-	EnvironmentID       string              `json:"environment_id"`
-	HelperID            string              `json:"helper_id"`
-	ConnectorGeneration uint64              `json:"connector_generation"`
-	EdgePool            string              `json:"edge_pool"`
-	EdgeNodeID          string              `json:"edge_node_id"`
-	FileTransferPolicy  *fileTransferPolicy `json:"file_transfer_policy"`
-	UserID              string              `json:"user_id"`
-	CLIClientSessionID  string              `json:"cli_client_session_id"`
-	SessionID           string              `json:"session_id"`
+	Issuer                 string              `json:"iss"`
+	Audience               string              `json:"aud"`
+	Subject                string              `json:"sub"`
+	JTI                    string              `json:"jti"`
+	IssuedAt               int64               `json:"iat"`
+	Expires                int64               `json:"exp"`
+	Scope                  []string            `json:"scope"`
+	CredentialClass        string              `json:"credential_class"`
+	EnvironmentID          string              `json:"environment_id"`
+	MachineID              string              `json:"machine_id"`
+	InstallationGeneration int64               `json:"installation_generation"`
+	SourceMachineID        string              `json:"source_machine_id,omitempty"`
+	HelperID               string              `json:"helper_id"`
+	ConnectorID            string              `json:"connector_id"`
+	ConnectorGeneration    uint64              `json:"connector_generation"`
+	EdgePool               string              `json:"edge_pool"`
+	EdgeNodeID             string              `json:"edge_node_id"`
+	FileTransferPolicy     *fileTransferPolicy `json:"file_transfer_policy"`
+	UserID                 string              `json:"user_id"`
+	CLIClientSessionID     string              `json:"cli_client_session_id"`
+	SessionID              string              `json:"session_id"`
 }
 
 // VerifyHelperAccess verifies the signed credential carried by public helper
@@ -91,10 +95,10 @@ func (v *Verifier) VerifyHelperAccess(ctx context.Context, token string) (admiss
 	default:
 		return admission.Claims{}, invalid()
 	}
-	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-helper" || parsed.Subject == "" || parsed.JTI == "" || len(parsed.Scope) != 1 || parsed.Scope[0] != wantScope || parsed.EnvironmentID == "" || parsed.UserID == "" || parsed.CLIClientSessionID == "" || parsed.SessionID == "" || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 || time.Unix(parsed.IssuedAt, 0).After(now.Add(v.ClockSkew)) || !time.Unix(parsed.Expires, 0).After(now) {
+	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-machine" || parsed.Subject == "" || parsed.JTI == "" || len(parsed.Scope) != 1 || parsed.Scope[0] != wantScope || parsed.EnvironmentID == "" || parsed.MachineID == "" || parsed.CredentialClass == "file_transfer" && parsed.SourceMachineID == "" || parsed.CredentialClass == "terminal_operation" && parsed.SessionID == "" || parsed.UserID == "" || parsed.CLIClientSessionID == "" || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 || time.Unix(parsed.IssuedAt, 0).After(now.Add(v.ClockSkew)) || !time.Unix(parsed.Expires, 0).After(now) {
 		return admission.Claims{}, invalid()
 	}
-	result := admission.Claims{KeyID: parsedHeader.KeyID, Issuer: parsed.Issuer, Audience: parsed.Audience, JTI: parsed.JTI, CredentialClass: parsed.CredentialClass, Scopes: append([]string(nil), parsed.Scope...), EnvironmentID: parsed.EnvironmentID, HelperID: parsed.HelperID, ConnectorGeneration: parsed.ConnectorGeneration, ExpiresAt: time.Unix(parsed.Expires, 0).UTC()}
+	result := admission.Claims{KeyID: parsedHeader.KeyID, Issuer: parsed.Issuer, Audience: parsed.Audience, JTI: parsed.JTI, CredentialClass: parsed.CredentialClass, Scopes: append([]string(nil), parsed.Scope...), EnvironmentID: parsed.EnvironmentID, MachineID: parsed.MachineID, HelperID: parsed.HelperID, ConnectorGeneration: parsed.ConnectorGeneration, ExpiresAt: time.Unix(parsed.Expires, 0).UTC()}
 	if v.Revocations != nil {
 		revoked, err := v.Revocations.Revoked(ctx, result)
 		if err != nil {
@@ -176,7 +180,7 @@ func (v *Verifier) Verify(ctx context.Context, token string) (admission.Claims, 
 	if v.Now != nil {
 		now = v.Now().UTC()
 	}
-	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-edge" || parsed.Subject == "" || parsed.JTI == "" || parsed.CredentialClass != "connector_admission" || len(parsed.Scope) != 1 || parsed.Scope[0] != "connector:admit" || parsed.EnvironmentID == "" || parsed.HelperID == "" || parsed.ConnectorGeneration == 0 || parsed.EdgePool == "" || parsed.EdgeNodeID == "" || !validFileTransferPolicy(parsed.FileTransferPolicy) || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 {
+	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-edge" || parsed.Subject == "" || parsed.JTI == "" || parsed.CredentialClass != "connector_admission" || len(parsed.Scope) != 1 || parsed.Scope[0] != "connector:admit" || parsed.EnvironmentID == "" || parsed.MachineID == "" || parsed.InstallationGeneration < 1 || parsed.ConnectorID == "" || parsed.ConnectorGeneration == 0 || parsed.EdgePool == "" || parsed.EdgeNodeID == "" || !validFileTransferPolicy(parsed.FileTransferPolicy) || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 {
 		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeBindingInvalid, "credential claims are invalid", "request a fresh admission")
 	}
 	if time.Unix(parsed.IssuedAt, 0).After(now.Add(v.ClockSkew)) {
@@ -185,7 +189,7 @@ func (v *Verifier) Verify(ctx context.Context, token string) (admission.Claims, 
 	if !time.Unix(parsed.Expires, 0).After(now) {
 		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialExpired, "credential is expired", "request a fresh admission")
 	}
-	result := admission.Claims{KeyID: parsedHeader.KeyID, Issuer: parsed.Issuer, Audience: parsed.Audience, JTI: parsed.JTI, CredentialClass: parsed.CredentialClass, Scopes: append([]string(nil), parsed.Scope...), EnvironmentID: parsed.EnvironmentID, HelperID: parsed.HelperID, ConnectorGeneration: parsed.ConnectorGeneration, EdgePool: parsed.EdgePool, EdgeNodeID: parsed.EdgeNodeID, ExpiresAt: time.Unix(parsed.Expires, 0).UTC()}
+	result := admission.Claims{KeyID: parsedHeader.KeyID, Issuer: parsed.Issuer, Audience: parsed.Audience, JTI: parsed.JTI, CredentialClass: parsed.CredentialClass, Scopes: append([]string(nil), parsed.Scope...), EnvironmentID: parsed.EnvironmentID, MachineID: parsed.MachineID, InstallationGeneration: parsed.InstallationGeneration, ConnectorID: parsed.ConnectorID, ConnectorGeneration: parsed.ConnectorGeneration, EdgePool: parsed.EdgePool, EdgeNodeID: parsed.EdgeNodeID, ExpiresAt: time.Unix(parsed.Expires, 0).UTC()}
 	if v.Revocations != nil {
 		revoked, err := v.Revocations.Revoked(ctx, result)
 		if err != nil {

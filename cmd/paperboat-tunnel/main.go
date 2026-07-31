@@ -187,7 +187,10 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 			result = observability.Rejected
 		}
 		metrics.Add(observability.MetricKey{Kind: kind, Result: result}, 1)
-	}, Bundle: bundle})
+	}, Bundle: bundle, CaddyReady: edgeruntime.Readiness{Probe: func() error {
+		_, err := probeCaddyTLS(deployment.CaddyListenAddress, tlsProbeHost)
+		return err
+	}, Timeout: deployment.ControlTimeout + deployment.ControlInterval, Interval: 250 * time.Millisecond}})
 	if err != nil {
 		return nil, err
 	}

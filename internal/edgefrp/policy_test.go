@@ -21,8 +21,8 @@ func (f resolverFunc) ResolveLogin(ctx context.Context, content LoginContent) (a
 func TestPolicyLoginAndProxyAllowList(t *testing.T) {
 	now := time.Unix(100, 0).UTC()
 	fake := testedge.New()
-	fake.SetCredential("token", admission.Claims{Issuer: "https://api.paperboat.test", Audience: "paperboat-edge", JTI: "jti_1", CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: "env", HelperID: "helper", ConnectorGeneration: 3, EdgePool: "default", EdgeNodeID: "edge", ExpiresAt: now.Add(time.Minute)})
-	fake.SetAssignment("env", "helper", admission.Current{Generation: 3, EdgePool: "default", EdgeNode: "edge"})
+	fake.SetCredential("token", admission.Claims{Issuer: "https://api.paperboat.test", Audience: "paperboat-edge", JTI: "jti_1", CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: "env", MachineID: "machine", ConnectorID: "runtime", ConnectorGeneration: 3, EdgePool: "default", EdgeNodeID: "edge", ExpiresAt: now.Add(time.Minute)})
+	fake.SetAssignment("env", "machine", "runtime", admission.Current{Generation: 3, EdgePool: "default", EdgeNode: "edge"})
 	journal, _ := operation.NewJournal(8)
 	service := &admission.Service{Issuer: "https://api.paperboat.test", Verifier: fake, Authorizer: fake, Journal: journal, Now: func() time.Time { return now }, NewRunID: func(g uint64, expiry time.Time) (admission.RunID, error) {
 		return admission.RunID{Value: "run", Generation: g, ExpiresAt: expiry}, nil
@@ -30,7 +30,7 @@ func TestPolicyLoginAndProxyAllowList(t *testing.T) {
 	adapter := NewAdapter(service, route.NewRegistry("preview.test", "test"))
 	adapter.Now = func() time.Time { return now }
 	policy := Policy{Adapter: adapter, InternalAuthToken: "internal-token-012345678901234567890123456789", Resolver: resolverFunc(func(context.Context, LoginContent) (admission.Request, error) {
-		return admission.Request{OperationID: "op_1", Credential: "token", Environment: "env", Helper: "helper", Generation: 3, EdgePool: "default", EdgeNode: "edge", Routes: []admission.Route{{RouteID: "route", Revision: 1, Kind: "helper_https_wss", PublicHost: "helper.test", ProxyName: "proxy", TargetHost: "127.0.0.1", TargetPort: 8080}}}, nil
+		return admission.Request{OperationID: "op_1", Credential: "token", Environment: "env", Machine: "machine", Connector: "runtime", Generation: 3, EdgePool: "default", EdgeNode: "edge", Routes: []admission.Route{{RouteID: "route", Revision: 1, Kind: "runtime_https_wss", PublicHost: "helper.test", ProxyName: "proxy", TargetHost: "127.0.0.1", TargetPort: 8080}}}, nil
 	})}
 	login, err := policy.Handle(context.Background(), "Login", json.RawMessage(`{"privilege_key":"token"}`))
 	if err != nil {

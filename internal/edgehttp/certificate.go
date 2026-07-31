@@ -23,7 +23,7 @@ func WithCertificateAsk(next http.Handler, routes routeState) http.Handler {
 		}
 		domain := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("domain")))
 		kind, _, _, found := routes.RouteState(domain)
-		if !found || (kind != "helper_https_wss" && kind != "preview_public_https_wss") {
+		if !found || (kind != "runtime_https_wss" && kind != "preview_public_https_wss") {
 			http.NotFound(w, r)
 			return
 		}

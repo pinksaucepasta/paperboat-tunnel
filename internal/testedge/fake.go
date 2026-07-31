@@ -50,10 +50,10 @@ func (f *Fake) SetCredential(token string, claims admission.Claims) {
 	defer f.mu.Unlock()
 	f.credentials[token] = claims
 }
-func (f *Fake) SetAssignment(environment, helper string, current admission.Current) {
+func (f *Fake) SetAssignment(environment, machine, connector string, current admission.Current) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.assignments[environment+"\x00"+helper] = current
+	f.assignments[environment+"\x00"+machine+"\x00"+connector] = current
 }
 
 func (f *Fake) Verify(_ context.Context, token string) (admission.Claims, error) {
@@ -66,10 +66,10 @@ func (f *Fake) Verify(_ context.Context, token string) (admission.Claims, error)
 	return claims, nil
 }
 
-func (f *Fake) Current(_ context.Context, environment, helper string) (admission.Current, error) {
+func (f *Fake) Current(_ context.Context, environment, machine, connector string) (admission.Current, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	current, ok := f.assignments[environment+"\x00"+helper]
+	current, ok := f.assignments[environment+"\x00"+machine+"\x00"+connector]
 	if !ok {
 		return admission.Current{}, ErrUnknownAssignment
 	}

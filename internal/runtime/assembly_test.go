@@ -33,6 +33,7 @@ func TestAssemblyOwnsHookAndChildProcesses(t *testing.T) {
 		Node:           component("node"),
 		Routes:         component("routes"),
 		Usage:          component("usage"),
+		CaddyReady:     component("caddy-ready"),
 		HookAddress:    address,
 		GatewayAddress: "127.0.0.1:19092",
 		GatewayHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
@@ -55,7 +56,7 @@ func TestAssemblyOwnsHookAndChildProcesses(t *testing.T) {
 	if err := assembly.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := events, []string{"start:store", "start:control", "start:node", "start:routes", "start:usage", "stop:routes", "stop:usage", "stop:node", "stop:control", "stop:store"}; !equalStrings(got, want) {
+	if got, want := events, []string{"start:store", "start:caddy-ready", "start:control", "start:node", "start:routes", "start:usage", "stop:caddy-ready", "stop:routes", "stop:usage", "stop:node", "stop:control", "stop:store"}; !equalStrings(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
 	}
 }
@@ -76,6 +77,7 @@ func TestAssemblySurfacesExhaustedChildRestart(t *testing.T) {
 	adapter := edgefrp.NewAdapter(&admission.Service{}, route.NewRegistry("preview.example.test", "example.test"))
 	assembly, err := NewAssembly(AssemblySpec{
 		Persistence: component("store"), Control: component("control"), Node: component("node"), Routes: component("routes"), Usage: component("usage"),
+		CaddyReady:  component("caddy-ready"),
 		HookAddress: address, GatewayAddress: "127.0.0.1:19092", GatewayHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), HookPath: "/private/paperboat-hook",
 		Policy: edgefrp.Policy{Adapter: adapter, Resolver: loginResolverFunc(func(context.Context, edgefrp.LoginContent) (admission.Request, error) {
 			return admission.Request{}, nil

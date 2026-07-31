@@ -108,7 +108,7 @@ func validResult(value Result) bool {
 	return value == Success || value == Rejected || value == Failed || value == Canceled
 }
 func validRouteKind(value string) bool {
-	return value == "" || value == "helper_https_wss" || value == "preview_public_https_wss"
+	return value == "" || value == "runtime_https_wss" || value == "preview_public_https_wss"
 }
 func validDirection(value string) bool { return value == "" || value == "ingress" || value == "egress" }
 

@@ -15,8 +15,8 @@ import (
 func TestLoginAttachesOnlyAfterAdmissionAndRevokeCleansUp(t *testing.T) {
 	now := time.Unix(100, 0).UTC()
 	journal, _ := operation.NewJournal(8)
-	claims := admission.Claims{Issuer: "https://api.paperboat.test", Audience: "paperboat-edge", JTI: "jti_admit_0001", CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: "env_test_01", HelperID: "hlp_test_01", ConnectorGeneration: 3, EdgePool: "default", EdgeNodeID: "edge_test_01", ExpiresAt: now.Add(time.Minute)}
-	service := &admission.Service{Issuer: "https://api.paperboat.test", Verifier: verifier(func(context.Context, string) (admission.Claims, error) { return claims, nil }), Authorizer: authorizer(func(context.Context, string, string) (admission.Current, error) {
+	claims := admission.Claims{Issuer: "https://api.paperboat.test", Audience: "paperboat-edge", JTI: "jti_admit_0001", CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: "env_test_01", MachineID: "mch_test_01", ConnectorID: "runtime", ConnectorGeneration: 3, EdgePool: "default", EdgeNodeID: "edge_test_01", ExpiresAt: now.Add(time.Minute)}
+	service := &admission.Service{Issuer: "https://api.paperboat.test", Verifier: verifier(func(context.Context, string) (admission.Claims, error) { return claims, nil }), Authorizer: authorizer(func(context.Context, string, string, string) (admission.Current, error) {
 		return admission.Current{Generation: 3, EdgePool: "default", EdgeNode: "edge_test_01"}, nil
 	}), Journal: journal, Now: func() time.Time { return now }, NewRunID: func(g uint64, expiry time.Time) (admission.RunID, error) {
 		return admission.RunID{Value: "run_1", Generation: g, ExpiresAt: expiry}, nil
@@ -26,7 +26,7 @@ func TestLoginAttachesOnlyAfterAdmissionAndRevokeCleansUp(t *testing.T) {
 	recorder := &trafficRecorder{}
 	adapter.Traffic = recorder
 	adapter.Now = func() time.Time { return now }
-	request := admission.Request{OperationID: "op_admit_0001", Credential: "credential-test-only-0000000000000000000000000000", Environment: "env_test_01", Helper: "hlp_test_01", Generation: 3, EdgePool: "default", EdgeNode: "edge_test_01", Routes: []admission.Route{{RouteID: "rte_1", Revision: 1, Kind: "helper_https_wss", PublicHost: "helper.example.test", ProxyName: "helper_1", TargetHost: "127.0.0.1", TargetPort: 8080}}}
+	request := admission.Request{OperationID: "op_admit_0001", Credential: "credential-test-only-0000000000000000000000000000", Environment: "env_test_01", Machine: "mch_test_01", Connector: "runtime", Generation: 3, EdgePool: "default", EdgeNode: "edge_test_01", Routes: []admission.Route{{RouteID: "rte_1", Revision: 1, Kind: "runtime_https_wss", PublicHost: "helper.example.test", ProxyName: "helper_1", TargetHost: "127.0.0.1", TargetPort: 8080}}}
 	response, err := adapter.Login(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -38,14 +38,14 @@ func TestLoginAttachesOnlyAfterAdmissionAndRevokeCleansUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if kind, state, _, found := adapter.RouteState("helper.example.test"); !found || kind != "helper_https_wss" || state != "offline" {
+	if kind, state, _, found := adapter.RouteState("helper.example.test"); !found || kind != "runtime_https_wss" || state != "offline" {
 		t.Fatalf("unregistered helper state = kind=%q state=%q found=%v", kind, state, found)
 	}
 	identity := frpProxyIdentity(adapter.sessions[response.RunID.Value], request.Routes[0])
 	if err := adapter.AuthorizeProxy(response.RunID.Value, identity.name, "http", "helper.example.test", identity.group, identity.groupKey); err != nil {
 		t.Fatal(err)
 	}
-	if kind, state, reason, found := adapter.RouteState("helper.example.test"); !found || kind != "helper_https_wss" || state != "ready" || reason != "" {
+	if kind, state, reason, found := adapter.RouteState("helper.example.test"); !found || kind != "runtime_https_wss" || state != "ready" || reason != "" {
 		t.Fatalf("registered helper state = kind=%q state=%q reason=%q found=%v", kind, state, reason, found)
 	}
 	if err := adapter.AuthorizeProxyRun(response.RunID.Value); err != nil {
@@ -66,7 +66,7 @@ func TestLoginAttachesOnlyAfterAdmissionAndRevokeCleansUp(t *testing.T) {
 	if stats := adapter.Stats(); stats.Sessions != 1 || stats.Routes != 1 {
 		t.Fatalf("established session disappeared after admission expiry: %+v", stats)
 	}
-	if kind, state, reason, found := adapter.RouteState("helper.example.test"); !found || kind != "helper_https_wss" || state != "ready" || reason != "" {
+	if kind, state, reason, found := adapter.RouteState("helper.example.test"); !found || kind != "runtime_https_wss" || state != "ready" || reason != "" {
 		t.Fatalf("expired admission disabled established route: kind=%q state=%q reason=%q found=%v", kind, state, reason, found)
 	}
 	if err := adapter.AuthorizeProxyRun(response.RunID.Value); err != nil {
@@ -123,11 +123,11 @@ func TestLoginAttachesOnlyAfterAdmissionAndRevokeCleansUp(t *testing.T) {
 func TestLoginRefreshOverlapsRunsForAtomicFRPReplacement(t *testing.T) {
 	now := time.Unix(100, 0).UTC()
 	journal, _ := operation.NewJournal(8)
-	claims := admission.Claims{Issuer: "https://api.paperboat.test", Audience: "paperboat-edge", CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: "env_test_01", HelperID: "hlp_test_01", ConnectorGeneration: 3, EdgePool: "default", EdgeNodeID: "edge_test_01", ExpiresAt: now.Add(5 * time.Minute)}
+	claims := admission.Claims{Issuer: "https://api.paperboat.test", Audience: "paperboat-edge", CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: "env_test_01", MachineID: "mch_test_01", ConnectorID: "runtime", ConnectorGeneration: 3, EdgePool: "default", EdgeNodeID: "edge_test_01", ExpiresAt: now.Add(5 * time.Minute)}
 	service := &admission.Service{Issuer: "https://api.paperboat.test", Verifier: verifier(func(_ context.Context, token string) (admission.Claims, error) {
 		claims.JTI = token
 		return claims, nil
-	}), Authorizer: authorizer(func(context.Context, string, string) (admission.Current, error) {
+	}), Authorizer: authorizer(func(context.Context, string, string, string) (admission.Current, error) {
 		return admission.Current{Generation: 3, EdgePool: "default", EdgeNode: "edge_test_01"}, nil
 	}), Journal: journal, Now: func() time.Time { return now }, NewRunID: func(_ uint64, _ time.Time) (admission.RunID, error) {
 		return admission.RunID{Value: "run_1", Generation: 3, ExpiresAt: now.Add(5 * time.Minute)}, nil
@@ -135,7 +135,7 @@ func TestLoginRefreshOverlapsRunsForAtomicFRPReplacement(t *testing.T) {
 	registry := route.NewRegistry("preview.example.test", "example.test")
 	adapter := NewAdapter(service, registry)
 	adapter.Now = func() time.Time { return now }
-	request := admission.Request{OperationID: "op_admit_0001", Credential: "jti_admit_0001", Environment: "env_test_01", Helper: "hlp_test_01", Generation: 3, EdgePool: "default", EdgeNode: "edge_test_01", Routes: []admission.Route{{RouteID: "rte_1", Revision: 1, Kind: "helper_https_wss", PublicHost: "helper.example.test", ProxyName: "helper_1", TargetHost: "127.0.0.1", TargetPort: 8080}}}
+	request := admission.Request{OperationID: "op_admit_0001", Credential: "jti_admit_0001", Environment: "env_test_01", Machine: "mch_test_01", Connector: "runtime", Generation: 3, EdgePool: "default", EdgeNode: "edge_test_01", Routes: []admission.Route{{RouteID: "rte_1", Revision: 1, Kind: "runtime_https_wss", PublicHost: "helper.example.test", ProxyName: "helper_1", TargetHost: "127.0.0.1", TargetPort: 8080}}}
 	first, err := adapter.Login(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -210,15 +210,15 @@ func TestLoginRefreshOverlapsRunsForAtomicFRPReplacement(t *testing.T) {
 func TestResumeRotatesRunAndFencesRetiredCloseCallbacks(t *testing.T) {
 	now := time.Now().UTC()
 	journal, _ := operation.NewJournal(8)
-	claims := admission.Claims{Issuer: "https://api.paperboat.test", Audience: "paperboat-edge", JTI: "jti_admit_resume", CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: "env_test_01", HelperID: "hlp_test_01", ConnectorGeneration: 3, EdgePool: "default", EdgeNodeID: "edge_test_01", ExpiresAt: now.Add(time.Minute)}
-	service := &admission.Service{Issuer: "https://api.paperboat.test", Verifier: verifier(func(context.Context, string) (admission.Claims, error) { return claims, nil }), Authorizer: authorizer(func(context.Context, string, string) (admission.Current, error) {
+	claims := admission.Claims{Issuer: "https://api.paperboat.test", Audience: "paperboat-edge", JTI: "jti_admit_resume", CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: "env_test_01", MachineID: "mch_test_01", ConnectorID: "runtime", ConnectorGeneration: 3, EdgePool: "default", EdgeNodeID: "edge_test_01", ExpiresAt: now.Add(time.Minute)}
+	service := &admission.Service{Issuer: "https://api.paperboat.test", Verifier: verifier(func(context.Context, string) (admission.Claims, error) { return claims, nil }), Authorizer: authorizer(func(context.Context, string, string, string) (admission.Current, error) {
 		return admission.Current{Generation: 3, EdgePool: "default", EdgeNode: "edge_test_01"}, nil
 	}), Journal: journal, Now: func() time.Time { return now }, NewRunID: func(generation uint64, expiresAt time.Time) (admission.RunID, error) {
 		return admission.RunID{Value: "run_initial", Generation: generation, ExpiresAt: expiresAt}, nil
 	}}
 	adapter := NewAdapter(service, route.NewRegistry("preview.example.test", "helper.example.test"))
 	adapter.Now = func() time.Time { return now }
-	request := admission.Request{OperationID: "op_admit_resume", Credential: "credential-test-only-0000000000000000000000000000", Environment: "env_test_01", Helper: "hlp_test_01", Generation: 3, EdgePool: "default", EdgeNode: "edge_test_01", Routes: []admission.Route{{RouteID: "rte_1", Revision: 1, Kind: "helper_https_wss", PublicHost: "env.helper.example.test", ProxyName: "helper_1", TargetHost: "127.0.0.1", TargetPort: 8080}}}
+	request := admission.Request{OperationID: "op_admit_resume", Credential: "credential-test-only-0000000000000000000000000000", Environment: "env_test_01", Machine: "mch_test_01", Connector: "runtime", Generation: 3, EdgePool: "default", EdgeNode: "edge_test_01", Routes: []admission.Route{{RouteID: "rte_1", Revision: 1, Kind: "runtime_https_wss", PublicHost: "env.helper.example.test", ProxyName: "helper_1", TargetHost: "127.0.0.1", TargetPort: 8080}}}
 	initial, err := adapter.Login(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -250,22 +250,22 @@ func TestResumeRotatesRunAndFencesRetiredCloseCallbacks(t *testing.T) {
 func TestResumeReportsUnknownRunAfterEdgeRestart(t *testing.T) {
 	now := time.Now().UTC()
 	journal, _ := operation.NewJournal(8)
-	claims := admission.Claims{Issuer: "https://api.paperboat.test", Audience: "paperboat-edge", JTI: "jti_admit_restart", CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: "env_test_01", HelperID: "hlp_test_01", ConnectorGeneration: 3, EdgePool: "default", EdgeNodeID: "edge_test_01", ExpiresAt: now.Add(time.Minute)}
-	service := &admission.Service{Issuer: "https://api.paperboat.test", Verifier: verifier(func(context.Context, string) (admission.Claims, error) { return claims, nil }), Authorizer: authorizer(func(context.Context, string, string) (admission.Current, error) {
+	claims := admission.Claims{Issuer: "https://api.paperboat.test", Audience: "paperboat-edge", JTI: "jti_admit_restart", CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: "env_test_01", MachineID: "mch_test_01", ConnectorID: "runtime", ConnectorGeneration: 3, EdgePool: "default", EdgeNodeID: "edge_test_01", ExpiresAt: now.Add(time.Minute)}
+	service := &admission.Service{Issuer: "https://api.paperboat.test", Verifier: verifier(func(context.Context, string) (admission.Claims, error) { return claims, nil }), Authorizer: authorizer(func(context.Context, string, string, string) (admission.Current, error) {
 		return admission.Current{Generation: 3, EdgePool: "default", EdgeNode: "edge_test_01"}, nil
 	}), Journal: journal, Now: func() time.Time { return now }}
 	adapter := NewAdapter(service, route.NewRegistry("preview.example.test", "helper.example.test"))
-	request := admission.Request{OperationID: "op_admit_restart", Credential: "credential-test-only-0000000000000000000000000000", Environment: "env_test_01", Helper: "hlp_test_01", Generation: 3, EdgePool: "default", EdgeNode: "edge_test_01", Routes: []admission.Route{{RouteID: "rte_1", Revision: 1, Kind: "helper_https_wss", PublicHost: "env.helper.example.test", ProxyName: "helper_1", TargetHost: "127.0.0.1", TargetPort: 8080}}}
+	request := admission.Request{OperationID: "op_admit_restart", Credential: "credential-test-only-0000000000000000000000000000", Environment: "env_test_01", Machine: "mch_test_01", Connector: "runtime", Generation: 3, EdgePool: "default", EdgeNode: "edge_test_01", Routes: []admission.Route{{RouteID: "rte_1", Revision: 1, Kind: "runtime_https_wss", PublicHost: "env.helper.example.test", ProxyName: "helper_1", TargetHost: "127.0.0.1", TargetPort: 8080}}}
 	if _, err := adapter.Resume(context.Background(), request, "run_from_prior_edge_process"); !errors.Is(err, ErrRunUnknown) {
 		t.Fatalf("unknown resumed run error = %v", err)
 	}
 }
 
 func TestFRPProxyIdentityMatchesHelperContract(t *testing.T) {
-	current := session{environment: "env", helper: "helper", operationID: "op_admit_first"}
+	current := session{environment: "env", machine: "machine", connector: "runtime", operationID: "op_admit_first"}
 	route := admission.Route{RouteID: "route_1", ProxyName: "helper_1"}
 	identity := frpProxyIdentity(current, route)
-	if identity.name != "pbp_b9aa8011e6c3c308b9f59c4bd62d4820" || identity.group != "pbg_34cfd20ff1119486c1c1f9cc96bfcc26" || identity.groupKey != "18a2a9e008f6d4fb0476cbfa0c4faf3f704051fde0a1db07bac74e6d5a5aa1df" {
+	if identity.name != "pbp_1332950afeddd5c0aea71c2152a9c22a" || identity.group != "pbg_cae1ebe5f77a8693bd4ab53069abc9f5" || identity.groupKey != "6a96339851ee24ba42cf0facf7cc02437d64bef1e7cbb053dd48e0aa84136d80" {
 		t.Fatalf("identity contract changed: %+v", identity)
 	}
 }
@@ -289,8 +289,8 @@ func (f verifier) Verify(ctx context.Context, token string) (admission.Claims, e
 	return f(ctx, token)
 }
 
-type authorizer func(context.Context, string, string) (admission.Current, error)
+type authorizer func(context.Context, string, string, string) (admission.Current, error)
 
-func (f authorizer) Current(ctx context.Context, env, helper string) (admission.Current, error) {
-	return f(ctx, env, helper)
+func (f authorizer) Current(ctx context.Context, env, machine, connector string) (admission.Current, error) {
+	return f(ctx, env, machine, connector)
 }

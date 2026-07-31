@@ -29,7 +29,8 @@ type config struct {
 	EdgePool            string `json:"edge_pool"`
 	ProcessEpoch        string `json:"process_epoch"`
 	EnvironmentID       string `json:"environment_id"`
-	HelperID            string `json:"helper_id"`
+	MachineID           string `json:"machine_id"`
+	ConnectorID         string `json:"connector_id"`
 	ConnectorGeneration uint64 `json:"connector_generation"`
 	RouteID             string `json:"route_id"`
 	RouteRevision       uint64 `json:"route_revision"`
@@ -80,7 +81,7 @@ func run(ctx context.Context, path string, output io.Writer) error {
 	if err := client.Heartbeat(ctx, control.NodeObservation{NodeID: value.NodeID, ProcessEpoch: value.ProcessEpoch, Ready: true, At: now}); err != nil {
 		return fmt.Errorf("heartbeat node: %w", err)
 	}
-	current, err := client.Current(ctx, value.EnvironmentID, value.HelperID)
+	current, err := client.Current(ctx, value.EnvironmentID, value.MachineID, value.ConnectorID)
 	if err != nil || current.Generation != value.ConnectorGeneration || current.EdgePool != value.EdgePool || current.EdgeNode != value.NodeID || current.Revoked {
 		return fmt.Errorf("assignment mismatch: %w", errors.Join(errInvalid, err))
 	}
@@ -95,10 +96,11 @@ func run(ctx context.Context, path string, output io.Writer) error {
 	var revocationDocument struct {
 		JTIs         []string `json:"jtis"`
 		Environments []string `json:"environments"`
-		Helpers      []struct {
-			HelperID   string `json:"helper_id"`
-			Generation uint64 `json:"connector_generation"`
-		} `json:"helper_generations"`
+		Connectors   []struct {
+			MachineID   string `json:"machine_id"`
+			ConnectorID string `json:"connector_id"`
+			Generation  uint64 `json:"connector_generation"`
+		} `json:"connector_generations"`
 		KeyIDs []string `json:"key_ids"`
 	}
 	if err != nil || strictJSON(revocations, &revocationDocument) != nil || !contains(revocationDocument.KeyIDs, value.RevokedKeyID) {
@@ -133,7 +135,7 @@ func loadConfig(path string) (config, error) {
 		return config{}, err
 	}
 	var value config
-	if strictJSON(body, &value) != nil || value.ControlURL == "" || len(value.ControlCredential) < 32 || !filepath.IsAbs(value.ControlCAFile) || value.NodeID == "" || value.EdgePool == "" || value.ProcessEpoch == "" || value.EnvironmentID == "" || value.HelperID == "" || value.ConnectorGeneration == 0 || value.RouteID == "" || value.RouteRevision == 0 || value.UsageKeyID == "" || value.UsageSeed == "" || value.CounterEpoch == "" || value.UsageOperationID == "" || value.RevokedKeyID == "" || value.Now == "" {
+	if strictJSON(body, &value) != nil || value.ControlURL == "" || len(value.ControlCredential) < 32 || !filepath.IsAbs(value.ControlCAFile) || value.NodeID == "" || value.EdgePool == "" || value.ProcessEpoch == "" || value.EnvironmentID == "" || value.MachineID == "" || value.ConnectorID == "" || value.ConnectorGeneration == 0 || value.RouteID == "" || value.RouteRevision == 0 || value.UsageKeyID == "" || value.UsageSeed == "" || value.CounterEpoch == "" || value.UsageOperationID == "" || value.RevokedKeyID == "" || value.Now == "" {
 		return config{}, errInvalid
 	}
 	return value, nil

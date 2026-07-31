@@ -15,7 +15,7 @@ func (r certificateRoutes) RouteState(host string) (string, string, string, bool
 
 func TestCertificateAskAuthorizesOnlyCurrentRoutes(t *testing.T) {
 	handler := WithCertificateAsk(http.NotFoundHandler(), certificateRoutes{
-		"ready.helper.example.test":     {"helper_https_wss", "ready"},
+		"ready.helper.example.test":     {"runtime_https_wss", "ready"},
 		"degraded.preview.example.test": {"preview_public_https_wss", "degraded"},
 	})
 	for _, test := range []struct {

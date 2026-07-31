@@ -14,10 +14,10 @@ type verifierFunc func(context.Context, string) (Claims, error)
 
 func (f verifierFunc) Verify(ctx context.Context, token string) (Claims, error) { return f(ctx, token) }
 
-type authorizerFunc func(context.Context, string, string) (Current, error)
+type authorizerFunc func(context.Context, string, string, string) (Current, error)
 
-func (f authorizerFunc) Current(ctx context.Context, env, helper string) (Current, error) {
-	return f(ctx, env, helper)
+func (f authorizerFunc) Current(ctx context.Context, env, machine, connector string) (Current, error) {
+	return f(ctx, env, machine, connector)
 }
 
 func admissionService(t *testing.T, now time.Time, claims Claims) *Service {
@@ -29,7 +29,7 @@ func admissionService(t *testing.T, now time.Time, claims Claims) *Service {
 	return &Service{
 		Issuer:   "https://api.paperboat.test",
 		Verifier: verifierFunc(func(context.Context, string) (Claims, error) { return claims, nil }),
-		Authorizer: authorizerFunc(func(context.Context, string, string) (Current, error) {
+		Authorizer: authorizerFunc(func(context.Context, string, string, string) (Current, error) {
 			return Current{Generation: 3, EdgePool: "default", EdgeNode: "edge_test_01"}, nil
 		}),
 		Journal: journal, Now: func() time.Time { return now },
@@ -40,11 +40,11 @@ func admissionService(t *testing.T, now time.Time, claims Claims) *Service {
 }
 
 func validClaims(now time.Time) Claims {
-	return Claims{Issuer: "https://api.paperboat.test", Audience: audience, JTI: "jti_admit_0001", CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: "env_test_01", HelperID: "hlp_test_01", ConnectorGeneration: 3, EdgePool: "default", EdgeNodeID: "edge_test_01", ExpiresAt: now.Add(5 * time.Minute)}
+	return Claims{Issuer: "https://api.paperboat.test", Audience: audience, JTI: "jti_admit_0001", CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: "env_test_01", MachineID: "mch_test_01", ConnectorID: "runtime", ConnectorGeneration: 3, EdgePool: "default", EdgeNodeID: "edge_test_01", ExpiresAt: now.Add(5 * time.Minute)}
 }
 
 func validRequest() Request {
-	return Request{OperationID: "op_admit_0001", Credential: "credential-test-only-0000000000000000000000000000", Environment: "env_test_01", Helper: "hlp_test_01", Generation: 3, EdgePool: "default", EdgeNode: "edge_test_01", Routes: []Route{{RouteID: "rte_helper_01", Revision: 1, Kind: "helper_https_wss", PublicHost: "helper.example.test", ProxyName: "helper_01", TargetHost: "127.0.0.1", TargetPort: 8080}}}
+	return Request{OperationID: "op_admit_0001", Credential: "credential-test-only-0000000000000000000000000000", Environment: "env_test_01", Machine: "mch_test_01", Connector: "runtime", Generation: 3, EdgePool: "default", EdgeNode: "edge_test_01", Routes: []Route{{RouteID: "rte_helper_01", Revision: 1, Kind: "runtime_https_wss", PublicHost: "helper.example.test", ProxyName: "helper_01", TargetHost: "127.0.0.1", TargetPort: 8080}}}
 }
 
 func TestAdmissionBindsAndReplaysCanonicalDecision(t *testing.T) {

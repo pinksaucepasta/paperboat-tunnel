@@ -63,8 +63,8 @@ func TestFakeCredentialAssignmentAndNodeLifecycle(t *testing.T) {
 	if _, err := fake.Verify(context.Background(), "unknown"); !errors.Is(err, ErrUnknownCredential) {
 		t.Fatalf("unknown = %v", err)
 	}
-	fake.SetAssignment("env", "helper", admission.Current{Generation: 3})
-	if current, err := fake.Current(context.Background(), "env", "helper"); err != nil || current.Generation != 3 {
+	fake.SetAssignment("env", "machine", "runtime", admission.Current{Generation: 3})
+	if current, err := fake.Current(context.Background(), "env", "machine", "runtime"); err != nil || current.Generation != 3 {
 		t.Fatalf("current = %+v, %v", current, err)
 	}
 	if err := fake.RegisterNode(context.Background(), control.NodeRegistration{NodeID: "n", ProcessEpoch: "p", Capacity: 1}); err != nil {

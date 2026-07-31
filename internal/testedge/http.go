@@ -30,12 +30,13 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/v1/edge/assignments/current":
 		var request struct {
 			Environment string `json:"environment_id"`
-			Helper      string `json:"helper_id"`
+			Machine     string `json:"machine_id"`
+			Connector   string `json:"connector_id"`
 		}
 		if !decodeHTTP(r, &request) {
 			break
 		}
-		current, currentErr := h.Fake.Current(r.Context(), request.Environment, request.Helper)
+		current, currentErr := h.Fake.Current(r.Context(), request.Environment, request.Machine, request.Connector)
 		err = currentErr
 		if err == nil {
 			writeHTTP(w, map[string]any{"connector_generation": current.Generation, "edge_pool": current.EdgePool, "edge_node_id": current.EdgeNode, "revoked": current.Revoked})

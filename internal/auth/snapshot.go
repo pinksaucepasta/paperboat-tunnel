@@ -22,18 +22,19 @@ type Snapshot struct {
 	mu                                         sync.RWMutex
 	keys                                       map[string]ed25519.PublicKey
 	revokedJTI, revokedEnvironment, revokedKey map[string]struct{}
-	revokedHelperGeneration                    map[helperGeneration]struct{}
+	revokedConnectorGeneration                 map[connectorGeneration]struct{}
 	revocationMaxAge                           time.Duration
 	revocationUpdatedAt                        time.Time
 	now                                        func() time.Time
 }
-type helperGeneration struct {
-	Helper     string
+type connectorGeneration struct {
+	Machine    string
+	Connector  string
 	Generation uint64
 }
 
 func NewSnapshot() *Snapshot {
-	return &Snapshot{keys: map[string]ed25519.PublicKey{}, revokedJTI: map[string]struct{}{}, revokedEnvironment: map[string]struct{}{}, revokedKey: map[string]struct{}{}, revokedHelperGeneration: map[helperGeneration]struct{}{}, now: time.Now}
+	return &Snapshot{keys: map[string]ed25519.PublicKey{}, revokedJTI: map[string]struct{}{}, revokedEnvironment: map[string]struct{}{}, revokedKey: map[string]struct{}{}, revokedConnectorGeneration: map[connectorGeneration]struct{}{}, now: time.Now}
 }
 
 func (s *Snapshot) ConfigureRevocationFreshness(maxAge time.Duration, now func() time.Time) {
@@ -92,14 +93,15 @@ func (s *Snapshot) Key(_ context.Context, keyID string) (ed25519.PublicKey, erro
 }
 
 type RevocationDocument struct {
-	JTIs         []string                  `json:"jtis"`
-	Environments []string                  `json:"environments"`
-	Helpers      []RevokedHelperGeneration `json:"helper_generations"`
-	KeyIDs       []string                  `json:"key_ids"`
+	JTIs         []string                     `json:"jtis"`
+	Environments []string                     `json:"environments"`
+	Connectors   []RevokedConnectorGeneration `json:"connector_generations"`
+	KeyIDs       []string                     `json:"key_ids"`
 }
-type RevokedHelperGeneration struct {
-	HelperID   string `json:"helper_id"`
-	Generation uint64 `json:"connector_generation"`
+type RevokedConnectorGeneration struct {
+	MachineID   string `json:"machine_id"`
+	ConnectorID string `json:"connector_id"`
+	Generation  uint64 `json:"connector_generation"`
 }
 
 func (s *Snapshot) ReplaceRevocations(data []byte) error {
@@ -107,10 +109,10 @@ func (s *Snapshot) ReplaceRevocations(data []byte) error {
 		return ErrSnapshotInvalid
 	}
 	var document RevocationDocument
-	if strictSnapshotJSON(data, &document) != nil || len(document.JTIs)+len(document.Environments)+len(document.Helpers)+len(document.KeyIDs) > 10000 {
+	if strictSnapshotJSON(data, &document) != nil || len(document.JTIs)+len(document.Environments)+len(document.Connectors)+len(document.KeyIDs) > 10000 {
 		return ErrSnapshotInvalid
 	}
-	jtis, environments, helpers, keys := map[string]struct{}{}, map[string]struct{}{}, map[helperGeneration]struct{}{}, map[string]struct{}{}
+	jtis, environments, connectors, keys := map[string]struct{}{}, map[string]struct{}{}, map[connectorGeneration]struct{}{}, map[string]struct{}{}
 	for _, value := range document.JTIs {
 		if value == "" {
 			return ErrSnapshotInvalid
@@ -123,11 +125,11 @@ func (s *Snapshot) ReplaceRevocations(data []byte) error {
 		}
 		environments[value] = struct{}{}
 	}
-	for _, value := range document.Helpers {
-		if value.HelperID == "" || value.Generation == 0 {
+	for _, value := range document.Connectors {
+		if value.MachineID == "" || value.ConnectorID == "" || value.Generation == 0 {
 			return ErrSnapshotInvalid
 		}
-		helpers[helperGeneration{value.HelperID, value.Generation}] = struct{}{}
+		connectors[connectorGeneration{value.MachineID, value.ConnectorID, value.Generation}] = struct{}{}
 	}
 	for _, value := range document.KeyIDs {
 		if value == "" {
@@ -136,7 +138,7 @@ func (s *Snapshot) ReplaceRevocations(data []byte) error {
 		keys[value] = struct{}{}
 	}
 	s.mu.Lock()
-	s.revokedJTI, s.revokedEnvironment, s.revokedHelperGeneration, s.revokedKey = jtis, environments, helpers, keys
+	s.revokedJTI, s.revokedEnvironment, s.revokedConnectorGeneration, s.revokedKey = jtis, environments, connectors, keys
 	clock := s.now
 	if clock == nil {
 		clock = time.Now
@@ -153,7 +155,7 @@ func (s *Snapshot) Revoked(_ context.Context, claims admission.Claims) (bool, er
 	}
 	_, a := s.revokedJTI[claims.JTI]
 	_, b := s.revokedEnvironment[claims.EnvironmentID]
-	_, c := s.revokedHelperGeneration[helperGeneration{claims.HelperID, claims.ConnectorGeneration}]
+	_, c := s.revokedConnectorGeneration[connectorGeneration{claims.MachineID, claims.ConnectorID, claims.ConnectorGeneration}]
 	_, d := s.revokedKey[claims.KeyID]
 	return a || b || c || d, nil
 }

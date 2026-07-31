@@ -49,7 +49,7 @@ func TestRouteKindMustMatchTypedDomain(t *testing.T) {
 	for _, test := range []struct {
 		host, kind string
 	}{
-		{host: "terminal.preview.example.test", kind: "helper_https_wss"},
+		{host: "terminal.preview.example.test", kind: "runtime_https_wss"},
 		{host: "web.helper.example.test", kind: "preview_public_https_wss"},
 	} {
 		called := false
@@ -73,7 +73,7 @@ func TestHelperRequiresRegisteredConnectorReadiness(t *testing.T) {
 	called := false
 	config := previewConfig()
 	config.Readiness = routeReadinessFunc(func(string) (string, string, string, bool) {
-		return "helper_https_wss", "offline", "connector_unavailable", true
+		return "runtime_https_wss", "offline", "connector_unavailable", true
 	})
 	policy, err := New(config, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
 	if err != nil {
@@ -372,7 +372,7 @@ func TestGatewayClosesUpgradedHelperConnectionWhenRevoked(t *testing.T) {
 	var revoked atomic.Bool
 	config := previewConfig()
 	config.Readiness = routeReadinessFunc(func(string) (string, string, string, bool) {
-		return "helper_https_wss", "ready", "", true
+		return "runtime_https_wss", "ready", "", true
 	})
 	config.HelperAccess = helperAccessFunc(func(_ context.Context, token string) (admission.Claims, error) {
 		if token != "signed-test-credential" {
@@ -542,7 +542,7 @@ func TestPreviewReadinessResponses(t *testing.T) {
 
 func TestChunkedBodyLimitAndUntrustedForwarding(t *testing.T) {
 	policy := policyFor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Forwarded-For") != "192.0.2.1" {
+		if r.Header.Get("X-Forwarded-For") != "191.0.2.1" {
 			t.Fatalf("spoofed client IP trusted: %s", r.Header.Get("X-Forwarded-For"))
 		}
 		_, err := io.ReadAll(r.Body)
@@ -555,7 +555,7 @@ func TestChunkedBodyLimitAndUntrustedForwarding(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader(strings.Repeat("x", 2048)))
 	request.Host = "app.preview.example.test"
 	request.ContentLength = -1
-	request.RemoteAddr = "192.0.2.1:1234"
+	request.RemoteAddr = "191.0.2.1:1234"
 	request.Header.Set("X-Forwarded-For", "203.0.113.9")
 	recorder := httptest.NewRecorder()
 	policy.ServeHTTP(recorder, request)

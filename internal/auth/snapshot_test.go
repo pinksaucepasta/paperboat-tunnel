@@ -43,11 +43,11 @@ func TestSnapshotRotationAndRevocation(t *testing.T) {
 	if _, err := snapshot.Key(context.Background(), "old"); err == nil {
 		t.Fatal("retired key retained")
 	}
-	revocations, _ := json.Marshal(RevocationDocument{JTIs: []string{"jti"}, Environments: []string{"other-env"}, Helpers: []RevokedHelperGeneration{{HelperID: "helper", Generation: 3}}, KeyIDs: []string{"retired"}})
+	revocations, _ := json.Marshal(RevocationDocument{JTIs: []string{"jti"}, Environments: []string{"other-env"}, Connectors: []RevokedConnectorGeneration{{MachineID: "machine", ConnectorID: "runtime", Generation: 3}}, KeyIDs: []string{"retired"}})
 	if err := snapshot.ReplaceRevocations(revocations); err != nil {
 		t.Fatal(err)
 	}
-	for _, claims := range []admission.Claims{{JTI: "jti"}, {EnvironmentID: "other-env"}, {HelperID: "helper", ConnectorGeneration: 3}, {KeyID: "retired"}} {
+	for _, claims := range []admission.Claims{{JTI: "jti"}, {EnvironmentID: "other-env"}, {MachineID: "machine", ConnectorID: "runtime", ConnectorGeneration: 3}, {KeyID: "retired"}} {
 		revoked, err := snapshot.Revoked(context.Background(), claims)
 		if err != nil || !revoked {
 			t.Fatalf("not revoked: %+v, %v", claims, err)
@@ -82,7 +82,7 @@ func TestSnapshotFailsClosedWhenRevocationsAreStale(t *testing.T) {
 	now := time.Unix(1000, 0)
 	snapshot := NewSnapshot()
 	snapshot.ConfigureRevocationFreshness(time.Minute, func() time.Time { return now })
-	if err := snapshot.ReplaceRevocations([]byte(`{"jtis":[],"environments":[],"helper_generations":[],"key_ids":[]}`)); err != nil {
+	if err := snapshot.ReplaceRevocations([]byte(`{"jtis":[],"environments":[],"connector_generations":[],"key_ids":[]}`)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := snapshot.Revoked(context.Background(), admission.Claims{}); err != nil {

@@ -18,19 +18,22 @@ const audience = "paperboat-edge"
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,127}$`)
 
 type Claims struct {
-	KeyID               string
-	Issuer              string
-	Audience            string
-	JTI                 string
-	CredentialClass     string
-	Scopes              []string
-	EnvironmentID       string
-	HelperID            string
-	ConnectorGeneration uint64
-	EdgePool            string
-	EdgeNodeID          string
-	ExpiresAt           time.Time
-	Revoked             bool
+	KeyID                  string
+	Issuer                 string
+	Audience               string
+	JTI                    string
+	CredentialClass        string
+	Scopes                 []string
+	EnvironmentID          string
+	MachineID              string
+	InstallationGeneration int64
+	HelperID               string
+	ConnectorID            string
+	ConnectorGeneration    uint64
+	EdgePool               string
+	EdgeNodeID             string
+	ExpiresAt              time.Time
+	Revoked                bool
 }
 
 type Route struct {
@@ -47,7 +50,8 @@ type Request struct {
 	OperationID string  `json:"operation_id"`
 	Credential  string  `json:"-"`
 	Environment string  `json:"environment_id"`
-	Helper      string  `json:"helper_id"`
+	Machine     string  `json:"machine_id"`
+	Connector   string  `json:"connector_id"`
 	Generation  uint64  `json:"connector_generation"`
 	EdgePool    string  `json:"edge_pool"`
 	EdgeNode    string  `json:"edge_node_id"`
@@ -57,7 +61,8 @@ type Request struct {
 type Response struct {
 	RunID       RunID
 	Environment string
-	Helper      string
+	Machine     string
+	Connector   string
 	Generation  uint64
 	EdgeNode    string
 	Routes      []Route
@@ -75,7 +80,7 @@ type Current struct {
 }
 
 type Authorizer interface {
-	Current(context.Context, string, string) (Current, error)
+	Current(context.Context, string, string, string) (Current, error)
 }
 
 type Service struct {
@@ -105,7 +110,7 @@ func (s *Service) Admit(ctx context.Context, request Request) (Response, error) 
 	if err := validateClaims(claims, request, s.Issuer, now); err != nil {
 		return Response{}, err
 	}
-	current, err := s.Authorizer.Current(ctx, request.Environment, request.Helper)
+	current, err := s.Authorizer.Current(ctx, request.Environment, request.Machine, request.Connector)
 	if err != nil {
 		return Response{}, edgeerrors.Wrap(edgeerrors.CodeCredentialInvalid, "admission state unavailable", "retry after control state recovers", err)
 	}
@@ -131,7 +136,7 @@ func (s *Service) Admit(ctx context.Context, request Request) (Response, error) 
 	if err != nil {
 		return Response{}, err
 	}
-	decision, _ := json.Marshal(Response{RunID: runID, Environment: request.Environment, Helper: request.Helper, Generation: request.Generation, EdgeNode: request.EdgeNode, Routes: request.Routes})
+	decision, _ := json.Marshal(Response{RunID: runID, Environment: request.Environment, Machine: request.Machine, Connector: request.Connector, Generation: request.Generation, EdgeNode: request.EdgeNode, Routes: request.Routes})
 	outcome, err := s.Journal.Consume(now, operation.Request{OperationID: request.OperationID, JTI: claims.JTI, Canonical: canonical, Decision: decision, RetainUntil: expires.Add(time.Minute)})
 	if err != nil {
 		return Response{}, err
@@ -153,7 +158,7 @@ func validateClaims(c Claims, r Request, issuer string, now time.Time) error {
 	if !c.ExpiresAt.After(now) {
 		return edgeerrors.New(edgeerrors.CodeCredentialExpired, "credential is expired", "request a fresh admission")
 	}
-	if c.EnvironmentID != r.Environment || c.HelperID != r.Helper || c.ConnectorGeneration != r.Generation || c.EdgePool != r.EdgePool || c.EdgeNodeID != r.EdgeNode {
+	if c.EnvironmentID != r.Environment || c.MachineID != r.Machine || c.ConnectorID != r.Connector || c.ConnectorGeneration != r.Generation || c.EdgePool != r.EdgePool || c.EdgeNodeID != r.EdgeNode {
 		return invalid("credential binding is invalid")
 	}
 	return nil
@@ -165,7 +170,7 @@ func validateRoutes(routes []Route) error {
 	}
 	seenHosts, seenIDs := map[string]bool{}, map[string]bool{}
 	for _, route := range routes {
-		if !idPattern.MatchString(route.RouteID) || !idPattern.MatchString(route.ProxyName) || route.Revision == 0 || (route.Kind != "helper_https_wss" && route.Kind != "preview_public_https_wss") || route.TargetPort == 0 || route.TargetHost != "127.0.0.1" && route.TargetHost != "::1" {
+		if !idPattern.MatchString(route.RouteID) || !idPattern.MatchString(route.ProxyName) || route.Revision == 0 || (route.Kind != "runtime_https_wss" && route.Kind != "preview_public_https_wss") || route.TargetPort == 0 || route.TargetHost != "127.0.0.1" && route.TargetHost != "::1" {
 			return invalid("route handoff is invalid")
 		}
 		host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(route.PublicHost), "."))

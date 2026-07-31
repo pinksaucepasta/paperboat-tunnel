@@ -193,7 +193,7 @@ func TestRouteWorkerReplacesAuthoritativeSnapshotAtomically(t *testing.T) {
 	state := node.New("edge")
 	state.MarkReady()
 	fake := testedge.New()
-	if err := fake.SetRoute(control.RouteAssignment{RouteID: "route", Revision: 2, Environment: "env", Generation: 1, NodeID: "edge", Kind: "helper_https_wss", PublicHost: "app.example.test", TargetHost: "127.0.0.1", TargetPort: 8080}); err != nil {
+	if err := fake.SetRoute(control.RouteAssignment{RouteID: "route", Revision: 2, Environment: "env", Generation: 1, NodeID: "edge", Kind: "runtime_https_wss", PublicHost: "app.example.test", TargetHost: "127.0.0.1", TargetPort: 8080}); err != nil {
 		t.Fatal(err)
 	}
 	pulse := make(chan time.Time, 1)
@@ -225,7 +225,7 @@ func TestRouteWorkerRejectsForeignNodeSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	worker := &RouteWorker{Registry: registry, Source: routeSourceFunc(func(context.Context, string) ([]control.RouteAssignment, error) {
-		return []control.RouteAssignment{{RouteID: "replacement", Revision: 2, Environment: "env", Generation: 2, NodeID: "other", Kind: "helper_https_wss", PublicHost: "other.example.test", TargetHost: "127.0.0.1", TargetPort: 8081}}, nil
+		return []control.RouteAssignment{{RouteID: "replacement", Revision: 2, Environment: "env", Generation: 2, NodeID: "other", Kind: "runtime_https_wss", PublicHost: "other.example.test", TargetHost: "127.0.0.1", TargetPort: 8081}}, nil
 	}), State: state, NodeID: "edge", Pulse: make(chan time.Time, 1)}
 	if err := worker.Start(context.Background()); err == nil {
 		t.Fatal("foreign snapshot accepted")

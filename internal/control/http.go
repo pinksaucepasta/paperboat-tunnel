@@ -62,11 +62,12 @@ func NewHTTPClient(config HTTPConfig) (*HTTPClient, error) {
 	return &HTTPClient{base: base, credential: config.Credential, client: client}, nil
 }
 
-func (c *HTTPClient) Current(ctx context.Context, environment, helper string) (admission.Current, error) {
+func (c *HTTPClient) Current(ctx context.Context, environment, machine, connector string) (admission.Current, error) {
 	request := struct {
 		Environment string `json:"environment_id"`
-		Helper      string `json:"helper_id"`
-	}{environment, helper}
+		Machine     string `json:"machine_id"`
+		Connector   string `json:"connector_id"`
+	}{environment, machine, connector}
 	var response struct {
 		Generation uint64 `json:"connector_generation"`
 		EdgePool   string `json:"edge_pool"`
@@ -116,6 +117,7 @@ func (c *HTTPClient) DesiredRoutes(ctx context.Context, nodeID string) ([]RouteA
 			RouteID     string `json:"route_id"`
 			Revision    uint64 `json:"route_revision"`
 			Environment string `json:"environment_id"`
+			ConnectorID string `json:"connector_id"`
 			Generation  uint64 `json:"connector_generation"`
 			NodeID      string `json:"edge_node_id"`
 			Kind        string `json:"kind"`
@@ -135,7 +137,7 @@ func (c *HTTPClient) DesiredRoutes(ctx context.Context, nodeID string) ([]RouteA
 	}
 	routes := make([]RouteAssignment, 0, len(result.Routes))
 	for _, route := range result.Routes {
-		routes = append(routes, RouteAssignment{RouteID: route.RouteID, Revision: route.Revision, Environment: route.Environment, Generation: route.Generation, NodeID: route.NodeID, Kind: route.Kind, PublicHost: route.PublicHost, TargetHost: route.Target.Host, TargetPort: route.Target.Port, PreviewState: route.PreviewState, PreviewReason: route.PreviewReason})
+		routes = append(routes, RouteAssignment{RouteID: route.RouteID, Revision: route.Revision, Environment: route.Environment, ConnectorID: route.ConnectorID, Generation: route.Generation, NodeID: route.NodeID, Kind: route.Kind, PublicHost: route.PublicHost, TargetHost: route.Target.Host, TargetPort: route.Target.Port, PreviewState: route.PreviewState, PreviewReason: route.PreviewReason})
 	}
 	return routes, nil
 }

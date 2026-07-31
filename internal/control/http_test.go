@@ -56,7 +56,7 @@ func TestHTTPClientTypedOperationsAndAuthentication(t *testing.T) {
 		case "/v1/nodes/register", "/v1/nodes/heartbeat":
 			return response(http.StatusNoContent, ""), nil
 		case "/v1/edge/routes/desired-state":
-			return response(http.StatusOK, `{"routes":[{"route_id":"route","route_revision":2,"environment_id":"env","connector_generation":3,"edge_node_id":"edge","kind":"helper_https_wss","public_host":"app.example.test","target":{"host":"127.0.0.1","port":8080}}]}`), nil
+			return response(http.StatusOK, `{"routes":[{"route_id":"route","route_revision":2,"environment_id":"env","connector_generation":3,"edge_node_id":"edge","kind":"runtime_https_wss","public_host":"app.example.test","target":{"host":"127.0.0.1","port":8080}}]}`), nil
 		case "/v1/edge/routes/observations":
 			return response(http.StatusNoContent, ""), nil
 		case "/v1/trust/revocations":
@@ -68,7 +68,7 @@ func TestHTTPClientTypedOperationsAndAuthentication(t *testing.T) {
 			return response(http.StatusNotFound, ""), nil
 		}
 	})
-	current, err := client.Current(context.Background(), "env", "helper")
+	current, err := client.Current(context.Background(), "env", "machine", "runtime")
 	if err != nil || current.Generation != 3 || current.EdgeNode != "edge_1" {
 		t.Fatalf("current = %+v, %v", current, err)
 	}
@@ -104,19 +104,19 @@ func TestHTTPClientRejectsPlaintextRedirectMalformedAndOversized(t *testing.T) {
 		result.Header.Set("Location", "https://other.test/")
 		return result, nil
 	})
-	if _, err := client.Current(context.Background(), "env", "helper"); !errors.Is(err, ErrControlUnavailable) {
+	if _, err := client.Current(context.Background(), "env", "machine", "runtime"); !errors.Is(err, ErrControlUnavailable) {
 		t.Fatalf("redirect = %v", err)
 	}
 	malformed := controlClient(t, func(*http.Request) (*http.Response, error) {
 		return response(http.StatusOK, `{"connector_generation":3,"unknown":true}`), nil
 	})
-	if _, err := malformed.Current(context.Background(), "env", "helper"); !errors.Is(err, ErrControlUnavailable) {
+	if _, err := malformed.Current(context.Background(), "env", "machine", "runtime"); !errors.Is(err, ErrControlUnavailable) {
 		t.Fatalf("malformed = %v", err)
 	}
 	oversized := controlClient(t, func(*http.Request) (*http.Response, error) {
 		return response(http.StatusOK, strings.Repeat("x", maxControlDocument+1)), nil
 	})
-	if _, err := oversized.Current(context.Background(), "env", "helper"); !errors.Is(err, ErrControlUnavailable) {
+	if _, err := oversized.Current(context.Background(), "env", "machine", "runtime"); !errors.Is(err, ErrControlUnavailable) {
 		t.Fatalf("oversized = %v", err)
 	}
 	if _, err := oversized.Revocations(context.Background()); !errors.Is(err, ErrControlUnavailable) {

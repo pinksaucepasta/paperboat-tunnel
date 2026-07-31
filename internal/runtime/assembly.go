@@ -16,6 +16,7 @@ type AssemblySpec struct {
 	Node           Component
 	Routes         Component
 	Usage          Component
+	CaddyReady     Component
 	HookAddress    string
 	GatewayAddress string
 	GatewayHandler http.Handler
@@ -36,7 +37,7 @@ type Assembly struct {
 }
 
 func NewAssembly(spec AssemblySpec) (*Assembly, error) {
-	if spec.Persistence == nil || spec.Control == nil || spec.Node == nil || spec.Routes == nil || spec.Usage == nil || spec.HookPath == "" || spec.Policy.Adapter == nil || spec.Policy.Resolver == nil || len(spec.Policy.InternalAuthToken) < 32 {
+	if spec.Persistence == nil || spec.Control == nil || spec.Node == nil || spec.Routes == nil || spec.Usage == nil || spec.CaddyReady == nil || spec.HookPath == "" || spec.Policy.Adapter == nil || spec.Policy.Resolver == nil || len(spec.Policy.InternalAuthToken) < 32 {
 		return nil, fmt.Errorf("assembly dependencies: %w", ErrProcessInvalid)
 	}
 	hook, err := NewHTTPServer(HTTPServerSpec{
@@ -74,6 +75,7 @@ func NewAssembly(spec AssemblySpec) (*Assembly, error) {
 		Gateway:     gateway,
 		FRPS:        frps,
 		Caddy:       caddy,
+		CaddyReady:  spec.CaddyReady,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("assembly lifecycle: %w", err)

@@ -13,7 +13,7 @@ type CredentialVerifier interface {
 }
 
 type AssignmentSource interface {
-	Current(context.Context, string, string) (admission.Current, error)
+	Current(context.Context, string, string, string) (admission.Current, error)
 }
 
 type UsageReport struct {
@@ -36,6 +36,7 @@ type RouteAssignment struct {
 	RouteID       string `json:"route_id"`
 	Revision      uint64 `json:"route_revision"`
 	Environment   string `json:"environment_id"`
+	ConnectorID   string `json:"connector_id"`
 	Generation    uint64 `json:"connector_generation"`
 	NodeID        string `json:"edge_node_id"`
 	Kind          string `json:"kind"`

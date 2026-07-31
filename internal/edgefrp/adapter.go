@@ -38,7 +38,8 @@ type TrafficRecorder interface {
 type session struct {
 	run         admission.RunID
 	environment string
-	helper      string
+	machine     string
+	connector   string
 	attached    []route.Attachment
 	routes      []admission.Route
 	active      map[string]uint32
@@ -99,7 +100,7 @@ func (a *Adapter) Login(ctx context.Context, request admission.Request) (admissi
 	}
 	replaced := make([]string, 0, 1)
 	for runID, current := range a.sessions {
-		if current.environment == response.Environment && current.helper == response.Helper {
+		if current.environment == response.Environment && current.machine == response.Machine && current.connector == response.Connector {
 			replaced = append(replaced, runID)
 		}
 	}
@@ -116,7 +117,7 @@ func (a *Adapter) Login(ctx context.Context, request admission.Request) (admissi
 	// Credential refresh overlaps old and new controls only while an old stream
 	// is active. Idle retired runs are removed here because frp does not
 	// guarantee a later CloseProxy callback after control replacement.
-	a.sessions[response.RunID.Value] = session{run: response.RunID, environment: response.Environment, helper: response.Helper, attached: attached, routes: append([]admission.Route(nil), response.Routes...), active: make(map[string]uint32), registered: make(map[string]bool), traffic: make(map[string][2]uint64), operationID: request.OperationID}
+	a.sessions[response.RunID.Value] = session{run: response.RunID, environment: response.Environment, machine: response.Machine, connector: response.Connector, attached: attached, routes: append([]admission.Route(nil), response.Routes...), active: make(map[string]uint32), registered: make(map[string]bool), traffic: make(map[string][2]uint64), operationID: request.OperationID}
 	var retiredAttachments []route.Attachment
 	for _, runID := range replaced {
 		current := a.sessions[runID]
@@ -154,7 +155,7 @@ func (a *Adapter) Resume(ctx context.Context, request admission.Request, priorRu
 	if !ok {
 		return admission.Response{}, ErrRunUnknown
 	}
-	if current.environment != response.Environment || current.helper != response.Helper || current.run.Generation != response.Generation {
+	if current.environment != response.Environment || current.machine != response.Machine || current.connector != response.Connector || current.run.Generation != response.Generation {
 		return admission.Response{}, route.ErrInvalid
 	}
 	if err := current.run.Resume(priorRunID, response.Generation, now); err != nil {
@@ -355,7 +356,7 @@ func (a *Adapter) CloseProxy(runID, proxyName string) {
 	}
 	current.routes, current.attached = keptRoutes, keptAttachments
 	if len(current.routes) == 0 && (!current.retired || !sessionHasActiveStreams(current)) {
-		// FRP sends CloseProxy when a helper drains its client. Do not retain an
+		// FRP sends CloseProxy when a machine drains its client. Do not retain an
 		// empty generation: stale sessions otherwise consume capacity and make a
 		// subsequent resume appear as route drift.
 		delete(a.sessions, runID)
@@ -451,7 +452,7 @@ func (a *Adapter) RecordTrafficSnapshot(runID, proxyName, proxyType string, ingr
 type frpIdentity struct{ name, group, groupKey string }
 
 func frpProxyIdentity(current session, handedOff admission.Route) frpIdentity {
-	stable := current.environment + "\x00" + current.helper + "\x00" + handedOff.RouteID + "\x00" + handedOff.ProxyName
+	stable := current.environment + "\x00" + current.machine + "\x00" + current.connector + "\x00" + handedOff.RouteID + "\x00" + handedOff.ProxyName
 	physical := stable + "\x00" + current.operationID
 	return frpIdentity{
 		name:     "pbp_" + hashPrefix("paperboat-frp-proxy-v1\x00"+physical, 32),
