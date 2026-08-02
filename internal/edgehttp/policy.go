@@ -133,6 +133,10 @@ func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
+		if !credentialAllowsHelperPath(claims.CredentialClass, r.URL.Path) {
+			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+			return
+		}
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 		r = r.WithContext(ctx)
@@ -182,7 +186,38 @@ func (p *Policy) cancelWhenAccessRevoked(ctx context.Context, cancel context.Can
 }
 
 func helperAccessPath(path string) bool {
-	return path == "/v1/runtime" || path == "/v1/file-transfers" || strings.HasPrefix(path, "/v1/file-transfers/")
+	return path == "/v1/runtime" || path == "/v1/preview-launches" || path == "/v1/file-transfers" || strings.HasPrefix(path, "/v1/file-transfers/") || codexSessionPath(path)
+}
+
+func credentialAllowsHelperPath(class, path string) bool {
+	switch {
+	case path == "/v1/runtime":
+		return class == "terminal_operation"
+	case path == "/v1/preview-launches":
+		return class == "preview_launch"
+	case path == "/v1/file-transfers" || strings.HasPrefix(path, "/v1/file-transfers/"):
+		return class == "file_transfer"
+	case codexSessionPath(path):
+		return class == "codex_connect" || class == "codex_manage"
+	default:
+		return false
+	}
+}
+
+func codexSessionPath(path string) bool {
+	const prefix = "/v1/codex-sessions/"
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	remainder := strings.TrimPrefix(path, prefix)
+	parts := strings.Split(remainder, "/")
+	if len(parts) < 1 || len(parts) > 2 || parts[0] == "" {
+		return false
+	}
+	if len(parts) == 1 {
+		return true
+	}
+	return parts[1] == "ws" || parts[1] == "renew" || parts[1] == "directories"
 }
 
 func closeRetryableWebSocket(w http.ResponseWriter, r *http.Request) bool {

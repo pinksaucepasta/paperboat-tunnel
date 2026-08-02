@@ -86,16 +86,23 @@ func (v *Verifier) VerifyHelperAccess(ctx context.Context, token string) (admiss
 	if v.Now != nil {
 		now = v.Now().UTC()
 	}
-	wantScope := ""
+	var wantScopes []string
 	switch parsed.CredentialClass {
 	case "terminal_operation":
-		wantScope = "terminal:operate"
+		wantScopes = []string{"terminal:operate"}
 	case "file_transfer":
-		wantScope = "file:transfer"
+		wantScopes = []string{"file:transfer"}
+	case "codex_connect":
+		wantScopes = []string{"codex:connect"}
+	case "codex_manage":
+		wantScopes = []string{"codex:prepare", "codex:browse", "codex:renew", "codex:stop"}
+	case "preview_launch":
+		wantScopes = []string{"preview:launch"}
 	default:
 		return admission.Claims{}, invalid()
 	}
-	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-machine" || parsed.Subject == "" || parsed.JTI == "" || len(parsed.Scope) != 1 || parsed.Scope[0] != wantScope || parsed.EnvironmentID == "" || parsed.MachineID == "" || parsed.CredentialClass == "file_transfer" && parsed.SourceMachineID == "" || parsed.CredentialClass == "terminal_operation" && parsed.SessionID == "" || parsed.UserID == "" || parsed.CLIClientSessionID == "" || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 || time.Unix(parsed.IssuedAt, 0).After(now.Add(v.ClockSkew)) || !time.Unix(parsed.Expires, 0).After(now) {
+	codexCredential := parsed.CredentialClass == "codex_connect" || parsed.CredentialClass == "codex_manage"
+	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-machine" || parsed.Subject == "" || parsed.JTI == "" || !exactScopes(parsed.Scope, wantScopes) || parsed.EnvironmentID == "" || parsed.MachineID == "" || parsed.CredentialClass == "file_transfer" && parsed.SourceMachineID == "" || parsed.CredentialClass == "terminal_operation" && parsed.SessionID == "" || codexCredential && (parsed.SessionID == "" || parsed.InstallationGeneration < 1 || parsed.ConnectorID == "" || parsed.ConnectorGeneration < 1 || parsed.EdgePool == "" || parsed.EdgeNodeID == "") || parsed.UserID == "" || parsed.CLIClientSessionID == "" || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 || time.Unix(parsed.IssuedAt, 0).After(now.Add(v.ClockSkew)) || !time.Unix(parsed.Expires, 0).After(now) {
 		return admission.Claims{}, invalid()
 	}
 	result := admission.Claims{KeyID: parsedHeader.KeyID, Issuer: parsed.Issuer, Audience: parsed.Audience, JTI: parsed.JTI, CredentialClass: parsed.CredentialClass, Scopes: append([]string(nil), parsed.Scope...), EnvironmentID: parsed.EnvironmentID, MachineID: parsed.MachineID, HelperID: parsed.HelperID, ConnectorGeneration: parsed.ConnectorGeneration, ExpiresAt: time.Unix(parsed.Expires, 0).UTC()}
@@ -107,6 +114,26 @@ func (v *Verifier) VerifyHelperAccess(ctx context.Context, token string) (admiss
 		result.Revoked = revoked
 	}
 	return result, nil
+}
+
+func exactScopes(actual, expected []string) bool {
+	if len(actual) != len(expected) {
+		return false
+	}
+	remaining := make(map[string]bool, len(expected))
+	for _, scope := range expected {
+		if scope == "" || remaining[scope] {
+			return false
+		}
+		remaining[scope] = true
+	}
+	for _, scope := range actual {
+		if !remaining[scope] {
+			return false
+		}
+		delete(remaining, scope)
+	}
+	return len(remaining) == 0
 }
 
 func (v *Verifier) verifySigned(ctx context.Context, token string) (header, claims, error) {

@@ -118,6 +118,39 @@ func TestVerifierAcceptsExactHelperAccessCredential(t *testing.T) {
 	}
 }
 
+func TestVerifierAcceptsBoundCodexCredentials(t *testing.T) {
+	public, private, _ := ed25519.GenerateKey(rand.Reader)
+	verifier := &Verifier{Issuer: "https://api.paperboat.test", Keys: StaticKeys{"key-1": public}, Now: func() time.Time { return time.Unix(1000, 0) }}
+	for class, scopes := range map[string][]string{"codex_connect": {"codex:connect"}, "codex_manage": {"codex:prepare", "codex:browse", "codex:renew", "codex:stop"}} {
+		token := tokenFor(t, private, "key-1", func(claims map[string]any) {
+			claims["aud"] = "paperboat-machine"
+			claims["credential_class"] = class
+			claims["scope"] = scopes
+			claims["machine_id"] = "machine_1"
+			claims["user_id"] = "usr_1"
+			claims["cli_client_session_id"] = "cls_1"
+			claims["session_id"] = "cdx_1"
+			delete(claims, "file_transfer_policy")
+		})
+		if claims, err := verifier.VerifyHelperAccess(context.Background(), token); err != nil || claims.CredentialClass != class {
+			t.Fatalf("%s claims=%+v err=%v", class, claims, err)
+		}
+	}
+	missingSession := tokenFor(t, private, "key-1", func(claims map[string]any) {
+		claims["aud"] = "paperboat-machine"
+		claims["credential_class"] = "codex_connect"
+		claims["scope"] = []string{"codex:connect"}
+		claims["machine_id"] = "machine_1"
+		claims["user_id"] = "usr_1"
+		claims["cli_client_session_id"] = "cls_1"
+		delete(claims, "session_id")
+		delete(claims, "file_transfer_policy")
+	})
+	if _, err := verifier.VerifyHelperAccess(context.Background(), missingSession); err == nil {
+		t.Fatal("Codex credential without session accepted")
+	}
+}
+
 func TestVerifierRejectsMalformedWrongKeySignatureAndClaims(t *testing.T) {
 	public, private, _ := ed25519.GenerateKey(rand.Reader)
 	_, otherPrivate, _ := ed25519.GenerateKey(rand.Reader)

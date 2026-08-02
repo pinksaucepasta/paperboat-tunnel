@@ -163,7 +163,7 @@ func policyFor(t *testing.T, next http.Handler) *Policy {
 		t.Fatal(err)
 	}
 	policy, err := New(Config{PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", TrustedProxies: trusted, MaxHeaderBytes: 4096, MaxBodyBytes: 1024, HelperAccess: helperAccessFunc(func(context.Context, string) (admission.Claims, error) {
-		return admission.Claims{JTI: "jti_test", EnvironmentID: "env_test", ExpiresAt: time.Now().Add(time.Minute)}, nil
+		return admission.Claims{JTI: "jti_test", EnvironmentID: "env_test", CredentialClass: "terminal_operation", ExpiresAt: time.Now().Add(time.Minute)}, nil
 	}), Revocations: revocationFunc(func(context.Context, admission.Claims) (bool, error) { return false, nil }), RevocationCheckInterval: time.Millisecond}, next)
 	if err != nil {
 		t.Fatal(err)
@@ -231,7 +231,7 @@ func TestFileTransferRoutesRequireAccessAndPreserveResumeHeaders(t *testing.T) {
 		if token != "signed-test-credential" {
 			return admission.Claims{}, errors.New("invalid")
 		}
-		return admission.Claims{JTI: "jti_transfer", EnvironmentID: "env_1", ExpiresAt: time.Now().Add(time.Minute)}, nil
+		return admission.Claims{JTI: "jti_transfer", EnvironmentID: "env_1", CredentialClass: "file_transfer", ExpiresAt: time.Now().Add(time.Minute)}, nil
 	})
 	config.Revocations = revocationFunc(func(context.Context, admission.Claims) (bool, error) { return false, nil })
 	config.RevocationCheckInterval = time.Second
@@ -270,6 +270,22 @@ func TestFileTransferRoutesRequireAccessAndPreserveResumeHeaders(t *testing.T) {
 	}
 }
 
+func TestHelperCredentialClassesCannotCrossCapabilityPaths(t *testing.T) {
+	allowed := map[string]string{
+		"file_transfer": "/v1/file-transfers", "preview_launch": "/v1/preview-launches",
+		"terminal_operation": "/v1/runtime", "codex_connect": "/v1/codex-sessions/cdx_1/ws",
+	}
+	paths := []string{"/v1/file-transfers", "/v1/preview-launches", "/v1/runtime", "/v1/codex-sessions/cdx_1/ws"}
+	for class, ownPath := range allowed {
+		for _, path := range paths {
+			got := credentialAllowsHelperPath(class, path)
+			if got != (path == ownPath) {
+				t.Fatalf("class=%s path=%s allowed=%v", class, path, got)
+			}
+		}
+	}
+}
+
 func TestHelperAccessRequiresCredentialAndCancelsWhenRevoked(t *testing.T) {
 	var revoked atomic.Bool
 	config := previewConfig()
@@ -277,7 +293,7 @@ func TestHelperAccessRequiresCredentialAndCancelsWhenRevoked(t *testing.T) {
 		if token != "signed-test-credential" {
 			return admission.Claims{}, errors.New("invalid")
 		}
-		return admission.Claims{JTI: "jti_stream", EnvironmentID: "env_stream", ExpiresAt: time.Now().Add(time.Minute)}, nil
+		return admission.Claims{JTI: "jti_stream", EnvironmentID: "env_stream", CredentialClass: "terminal_operation", ExpiresAt: time.Now().Add(time.Minute)}, nil
 	})
 	config.Revocations = revocationFunc(func(context.Context, admission.Claims) (bool, error) { return revoked.Load(), nil })
 	config.RevocationCheckInterval = time.Millisecond
@@ -317,7 +333,7 @@ func TestEstablishedHelperAccessSurvivesCredentialExpiry(t *testing.T) {
 	var revoked atomic.Bool
 	config := previewConfig()
 	config.HelperAccess = helperAccessFunc(func(context.Context, string) (admission.Claims, error) {
-		return admission.Claims{JTI: "jti_expiring_stream", EnvironmentID: "env_stream", ExpiresAt: time.Now().Add(5 * time.Millisecond)}, nil
+		return admission.Claims{JTI: "jti_expiring_stream", EnvironmentID: "env_stream", CredentialClass: "terminal_operation", ExpiresAt: time.Now().Add(5 * time.Millisecond)}, nil
 	})
 	config.Revocations = revocationFunc(func(context.Context, admission.Claims) (bool, error) { return revoked.Load(), nil })
 	config.RevocationCheckInterval = time.Millisecond
@@ -378,7 +394,7 @@ func TestGatewayClosesUpgradedHelperConnectionWhenRevoked(t *testing.T) {
 		if token != "signed-test-credential" {
 			return admission.Claims{}, errors.New("invalid")
 		}
-		return admission.Claims{JTI: "jti_stream", EnvironmentID: "env_stream", ExpiresAt: time.Now().Add(time.Minute)}, nil
+		return admission.Claims{JTI: "jti_stream", EnvironmentID: "env_stream", CredentialClass: "terminal_operation", ExpiresAt: time.Now().Add(time.Minute)}, nil
 	})
 	config.Revocations = revocationFunc(func(context.Context, admission.Claims) (bool, error) {
 		return revoked.Load(), nil
@@ -489,6 +505,24 @@ func TestCancellationAndStreamingInterfacesPassThrough(t *testing.T) {
 	policy.ServeHTTP(recorder, request)
 	if recorder.Body.String() != "data: ready\n\n" || !recorder.Flushed {
 		t.Fatalf("stream = %q flushed=%v", recorder.Body.String(), recorder.Flushed)
+	}
+}
+
+func TestCodexSessionPathsUseAuthenticatedRuntimeRoute(t *testing.T) {
+	for _, path := range []string{
+		"/v1/codex-sessions/cdx_12345678",
+		"/v1/codex-sessions/cdx_12345678/ws",
+		"/v1/codex-sessions/cdx_12345678/renew",
+		"/v1/codex-sessions/cdx_12345678/directories",
+	} {
+		if !helperAccessPath(path) {
+			t.Fatalf("helperAccessPath(%q) = false", path)
+		}
+	}
+	for _, path := range []string{"/v1/codex-sessions", "/v1/codex-sessions/", "/v1/codex-sessions/id/other", "/v1/codex-sessions/id/ws/extra"} {
+		if helperAccessPath(path) {
+			t.Fatalf("helperAccessPath(%q) = true", path)
+		}
 	}
 }
 
