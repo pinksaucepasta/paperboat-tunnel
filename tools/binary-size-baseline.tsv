@@ -1,0 +1,6 @@
+# Reviewed 2026-08-06 after the primary peer transport and relay cutover.
+# Updating a size requires package/dependency attribution in the reviewing change.
+paperboat-tunnel	linux	amd64	8425634
+paperboat-tunnel	linux	arm64	7798946
+frps	linux	amd64	20095138
+frps	linux	arm64	17957026

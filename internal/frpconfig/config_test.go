@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -30,6 +31,11 @@ func TestGenerateIsDeterministicAndRestrictive(t *testing.T) {
 	if decoded["vhostHTTPSPort"].(float64) != 0 || decoded["tcpmuxHTTPConnectPort"].(float64) != 0 || decoded["kcpBindPort"].(float64) != 0 || decoded["enablePrometheus"].(bool) {
 		t.Fatalf("unsafe surfaces enabled: %s", first)
 	}
+	for _, excluded := range []string{"sshTunnelGateway", "natHoleAnalysisDataReserveHours", "allowPorts"} {
+		if _, present := decoded[excluded]; present {
+			t.Fatalf("excluded FRP configuration %q is present: %s", excluded, first)
+		}
+	}
 	if decoded["vhostHTTPPreserveXForwardedProto"] != true {
 		t.Fatalf("trusted public scheme is not preserved: %s", first)
 	}
@@ -50,6 +56,22 @@ func TestGenerateIsDeterministicAndRestrictive(t *testing.T) {
 	}
 	if metadata.ConfigSHA256 == "" || metadata.FRPCommit != FRPCommit {
 		t.Fatalf("metadata = %+v", metadata)
+	}
+}
+
+func TestFRPProvenanceMatchesBuildAndReleasePins(t *testing.T) {
+	makefile, err := os.ReadFile(filepath.Join("..", "..", "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := os.ReadFile(filepath.Join("..", "..", "RELEASE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, document := range map[string]string{"Makefile": string(makefile), "RELEASE.md": string(release)} {
+		if !strings.Contains(document, FRPCommit) || !strings.Contains(document, FRPVersion) {
+			t.Fatalf("%s does not match generated frp provenance", name)
+		}
 	}
 }
 

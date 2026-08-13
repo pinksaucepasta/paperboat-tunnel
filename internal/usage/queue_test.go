@@ -1,6 +1,9 @@
 package usage
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestEpochIsRandomAndQueueRetriesExactReport(t *testing.T) {
 	one, err := NewCounterEpoch()
@@ -81,5 +84,23 @@ func TestQueueCoalescesNewestAbsoluteSnapshot(t *testing.T) {
 	report, ok := queue.Next()
 	if !ok || report.OperationID != "new" || report.Bytes != 20 || string(report.Payload) != "new" {
 		t.Fatalf("report=%+v present=%v", report, ok)
+	}
+}
+
+func TestQueueByteBoundsRejectBeforeIntegerOverflow(t *testing.T) {
+	queue, _ := NewQueue(2, math.MaxInt)
+	queue.bytes = math.MaxInt - 1
+	if err := queue.Enqueue(Report{OperationID: "new", Payload: []byte("12")}); err != ErrQueueFull {
+		t.Fatalf("enqueue error=%v", err)
+	}
+
+	latest, _ := NewQueue(1, math.MaxInt)
+	key := Key{Node: "n", Epoch: "e", Environment: "env", Route: "r", Direction: "ingress"}
+	if err := latest.EnqueueLatest(Report{OperationID: "old", Key: key, Bytes: 1, Payload: []byte("1")}); err != nil {
+		t.Fatal(err)
+	}
+	latest.bytes = math.MaxInt
+	if err := latest.EnqueueLatest(Report{OperationID: "new", Key: key, Bytes: 2, Payload: []byte("12")}); err != ErrQueueFull {
+		t.Fatalf("latest error=%v", err)
 	}
 }

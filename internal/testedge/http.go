@@ -92,8 +92,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		routes, routeErr := h.Fake.DesiredRoutes(r.Context(), request.NodeID)
-		err = routeErr
-		if err == nil {
+		if routeErr == nil {
 			items := make([]map[string]any, 0, len(routes))
 			for _, route := range routes {
 				items = append(items, map[string]any{"route_id": route.RouteID, "route_revision": route.Revision, "environment_id": route.Environment, "connector_generation": route.Generation, "edge_node_id": route.NodeID, "kind": route.Kind, "public_host": route.PublicHost, "target": map[string]any{"host": route.TargetHost, "port": route.TargetPort}})
@@ -104,9 +103,6 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 		return
-	}
-	if err == nil {
-		err = ErrInvalid
 	}
 	http.Error(w, "request rejected", http.StatusBadRequest)
 }

@@ -45,6 +45,11 @@ func TestLoginAttachesOnlyAfterAdmissionAndRevokeCleansUp(t *testing.T) {
 	if err := adapter.AuthorizeProxy(response.RunID.Value, identity.name, "http", "helper.example.test", identity.group, identity.groupKey); err != nil {
 		t.Fatal(err)
 	}
+	for _, forbiddenType := range []string{"tcp", "udp", "xtcp", "kcp", "stcp", "sudp", "nat-hole"} {
+		if err := adapter.AuthorizeProxy(response.RunID.Value, identity.name, forbiddenType, "helper.example.test", identity.group, identity.groupKey); err == nil {
+			t.Fatalf("forbidden FRP proxy type %q was authorized", forbiddenType)
+		}
+	}
 	if kind, state, reason, found := adapter.RouteState("helper.example.test"); !found || kind != "runtime_https_wss" || state != "ready" || reason != "" {
 		t.Fatalf("registered helper state = kind=%q state=%q reason=%q found=%v", kind, state, reason, found)
 	}

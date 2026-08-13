@@ -67,19 +67,26 @@ type RevocationSource interface {
 }
 
 type NodeRegistration struct {
-	NodeID       string            `json:"edge_node_id"`
-	EdgePool     string            `json:"edge_pool"`
-	Artifact     string            `json:"artifact"`
-	Protocol     string            `json:"protocol"`
-	ProcessEpoch string            `json:"process_epoch"`
-	Capacity     uint32            `json:"capacity"`
-	Endpoint     ConnectorEndpoint `json:"connector_endpoint"`
+	NodeID        string            `json:"edge_node_id"`
+	EdgePool      string            `json:"edge_pool"`
+	Artifact      string            `json:"artifact"`
+	Protocol      string            `json:"protocol"`
+	ProcessEpoch  string            `json:"process_epoch"`
+	Capacity      uint32            `json:"capacity"`
+	Endpoint      ConnectorEndpoint `json:"connector_endpoint"`
+	SignalingHost string            `json:"signaling_host"`
+	STUNEndpoint  UDPEndpoint       `json:"stun_endpoint"`
 }
 
 type ConnectorEndpoint struct {
 	Host     string `json:"host"`
 	TCPPort  uint16 `json:"tcp_port"`
 	QUICPort uint16 `json:"quic_port"`
+}
+
+type UDPEndpoint struct {
+	Host string `json:"host"`
+	Port uint16 `json:"port"`
 }
 
 type NodeObservation struct {

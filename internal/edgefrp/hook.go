@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/edgeerrors"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/strictjson"
 )
 
 const APIVersion = "0.1.0"
@@ -51,6 +52,10 @@ func (h Hook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request wireRequest
+	if err := strictjson.Validate(body, 64); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
 	if err := json.Unmarshal(body, &request); err != nil || request.Version != APIVersion {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return

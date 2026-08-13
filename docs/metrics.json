@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "metrics": [
+    {
+      "name": "paperboat_tunnel_active_streams",
+      "kind": "gauge"
+    },
+    {
+      "name": "paperboat_tunnel_attached_routes",
+      "kind": "gauge"
+    },
+    {
+      "name": "paperboat_tunnel_certificate_expiry_timestamp_seconds",
+      "kind": "gauge"
+    },
+    {
+      "name": "paperboat_tunnel_connector_capacity",
+      "kind": "gauge"
+    },
+    {
+      "name": "paperboat_tunnel_connectors",
+      "kind": "gauge"
+    },
+    {
+      "name": "paperboat_tunnel_dependency_healthy",
+      "kind": "gauge",
+      "labels": {
+        "dependency": [
+          "caddy",
+          "control",
+          "frps",
+          "routes",
+          "signaling",
+          "stun",
+          "usage"
+        ]
+      }
+    },
+    {
+      "name": "paperboat_tunnel_events_total",
+      "kind": "counter",
+      "labels": {
+        "direction": [
+          "",
+          "egress",
+          "ingress"
+        ],
+        "kind": [
+          "admission",
+          "cleanup",
+          "node",
+          "route",
+          "stream",
+          "usage"
+        ],
+        "result": [
+          "canceled",
+          "failed",
+          "rejected",
+          "success"
+        ],
+        "route_kind": [
+          "",
+          "preview_public_https_wss",
+          "runtime_https_wss"
+        ]
+      }
+    },
+    {
+      "name": "paperboat_tunnel_live",
+      "kind": "gauge"
+    },
+    {
+      "name": "paperboat_tunnel_ready",
+      "kind": "gauge"
+    },
+    {
+      "name": "paperboat_tunnel_signaling_attachments",
+      "kind": "gauge"
+    },
+    {
+      "name": "paperboat_tunnel_signaling_capacity",
+      "kind": "gauge"
+    },
+    {
+      "name": "paperboat_tunnel_signaling_sessions",
+      "kind": "gauge"
+    },
+    {
+      "name": "paperboat_tunnel_stun_errors_total",
+      "kind": "counter"
+    },
+    {
+      "name": "paperboat_tunnel_stun_rejected_total",
+      "kind": "counter"
+    },
+    {
+      "name": "paperboat_tunnel_stun_requests_total",
+      "kind": "counter"
+    },
+    {
+      "name": "paperboat_tunnel_traffic_egress_bytes_total",
+      "kind": "counter"
+    },
+    {
+      "name": "paperboat_tunnel_traffic_ingress_bytes_total",
+      "kind": "counter"
+    },
+    {
+      "name": "paperboat_tunnel_usage_oldest_age_seconds",
+      "kind": "gauge"
+    },
+    {
+      "name": "paperboat_tunnel_usage_pending_bytes",
+      "kind": "gauge"
+    },
+    {
+      "name": "paperboat_tunnel_usage_pending_reports",
+      "kind": "gauge"
+    }
+  ]
+}

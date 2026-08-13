@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/admission"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/strictjson"
 )
 
 const maxControlDocument = 1 << 20
@@ -207,12 +208,7 @@ func (c *HTTPClient) post(ctx context.Context, path string, input, output any) e
 	if err != nil || len(data) > maxControlDocument {
 		return ErrControlUnavailable
 	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(output); err != nil {
-		return ErrControlUnavailable
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+	if err := strictjson.Decode(data, output, 64); err != nil {
 		return ErrControlUnavailable
 	}
 	return nil

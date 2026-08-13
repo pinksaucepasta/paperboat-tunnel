@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -27,9 +30,16 @@ import (
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/node"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/observability"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/operation"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/peerrelay"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/peerrelayhttp"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/peersignaling"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/peersignalinghttp"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/peersignalingprotocol"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/publicpreviewrelay"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/route"
 	edgeruntime "github.com/pinksaucepasta/paperboat-tunnel/internal/runtime"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/store"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/stunserver"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/usage"
 )
 
@@ -123,9 +133,17 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	snapshotState := func() store.State {
 		return store.State{Version: store.CurrentVersion, CounterEpoch: epoch, Operations: journal.Snapshot(), Counters: counters.Snapshot(), PendingUsage: queue.Snapshot()}
 	}
-	verifier := &auth.Verifier{Issuer: deployment.CredentialIssuer, Keys: trust.Snapshot, Revocations: trust.Snapshot, ClockSkew: 30 * time.Second}
+	verifier := &auth.Verifier{Issuer: deployment.CredentialIssuer, NodeID: cfg.NodeID, Keys: trust.Snapshot, Revocations: trust.Snapshot, ClockSkew: 30 * time.Second}
+	signalingService, err := peersignaling.New(peersignaling.Config{Authenticator: verifier, Validators: peersignalingprotocol.Factory{}, MaximumSessions: int(deployment.SignalingCapacity), MaximumConsumed: int(deployment.SignalingCapacity) * 4, QueueDepth: 128, MaximumMessage: peersignalingprotocol.MaximumMessage})
+	if err != nil {
+		return nil, fmt.Errorf("create peer signaling service: %w", err)
+	}
 	admissions := &admission.Service{Issuer: deployment.CredentialIssuer, Verifier: verifier, Authorizer: client, Journal: journal}
 	adapter := edgefrp.NewAdapter(admissions, routes, deployment.NodeCapacity)
+	previewRelay, err := publicpreviewrelay.New(admissions, routes)
+	if err != nil {
+		return nil, fmt.Errorf("create public preview relay: %w", err)
+	}
 	meter := &usage.Meter{Node: cfg.NodeID, Epoch: epoch, Counters: counters, Queue: queue, KeyID: trust.UsageKeyID, PrivateKey: trust.UsagePrivateKey, Persist: func() error {
 		return store.Save(cfg.StatePath, snapshotState())
 	}}
@@ -133,6 +151,10 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 		return nil, fmt.Errorf("restore usage baseline: %w", err)
 	}
 	adapter.Traffic = meter
+	relayManager, err := peerrelay.NewManager(peerrelay.DevelopmentConfig(), peerrelay.MeterRecorder{Meter: meter}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create peer relay manager: %w", err)
+	}
 	internalToken, err := edgefrp.NewInternalAuthToken()
 	if err != nil {
 		return nil, fmt.Errorf("create internal frps token: %w", err)
@@ -148,13 +170,21 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	bundle, err := edgeruntime.PrepareBundle(edgeruntime.BundleSpec{
 		Directory: filepath.Join(deployment.RuntimeDirectory, "config"), FRPSBinary: deployment.FRPSBinary, CaddyBinary: deployment.CaddyBinary, FRPSSHA256: deployment.FRPSSHA256, CaddySHA256: deployment.CaddySHA256, MaxOutputBytes: 1 << 20,
 		FRPS:  frpconfig.Input{BindAddr: deployment.ConnectorBindAddress, BindPort: deployment.ConnectorTCPPort, QUICBindPort: deployment.ConnectorQUICPort, PrivateProxyAddr: vhostHost, VhostHTTPPort: vhostPort, HookAddr: deployment.HookAddress, HookPath: deployment.HookPath, StreamBrokerPath: filepath.Join(deployment.RuntimeDirectory, "config", "frps-stream.sock"), InternalAuthToken: internalToken, LogLevel: deployment.FRPSLogLevel, TCPMux: deployment.ConnectorTCPMux},
-		Caddy: caddyconfig.Input{PreviewBaseDomain: deployment.PreviewBaseDomain, HelperBaseDomain: deployment.HelperBaseDomain, PrivateUpstream: deployment.EdgeGatewayAddress, ListenAddress: deployment.CaddyListenAddress, HTTPListenAddress: deployment.CaddyHTTPListenAddress, AdminAddress: deployment.CaddyAdminAddress, TrustedProxies: deployment.TrustedProxyCIDRs, IssuerModule: deployment.CertificateIssuer, DNSProvider: deployment.CertificateDNSProvider, CertificateAskURL: "http://" + deployment.EdgeGatewayAddress + "/private/certificate-ask", StreamBrokerPath: filepath.Join(deployment.RuntimeDirectory, "config", "frps-stream.sock"), PublicRoutes: publicCaddyRoutes(deployment.PublicRoutes)},
+		Caddy: caddyconfig.Input{PreviewBaseDomain: deployment.PreviewBaseDomain, HelperBaseDomain: deployment.HelperBaseDomain, SignalingHost: deployment.SignalingHost, PrivateUpstream: deployment.EdgeGatewayAddress, ListenAddress: deployment.CaddyListenAddress, HTTPListenAddress: deployment.CaddyHTTPListenAddress, AdminAddress: deployment.CaddyAdminAddress, TrustedProxies: deployment.TrustedProxyCIDRs, IssuerModule: deployment.CertificateIssuer, DNSProvider: deployment.CertificateDNSProvider, CertificateAskURL: "http://" + deployment.EdgeGatewayAddress + "/private/certificate-ask", StreamBrokerPath: filepath.Join(deployment.RuntimeDirectory, "config", "frps-stream.sock"), PublicRoutes: publicCaddyRoutes(deployment.PublicRoutes)},
 	})
 	if err != nil {
 		return nil, err
 	}
 	persistence := edgeruntime.Persistence{Path: cfg.StatePath, Restore: func(store.State) error { return nil }, Snapshot: snapshotState}
-	nodeWorker := &edgeruntime.NodeWorker{Manager: manager, Sink: client, Registration: control.NodeRegistration{NodeID: cfg.NodeID, EdgePool: cfg.EdgePool, Artifact: bundle.FRPSMetadata.FRPVersion + "+" + bundle.CaddyMetadata.Version, Protocol: "1.0", ProcessEpoch: processEpoch, Capacity: deployment.NodeCapacity, Endpoint: control.ConnectorEndpoint{Host: deployment.ConnectorAdvertiseHost, TCPPort: uint16(deployment.ConnectorTCPPort), QUICPort: uint16(deployment.ConnectorQUICPort)}}, Interval: deployment.ControlInterval}
+	_, stunPortText, err := net.SplitHostPort(deployment.STUNListenAddress)
+	if err != nil {
+		return nil, fmt.Errorf("parse STUN listen address: %w", err)
+	}
+	stunPort, err := strconv.ParseUint(stunPortText, 10, 16)
+	if err != nil || stunPort == 0 {
+		return nil, fmt.Errorf("parse STUN listen port")
+	}
+	nodeWorker := &edgeruntime.NodeWorker{Manager: manager, Sink: client, Registration: control.NodeRegistration{NodeID: cfg.NodeID, EdgePool: cfg.EdgePool, Artifact: bundle.FRPSMetadata.FRPVersion + "+" + bundle.CaddyMetadata.Version, Protocol: "1.0", ProcessEpoch: processEpoch, Capacity: deployment.NodeCapacity, Endpoint: control.ConnectorEndpoint{Host: deployment.ConnectorAdvertiseHost, TCPPort: uint16(deployment.ConnectorTCPPort), QUICPort: uint16(deployment.ConnectorQUICPort)}, SignalingHost: deployment.SignalingHost, STUNEndpoint: control.UDPEndpoint{Host: deployment.ConnectorAdvertiseHost, Port: uint16(stunPort)}}, Interval: deployment.ControlInterval}
 	routeWorker := &edgeruntime.RouteWorker{Registry: routes, Source: client, Observer: client, State: state, NodeID: cfg.NodeID, Interval: deployment.ControlInterval}
 	usageWorker := &edgeruntime.UsageWorker{Queue: queue, Sink: client, Prepare: meter, Persist: meter.Persist, Interval: 250 * time.Millisecond}
 	metrics := observability.NewMetrics()
@@ -167,11 +197,25 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	if err != nil {
 		return nil, fmt.Errorf("parse edge trusted proxies: %w", err)
 	}
-	gateway, err := edgehttp.NewGateway(edgehttp.Config{PreviewBaseDomain: deployment.PreviewBaseDomain, HelperBaseDomain: deployment.HelperBaseDomain, TrustedProxies: trusted, MaxHeaderBytes: 32 << 10, MaxBodyBytes: 50 << 20, Readiness: adapter, HelperAccess: verifier, Revocations: trust.Snapshot, RevocationCheckInterval: deployment.ControlInterval}, deployment.PrivateVhostAddress)
+	previewTransport := &http.Transport{Proxy: nil, DialContext: previewRelay.DialContext, DisableKeepAlives: true, ForceAttemptHTTP2: false}
+	gateway, err := edgehttp.NewGatewayWithTransport(edgehttp.Config{PreviewBaseDomain: deployment.PreviewBaseDomain, HelperBaseDomain: deployment.HelperBaseDomain, TrustedProxies: trusted, MaxHeaderBytes: 32 << 10, MaxBodyBytes: 50 << 20, Readiness: previewRelay, HelperAccess: verifier, Revocations: trust.Snapshot, RevocationCheckInterval: deployment.ControlInterval}, deployment.PrivateVhostAddress, previewTransport)
 	if err != nil {
 		return nil, fmt.Errorf("create edge gateway: %w", err)
 	}
-	gatewayHandler := edgehttp.WithCertificateAsk(gateway, adapter)
+	signalingHandler := peersignalinghttp.Handler{Path: "/v1/peer-signaling", Service: signalingService, ObserveError: func(err error) {
+		log.Printf("peer signaling failed: %v", err)
+	}}
+	relayHandler := peerrelayhttp.Handler{Path: "/v1/peer-relay", Authenticator: verifier, Manager: relayManager, ObserveAttach: func(attachment peerrelayhttp.Attachment) {
+		handle := sha256.Sum256(attachment.StreamHandle[:])
+		log.Printf("peer relay attachment endpoint=%s role=%d carrier=%d handle=%x", attachment.EndpointID, attachment.Role, attachment.Carrier, handle[:8])
+	}, ObserveError: func(err error) {
+		log.Printf("peer relay failed: %v", err)
+	}}
+	previewRelayHandler := publicpreviewrelay.Handler{Manager: previewRelay, ObserveAttach: func(carrier string) {
+		log.Printf("public preview relay attached carrier=%s", carrier)
+	}}
+	gatewayDispatch := peerServiceDispatch(deployment.SignalingHost, signalingHandler, relayHandler, previewRelayHandler, gateway)
+	gatewayHandler := edgehttp.WithCertificateAsk(gatewayDispatch, adapter)
 	assembly, err := edgeruntime.NewAssembly(edgeruntime.AssemblySpec{Persistence: persistence, Control: controlDependency, Node: nodeWorker, Routes: routeWorker, Usage: usageWorker, HookAddress: deployment.HookAddress, GatewayAddress: deployment.EdgeGatewayAddress, GatewayHandler: gatewayHandler, HookPath: deployment.HookPath, Policy: edgefrp.Policy{Adapter: adapter, Resolver: edgefrp.MetadataResolver{}, InternalAuthToken: internalToken}, HookReject: func(operation, reason string) {
 		log.Printf("frp hook rejected operation=%s reason=%s", operation, reason)
 	}, HookObserve: func(operation string, rejected bool) {
@@ -194,6 +238,12 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	if err != nil {
 		return nil, err
 	}
+	stunService, err := stunserver.New(stunserver.Config{Address: deployment.STUNListenAddress, AuthenticatePMTU: func(token string, _ netip.AddrPort) bool {
+		return verifier.AuthenticatePMTU(context.Background(), token) == nil
+	}})
+	if err != nil {
+		return nil, fmt.Errorf("create STUN service: %w", err)
+	}
 	health, err := observability.NewHandler(observability.Sources{
 		Node:          state.Snapshot,
 		Manager:       manager.Snapshot,
@@ -207,6 +257,14 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 		UsageErr:      usageWorker.LastError,
 		FRPRunning:    assembly.FRPS.Running,
 		CaddyRunning:  assembly.Caddy.Running,
+		STUN: func() observability.STUNStats {
+			stats := stunService.Stats()
+			return observability.STUNStats{Running: stats.Running, Accepted: stats.Accepted, Rejected: stats.Rejected, Errors: stats.Errors}
+		},
+		Signaling: func() observability.SignalingStats {
+			stats := signalingService.Stats()
+			return observability.SignalingStats{Running: stats.Running, Sessions: stats.Sessions, Attachments: stats.Attachments, Capacity: stats.Capacity}
+		},
 		CaddyTLS: func() (time.Time, error) {
 			return probeCaddyTLS(deployment.CaddyListenAddress, tlsProbeHost)
 		},
@@ -216,11 +274,54 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	if err != nil {
 		return nil, fmt.Errorf("create private observability handler: %w", err)
 	}
-	service := edgeruntime.New(cfg, state, assembly)
+	service := edgeruntime.New(cfg, state, signalingService, relayLifecycle{manager: relayManager}, assembly, stunService)
 	if err := service.SetHealthHandler(health); err != nil {
 		return nil, err
 	}
 	return service, nil
+}
+
+func peerServiceDispatch(signalingHost string, signaling, relay, previewRelay, gateway http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		host := request.Host
+		if parsed, _, err := net.SplitHostPort(host); err == nil {
+			host = parsed
+		}
+		if strings.ToLower(host) == signalingHost {
+			if request.Method == http.MethodGet && request.URL.Path == "/network-check/v1" {
+				writer.Header().Set("Cache-Control", "no-store")
+				writer.Header().Set("X-Content-Type-Options", "nosniff")
+				writer.WriteHeader(http.StatusNoContent)
+				return
+			}
+			if request.URL.Path == "/v1/peer-signaling" {
+				signaling.ServeHTTP(writer, request)
+				return
+			}
+			if request.URL.Path == "/v1/peer-relay" {
+				relay.ServeHTTP(writer, request)
+				return
+			}
+			if request.URL.Path == publicpreviewrelay.Path {
+				previewRelay.ServeHTTP(writer, request)
+				return
+			}
+			http.NotFound(writer, request)
+			return
+		}
+		gateway.ServeHTTP(writer, request)
+	})
+}
+
+type relayLifecycle struct{ manager *peerrelay.Manager }
+
+func (relayLifecycle) Start(context.Context) error { return nil }
+func (r relayLifecycle) Shutdown(context.Context) error {
+	if r.manager == nil {
+		return nil
+	}
+	r.manager.BeginDrain()
+	return r.manager.Close()
 }
 
 func publicCaddyRoutes(routes []config.PublicRoute) []caddyconfig.PublicRoute {

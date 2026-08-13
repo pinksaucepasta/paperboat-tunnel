@@ -1,8 +1,8 @@
-ARG GO_VERSION=1.25.7
+ARG GO_VERSION=1.26.5
 ARG CADDY_VERSION=2.11.4
 ARG PAPERBOAT_VERSION
 
-FROM golang:${GO_VERSION}-bookworm@sha256:564e366a28ad1d70f460a2b97d1d299a562f08707eb0ecb24b659e5bd6c108e1 AS go-build
+FROM golang:${GO_VERSION}-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651 AS go-build
 ARG PAPERBOAT_VERSION
 WORKDIR /src
 COPY . .
@@ -12,9 +12,10 @@ RUN cd frp && CGO_ENABLED=0 go build -p=2 -trimpath -buildvcs=false -ldflags='-s
 
 FROM caddy:${CADDY_VERSION}-builder@sha256:198d47eaee306d4d0c38a9960c89ff2c959aa29ad51d3e2dafa3e93ac961782a AS caddy-build
 WORKDIR /src
-COPY caddymodules/paperboatquic ./caddymodules/paperboatquic
+COPY . .
 RUN xcaddy build \
   --with github.com/caddy-dns/cloudflare@v0.2.4 \
+  --replace github.com/pinksaucepasta/paperboat-tunnel=. \
   --with github.com/pinksaucepasta/paperboat-tunnel/caddymodules/paperboatquic=./caddymodules/paperboatquic
 
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818

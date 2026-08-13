@@ -16,7 +16,7 @@ func TestMetadataResolverDecodesExactHandoff(t *testing.T) {
 
 func TestMetadataResolverRejectsUnknownOversizedAndAdditionalMetadata(t *testing.T) {
 	resolver := MetadataResolver{}
-	for _, metas := range []map[string]string{{AdmissionMetadataKey: `{"unknown":true}`}, {AdmissionMetadataKey: strings.Repeat("x", maxAdmissionMetadata+1)}, {AdmissionMetadataKey: `{}`, "other": "value"}, {}} {
+	for _, metas := range []map[string]string{{AdmissionMetadataKey: `{"unknown":true}`}, {AdmissionMetadataKey: `{"operation_id":"first","operation_id":"second"}`}, {AdmissionMetadataKey: `{"operation_id":"op","routes":[{"target":{"host":"127.0.0.1","host":"::1"}}]}`}, {AdmissionMetadataKey: strings.Repeat("x", maxAdmissionMetadata+1)}, {AdmissionMetadataKey: `{}`, "other": "value"}, {}} {
 		if _, err := resolver.ResolveLogin(context.Background(), LoginContent{Metas: metas}); err == nil {
 			t.Fatalf("metadata accepted: %v", metas)
 		}

@@ -189,10 +189,10 @@ func (m *Manager) Snapshot() ManagerSnapshot {
 	snapshot := ManagerSnapshot{Capacity: m.capacity, Connectors: make([]ConnectorSnapshot, 0, len(m.connectors))}
 	for id, current := range m.connectors {
 		snapshot.Connectors = append(snapshot.Connectors, ConnectorSnapshot{ID: id, Generation: current.generation, Streams: current.streams})
-		snapshot.Streams += current.streams
+		snapshot.Streams = saturatingAddUint32(snapshot.Streams, current.streams)
 		for generation, streams := range current.retired {
 			snapshot.Connectors = append(snapshot.Connectors, ConnectorSnapshot{ID: id, Generation: generation, Streams: streams})
-			snapshot.Streams += streams
+			snapshot.Streams = saturatingAddUint32(snapshot.Streams, streams)
 		}
 	}
 	snapshot.Draining = m.state.Snapshot().Phase == Draining
@@ -218,12 +218,18 @@ func (m *Manager) RegisterAndHeartbeat(ctx context.Context, sink control.NodeSin
 func (m *Manager) totalStreamsLocked() uint32 {
 	var total uint32
 	for _, current := range m.connectors {
-		total += current.streams
+		total = saturatingAddUint32(total, current.streams)
 		for _, streams := range current.retired {
-			total += streams
+			total = saturatingAddUint32(total, streams)
 		}
 	}
 	return total
+}
+func saturatingAddUint32(current, value uint32) uint32 {
+	if value > ^uint32(0)-current {
+		return ^uint32(0)
+	}
+	return current + value
 }
 func (m *Manager) signalLocked() { close(m.wake); m.wake = make(chan struct{}) }
 func stopTimer(timer *time.Timer) {

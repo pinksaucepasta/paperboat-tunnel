@@ -44,7 +44,20 @@ func NewCounters() *Counters { return &Counters{} }
 // Add records bytes observed at the edge. Counters never decrease.
 func (c *Counters) Add(k Key, bytes uint64) uint64 {
 	value, _ := c.values.LoadOrStore(k, &atomicCounter{})
-	return value.(*atomicCounter).value.Add(bytes)
+	counter := &value.(*atomicCounter).value
+	for {
+		current := counter.Load()
+		if bytes > ^uint64(0)-current {
+			if counter.CompareAndSwap(current, ^uint64(0)) {
+				return ^uint64(0)
+			}
+			continue
+		}
+		next := current + bytes
+		if counter.CompareAndSwap(current, next) {
+			return next
+		}
+	}
 }
 
 func (c *Counters) Observe(k Key, absolute uint64) uint64 {
@@ -138,7 +151,7 @@ func NewQueue(maxReports, maxBytes int) (*Queue, error) {
 }
 
 func (q *Queue) Enqueue(report Report) error {
-	if report.OperationID == "" || len(report.Payload) == 0 {
+	if report.OperationID == "" || len(report.Payload) == 0 || len(report.Payload) > q.maxBytes {
 		return ErrQueueFull
 	}
 	q.mu.Lock()
@@ -149,7 +162,7 @@ func (q *Queue) Enqueue(report Report) error {
 		}
 		return ErrQueueFull
 	}
-	if len(q.pending) >= q.maxReports || q.bytes+len(report.Payload) > q.maxBytes {
+	if len(q.pending) >= q.maxReports || q.bytes > q.maxBytes-len(report.Payload) {
 		return ErrQueueFull
 	}
 	report.Payload = append([]byte(nil), report.Payload...)
@@ -162,7 +175,7 @@ func (q *Queue) Enqueue(report Report) error {
 // EnqueueLatest coalesces one absolute snapshot per usage key. A newer
 // absolute replaces the pending report without growing the bounded queue.
 func (q *Queue) EnqueueLatest(report Report) error {
-	if report.OperationID == "" || len(report.Payload) == 0 {
+	if report.OperationID == "" || len(report.Payload) == 0 || len(report.Payload) > q.maxBytes {
 		return ErrQueueFull
 	}
 	q.mu.Lock()
@@ -174,10 +187,11 @@ func (q *Queue) EnqueueLatest(report Report) error {
 		if report.Bytes <= current.Bytes {
 			return nil
 		}
-		newBytes := q.bytes - len(current.Payload) + len(report.Payload)
-		if newBytes > q.maxBytes {
+		baseBytes := q.bytes - len(current.Payload)
+		if baseBytes < 0 || baseBytes > q.maxBytes-len(report.Payload) {
 			return ErrQueueFull
 		}
+		newBytes := baseBytes + len(report.Payload)
 		delete(q.pending, id)
 		report.Payload = append([]byte(nil), report.Payload...)
 		q.pending[report.OperationID] = report
@@ -190,7 +204,7 @@ func (q *Queue) EnqueueLatest(report Report) error {
 		}
 		return nil
 	}
-	if len(q.pending) >= q.maxReports || q.bytes+len(report.Payload) > q.maxBytes {
+	if len(q.pending) >= q.maxReports || q.bytes > q.maxBytes-len(report.Payload) {
 		return ErrQueueFull
 	}
 	report.Payload = append([]byte(nil), report.Payload...)

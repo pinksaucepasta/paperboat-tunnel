@@ -25,6 +25,9 @@ func TestHookRequiresPrivatePathAndValidVersion(t *testing.T) {
 		{"wrong content type", hook.Path, http.MethodPost, "text/plain", `{}`, http.StatusNotFound},
 		{"wrong version", hook.Path, http.MethodPost, "application/json", `{"version":"9","op":"Login","content":{}}`, http.StatusBadRequest},
 		{"unsupported op", hook.Path, http.MethodPost, "application/json", `{"version":"0.1.0","op":"NewVisitorConn","content":{}}`, http.StatusBadRequest},
+		{"duplicate operation", hook.Path, http.MethodPost, "application/json", `{"version":"0.1.0","op":"Login","op":"Ping","content":{}}`, http.StatusBadRequest},
+		{"duplicate content field", hook.Path, http.MethodPost, "application/json", `{"version":"0.1.0","op":"Login","content":{"run_id":"first","run_id":"second"}}`, http.StatusBadRequest},
+		{"trailing document", hook.Path, http.MethodPost, "application/json", `{"version":"0.1.0","op":"Login","content":{}} {}`, http.StatusBadRequest},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -36,6 +39,24 @@ func TestHookRequiresPrivatePathAndValidVersion(t *testing.T) {
 				t.Fatalf("status = %d, want %d", recorder.Code, test.status)
 			}
 		})
+	}
+}
+
+func TestHookPermitsUpstreamExtensionFields(t *testing.T) {
+	called := false
+	hook := Hook{Path: "/hook", Handle: func(_ context.Context, op string, content json.RawMessage) (json.RawMessage, error) {
+		called = true
+		if op != "Login" || !bytes.Contains(content, []byte(`"extension":true`)) {
+			t.Fatalf("operation = %q, content = %s", op, content)
+		}
+		return content, nil
+	}}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/hook", bytes.NewBufferString(`{"version":"0.1.0","op":"Login","extension":"preserved","content":{"extension":true}}`))
+	request.Header.Set("Content-Type", "application/json")
+	hook.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !called {
+		t.Fatalf("status = %d, called = %t", recorder.Code, called)
 	}
 }
 

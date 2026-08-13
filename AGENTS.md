@@ -10,7 +10,7 @@ node lifecycle, and byte measurement. Server state remains authoritative.
 
 ## Stack
 
-Go `1.25.7` for owned code; upstream frp pinned under `frp/` as a Git submodule; Caddy for
+Go `1.26.5` for owned code; upstream frp pinned under `frp/` as a Git submodule; Caddy for
 TLS and public edge policy. The frps dashboard is private diagnostics only.
 
 ## Local Rules
@@ -23,8 +23,9 @@ TLS and public edge policy. The frps dashboard is private diagnostics only.
   plugin, base-image, local-module, or downstream-patch change.
 - Prefer supported frp hooks and adjacent services. A fork requires a proven missing
   capability, security/upgrade plan, compatibility tests, and explicit approval.
-- First release supports helper traffic and public HTTP/WSS previews only; no raw TCP,
-  public UDP, STCP, XTCP, NAT traversal, reviews, extensions, or protected previews.
+- Support authenticated Paperboat peer signaling, STUN, ICE-selected UDP, relay QUIC/WSS,
+  and public HTTP/WSS previews. Never expose raw customer TCP/UDP, STCP, TURN, WebRTC,
+  generic tunnels, reviews, or extensions.
 - Preserve WSS, SSE, streaming, cancellation, headers, trusted client IP, backpressure,
   bounded resources, correlation, and redaction.
 - Model route assignment, connector replacement, cleanup, counters, node registry, stale

@@ -1,17 +1,14 @@
 package runtime
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/auth"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/strictjson"
 )
 
 const maxTrustDocument = 1 << 20
@@ -46,17 +43,15 @@ func LoadTrust(jwksPath, revocationsPath, usageKeyPath string) (Trust, error) {
 		KeyID      string `json:"key_id"`
 		PrivateKey string `json:"private_key"`
 	}
-	decoder := json.NewDecoder(bytes.NewReader(keyDocument))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&key); err != nil || key.KeyID == "" || len(key.KeyID) > 128 {
+	if err := strictjson.Decode(keyDocument, &key, 64); err != nil || key.KeyID == "" || len(key.KeyID) > 128 {
 		return Trust{}, fmt.Errorf("decode usage key document: %w", ErrProcessInvalid)
 	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return Trust{}, fmt.Errorf("decode usage private key: %w", ErrProcessInvalid)
-	}
 	private, err := base64.RawURLEncoding.DecodeString(key.PrivateKey)
-	if err != nil || len(private) != ed25519.PrivateKeySize && len(private) != ed25519.SeedSize {
+	if err != nil || base64.RawURLEncoding.EncodeToString(private) != key.PrivateKey || len(private) != ed25519.PrivateKeySize && len(private) != ed25519.SeedSize {
 		private, err = hex.DecodeString(key.PrivateKey)
+		if err == nil && hex.EncodeToString(private) != key.PrivateKey {
+			err = ErrProcessInvalid
+		}
 	}
 	if err != nil || len(private) != ed25519.PrivateKeySize && len(private) != ed25519.SeedSize {
 		return Trust{}, fmt.Errorf("decode usage private key: %w", ErrProcessInvalid)

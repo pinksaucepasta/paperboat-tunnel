@@ -19,6 +19,7 @@ services:
       - "443:443/udp"
       - "26023:26023/tcp"
       - "26023:26023/udp"
+      - "3478:3478/udp"
     volumes:
       - ./deployment.json:/etc/paperboat-tunnel/deployment.json:ro
       - ./secrets:/run/secrets:ro

@@ -6,6 +6,8 @@ import (
 	"crypto/sha1" // #nosec G505 -- required by RFC 6455 for the WebSocket handshake.
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/admission"
+	"github.com/realclientip/realclientip-go"
 )
 
 type Config struct {
@@ -35,32 +38,100 @@ type Config struct {
 }
 
 type Policy struct {
-	config Config
-	next   http.Handler
+	config         Config
+	next           http.Handler
+	clientStrategy realclientip.Strategy
 }
 
 func New(config Config, next http.Handler) (*Policy, error) {
 	if next == nil || config.PreviewBaseDomain == "" || config.HelperBaseDomain == "" || config.MaxHeaderBytes < 1024 || config.MaxBodyBytes < 1 {
 		return nil, http.ErrNotSupported
 	}
-	return &Policy{config: config, next: next}, nil
+	trusted := make([]net.IPNet, 0, len(config.TrustedProxies))
+	for _, network := range config.TrustedProxies {
+		if network == nil {
+			return nil, http.ErrNotSupported
+		}
+		trusted = append(trusted, *network)
+	}
+	strategy, err := realclientip.NewRightmostTrustedRangeStrategy("X-Forwarded-For", trusted)
+	if err != nil {
+		return nil, err
+	}
+	return &Policy{config: config, next: next, clientStrategy: strategy}, nil
 }
 
 // NewGateway builds the live public-preview gate. The target is the private
 // frps vhost; this handler never contacts the control plane or carries policy
 // data outside the edge process.
 func NewGateway(config Config, privateUpstream string) (*Policy, error) {
+	return NewGatewayWithTransport(config, privateUpstream, nil)
+}
+
+func NewGatewayWithTransport(config Config, privateUpstream string, previewTransport http.RoundTripper) (*Policy, error) {
 	target, err := url.Parse("http://" + privateUpstream)
 	if err != nil {
 		return nil, err
 	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.FlushInterval = -1
-	proxy.ModifyResponse = func(response *http.Response) error {
+	legacy := httputil.NewSingleHostReverseProxy(target)
+	legacy.FlushInterval = -1
+	legacy.ModifyResponse = func(response *http.Response) error {
 		response.Header.Del("X-Robots-Tag")
 		return nil
 	}
-	return New(config, proxy)
+	var next http.Handler = legacy
+	if previewTransport != nil {
+		previewTarget, _ := url.Parse("http://preview-relay.invalid")
+		preview := httputil.NewSingleHostReverseProxy(previewTarget)
+		preview.Transport = retryPreviewTransport{next: previewTransport}
+		preview.FlushInterval = -1
+		preview.Director = func(request *http.Request) {
+			request.URL.Scheme = "http"
+			request.URL.Host = request.Host
+		}
+		preview.ModifyResponse = legacy.ModifyResponse
+		next = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			if strings.HasSuffix(strings.ToLower(request.Host), "."+strings.ToLower(config.PreviewBaseDomain)) {
+				preview.ServeHTTP(writer, request)
+				return
+			}
+			legacy.ServeHTTP(writer, request)
+		})
+	}
+	return New(config, next)
+}
+
+type retryPreviewTransport struct{ next http.RoundTripper }
+
+func (t retryPreviewTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := t.next.RoundTrip(request)
+	if err == nil || !retryablePreviewRequest(request) || !retryablePreviewTransportError(err) {
+		return response, err
+	}
+	return t.next.RoundTrip(request.Clone(request.Context()))
+}
+
+func retryablePreviewRequest(request *http.Request) bool {
+	if request == nil || request.Body != nil && request.Body != http.NoBody || isWebSocketUpgrade(request.Header) {
+		return false
+	}
+	switch request.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	default:
+		return false
+	}
+}
+
+func retryablePreviewTransportError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var networkError net.Error
+	return errors.As(err, &networkError)
 }
 
 func ParseTrustedProxies(values []string) ([]*net.IPNet, error) {
@@ -77,7 +148,7 @@ func ParseTrustedProxies(values []string) ([]*net.IPNet, error) {
 
 func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	host, expectedKind, ok := p.allowedHost(r.Host)
-	if !ok || r.URL.IsAbs() || headerBytes(r.Header) > p.config.MaxHeaderBytes {
+	if !ok || !normalizeRequestTarget(r, host) || headerBytes(r.Header) > p.config.MaxHeaderBytes {
 		http.NotFound(w, r)
 		return
 	}
@@ -145,6 +216,22 @@ func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.next.ServeHTTP(w, r)
 }
 
+func normalizeRequestTarget(r *http.Request, canonicalHost string) bool {
+	if !r.URL.IsAbs() {
+		return true
+	}
+	absoluteHost := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(r.URL.Host), "."))
+	if parsed, _, err := net.SplitHostPort(absoluteHost); err == nil {
+		absoluteHost = parsed
+	}
+	if !strings.EqualFold(r.URL.Scheme, "https") || absoluteHost != canonicalHost || r.URL.User != nil {
+		return false
+	}
+	r.URL.Scheme = ""
+	r.URL.Host = ""
+	return true
+}
+
 func helperPublicPath(path string) bool {
 	return path == "/healthz" || helperAccessPath(path)
 }
@@ -186,7 +273,7 @@ func (p *Policy) cancelWhenAccessRevoked(ctx context.Context, cancel context.Can
 }
 
 func helperAccessPath(path string) bool {
-	return path == "/v1/runtime" || path == "/v1/preview-launches" || path == "/v1/file-transfers" || strings.HasPrefix(path, "/v1/file-transfers/") || codexSessionPath(path)
+	return path == "/v1/runtime" || path == "/v1/preview-launches" || path == "/v1/file-transfers" || strings.HasPrefix(path, "/v1/file-transfers/")
 }
 
 func credentialAllowsHelperPath(class, path string) bool {
@@ -197,27 +284,9 @@ func credentialAllowsHelperPath(class, path string) bool {
 		return class == "preview_launch"
 	case path == "/v1/file-transfers" || strings.HasPrefix(path, "/v1/file-transfers/"):
 		return class == "file_transfer"
-	case codexSessionPath(path):
-		return class == "codex_connect" || class == "codex_manage"
 	default:
 		return false
 	}
-}
-
-func codexSessionPath(path string) bool {
-	const prefix = "/v1/codex-sessions/"
-	if !strings.HasPrefix(path, prefix) {
-		return false
-	}
-	remainder := strings.TrimPrefix(path, prefix)
-	parts := strings.Split(remainder, "/")
-	if len(parts) < 1 || len(parts) > 2 || parts[0] == "" {
-		return false
-	}
-	if len(parts) == 1 {
-		return true
-	}
-	return parts[1] == "ws" || parts[1] == "renew" || parts[1] == "directories"
 }
 
 func closeRetryableWebSocket(w http.ResponseWriter, r *http.Request) bool {
@@ -309,12 +378,8 @@ func (p *Policy) clientIP(r *http.Request) string {
 	if remote == nil || !p.trusted(remote) {
 		return remoteHost
 	}
-	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
-	for i := len(parts) - 1; i >= 0; i-- {
-		candidate := net.ParseIP(strings.TrimSpace(parts[i]))
-		if candidate != nil && !p.trusted(candidate) {
-			return candidate.String()
-		}
+	if client := p.clientStrategy.ClientIP(r.Header, r.RemoteAddr); client != "" {
+		return client
 	}
 	return remote.String()
 }

@@ -65,6 +65,25 @@ func TestLoadTrustAcceptsHexSeed(t *testing.T) {
 	}
 }
 
+func TestLoadTrustRejectsDuplicateAndNonCanonicalUsageKey(t *testing.T) {
+	public, private, _ := ed25519.GenerateKey(nil)
+	directory := t.TempDir()
+	jwks := filepath.Join(directory, "jwks.json")
+	revocations := filepath.Join(directory, "revocations.json")
+	usageKey := filepath.Join(directory, "usage.json")
+	writeTrust(t, jwks, fmt.Sprintf(`{"keys":[{"kty":"OKP","crv":"Ed25519","use":"sig","alg":"EdDSA","kid":"connector","x":"%s"}]}`, base64.RawURLEncoding.EncodeToString(public)), 0644)
+	writeTrust(t, revocations, `{"jtis":[],"environments":[],"connector_generations":[],"key_ids":[]}`, 0644)
+	encoded := base64.RawURLEncoding.EncodeToString(private)
+	writeTrust(t, usageKey, fmt.Sprintf(`{"key_id":"usage","key_id":"other","private_key":"%s"}`, encoded), 0600)
+	if _, err := LoadTrust(jwks, revocations, usageKey); err == nil {
+		t.Fatal("duplicate usage key field accepted")
+	}
+	writeTrust(t, usageKey, fmt.Sprintf(`{"key_id":"usage","private_key":"%s="}`, encoded), 0600)
+	if _, err := LoadTrust(jwks, revocations, usageKey); err == nil {
+		t.Fatal("non-canonical usage private key accepted")
+	}
+}
+
 func writeTrust(t *testing.T, path, data string, mode os.FileMode) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(data), mode); err != nil {

@@ -1,6 +1,9 @@
 package route
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestRegistryRevisionAndHostOwnership(t *testing.T) {
 	r := NewRegistry("example.test", "helper.example.test")
@@ -77,5 +80,43 @@ func TestRegistryReplaceRejectsConflictWithoutMutation(t *testing.T) {
 	got, ok := registry.Get(current.ID)
 	if !ok || got != current {
 		t.Fatalf("registry mutated: %+v, present=%v", got, ok)
+	}
+}
+
+func TestRegistryChangedIsHostScopedAndMaterial(t *testing.T) {
+	registry := NewRegistry("preview.example.test", "example.test")
+	first := Attachment{ID: "first", Revision: 1, Environment: "env", Node: "edge", Generation: 1, Host: "first.example.test", Target: "127.0.0.1:8080", Kind: HelperHTTPSWSS}
+	second := Attachment{ID: "second", Revision: 1, Environment: "env", Node: "edge", Generation: 1, Host: "second.example.test", Target: "127.0.0.1:8081", Kind: HelperHTTPSWSS}
+	firstChanged := registry.Changed(first.Host)
+	secondChanged := registry.Changed(second.Host)
+	if _, err := registry.Attach(first); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-firstChanged:
+	default:
+		t.Fatal("changed host was not signaled")
+	}
+	select {
+	case <-secondChanged:
+		t.Fatal("unrelated host was signaled")
+	default:
+	}
+	stable := registry.Changed(first.Host)
+	if _, err := registry.Attach(first); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stable:
+		t.Fatal("idempotent attachment was signaled")
+	case <-time.After(10 * time.Millisecond):
+	}
+	if err := registry.Replace([]Attachment{first, second}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stable:
+		t.Fatal("unchanged host was signaled by replacement")
+	default:
 	}
 }

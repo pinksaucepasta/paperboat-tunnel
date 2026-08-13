@@ -11,6 +11,7 @@ import (
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/edgeerrors"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/operation"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/strictjson"
 )
 
 const audience = "paperboat-edge"
@@ -32,6 +33,7 @@ type Claims struct {
 	ConnectorGeneration    uint64
 	EdgePool               string
 	EdgeNodeID             string
+	RouteBinding           string
 	ExpiresAt              time.Time
 	Revoked                bool
 }
@@ -59,13 +61,14 @@ type Request struct {
 }
 
 type Response struct {
-	RunID       RunID
-	Environment string
-	Machine     string
-	Connector   string
-	Generation  uint64
-	EdgeNode    string
-	Routes      []Route
+	RunID        RunID
+	Environment  string
+	Machine      string
+	Connector    string
+	Generation   uint64
+	EdgeNode     string
+	Routes       []Route
+	RouteBinding string
 }
 
 type Verifier interface {
@@ -136,13 +139,13 @@ func (s *Service) Admit(ctx context.Context, request Request) (Response, error) 
 	if err != nil {
 		return Response{}, err
 	}
-	decision, _ := json.Marshal(Response{RunID: runID, Environment: request.Environment, Machine: request.Machine, Connector: request.Connector, Generation: request.Generation, EdgeNode: request.EdgeNode, Routes: request.Routes})
+	decision, _ := json.Marshal(Response{RunID: runID, Environment: request.Environment, Machine: request.Machine, Connector: request.Connector, Generation: request.Generation, EdgeNode: request.EdgeNode, Routes: request.Routes, RouteBinding: claims.RouteBinding})
 	outcome, err := s.Journal.Consume(now, operation.Request{OperationID: request.OperationID, JTI: claims.JTI, Canonical: canonical, Decision: decision, RetainUntil: expires.Add(time.Minute)})
 	if err != nil {
 		return Response{}, err
 	}
 	var response Response
-	if err := json.Unmarshal(outcome.Decision, &response); err != nil {
+	if err := strictjson.Decode(outcome.Decision, &response, 64); err != nil {
 		return Response{}, errors.New("journal decision is corrupt")
 	}
 	return response, nil

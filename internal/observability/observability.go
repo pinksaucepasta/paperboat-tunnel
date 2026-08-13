@@ -69,6 +69,40 @@ type MetricKey struct {
 	RouteKind, Direction string
 }
 
+type MetricDescriptor struct {
+	Name   string
+	Kind   string
+	Labels map[string][]string
+}
+
+func MetricDescriptors() []MetricDescriptor {
+	return []MetricDescriptor{
+		{Name: "paperboat_tunnel_active_streams", Kind: "gauge"},
+		{Name: "paperboat_tunnel_attached_routes", Kind: "gauge"},
+		{Name: "paperboat_tunnel_certificate_expiry_timestamp_seconds", Kind: "gauge"},
+		{Name: "paperboat_tunnel_connector_capacity", Kind: "gauge"},
+		{Name: "paperboat_tunnel_connectors", Kind: "gauge"},
+		{Name: "paperboat_tunnel_dependency_healthy", Kind: "gauge", Labels: map[string][]string{"dependency": {"caddy", "control", "frps", "routes", "signaling", "stun", "usage"}}},
+		{Name: "paperboat_tunnel_events_total", Kind: "counter", Labels: map[string][]string{
+			"direction": {"", "egress", "ingress"}, "kind": {"admission", "cleanup", "node", "route", "stream", "usage"},
+			"result": {"canceled", "failed", "rejected", "success"}, "route_kind": {"", "preview_public_https_wss", "runtime_https_wss"},
+		}},
+		{Name: "paperboat_tunnel_live", Kind: "gauge"},
+		{Name: "paperboat_tunnel_ready", Kind: "gauge"},
+		{Name: "paperboat_tunnel_signaling_attachments", Kind: "gauge"},
+		{Name: "paperboat_tunnel_signaling_capacity", Kind: "gauge"},
+		{Name: "paperboat_tunnel_signaling_sessions", Kind: "gauge"},
+		{Name: "paperboat_tunnel_stun_errors_total", Kind: "counter"},
+		{Name: "paperboat_tunnel_stun_rejected_total", Kind: "counter"},
+		{Name: "paperboat_tunnel_stun_requests_total", Kind: "counter"},
+		{Name: "paperboat_tunnel_traffic_egress_bytes_total", Kind: "counter"},
+		{Name: "paperboat_tunnel_traffic_ingress_bytes_total", Kind: "counter"},
+		{Name: "paperboat_tunnel_usage_oldest_age_seconds", Kind: "gauge"},
+		{Name: "paperboat_tunnel_usage_pending_bytes", Kind: "gauge"},
+		{Name: "paperboat_tunnel_usage_pending_reports", Kind: "gauge"},
+	}
+}
+
 type Metrics struct {
 	mu     sync.Mutex
 	values map[MetricKey]uint64
@@ -121,15 +155,17 @@ const (
 )
 
 type Diagnostics struct {
-	Control Status `json:"control"`
-	Store   Status `json:"store"`
-	FRP     Status `json:"frp"`
-	Caddy   Status `json:"caddy"`
-	Usage   Status `json:"usage"`
+	Control   Status `json:"control"`
+	Store     Status `json:"store"`
+	FRP       Status `json:"frp"`
+	Caddy     Status `json:"caddy"`
+	STUN      Status `json:"stun"`
+	Signaling Status `json:"signaling"`
+	Usage     Status `json:"usage"`
 }
 
 func (d Diagnostics) Ready() bool {
-	return d.Control == Healthy && d.Store == Healthy && d.FRP == Healthy && d.Caddy == Healthy && d.Usage != Unavailable
+	return d.Control == Healthy && d.Store == Healthy && d.FRP == Healthy && d.Caddy == Healthy && d.STUN == Healthy && d.Signaling == Healthy && d.Usage != Unavailable
 }
 
 type Sources struct {
@@ -145,10 +181,26 @@ type Sources struct {
 	UsageErr      func() error
 	FRPRunning    func() bool
 	CaddyRunning  func() bool
+	STUN          func() STUNStats
+	Signaling     func() SignalingStats
 	CaddyTLS      func() (time.Time, error)
 	Events        func() map[MetricKey]uint64
 	Traffic       func() []usage.CounterRecord
 	Now           func() time.Time
+}
+
+type STUNStats struct {
+	Running  bool
+	Accepted uint64
+	Rejected uint64
+	Errors   uint64
+}
+
+type SignalingStats struct {
+	Running     bool
+	Sessions    int
+	Attachments int
+	Capacity    int
 }
 
 type Snapshot struct {
@@ -159,6 +211,14 @@ type Snapshot struct {
 	Usage                 Status               `json:"usage"`
 	FRP                   Status               `json:"frp"`
 	Caddy                 Status               `json:"caddy"`
+	STUN                  Status               `json:"stun"`
+	Signaling             Status               `json:"signaling"`
+	SignalingSessions     int                  `json:"signaling_sessions"`
+	SignalingAttachments  int                  `json:"signaling_attachments"`
+	SignalingCapacity     int                  `json:"signaling_capacity"`
+	STUNRequests          uint64               `json:"stun_requests"`
+	STUNRejected          uint64               `json:"stun_rejected"`
+	STUNErrors            uint64               `json:"stun_errors"`
 	CertificateExpiresAt  time.Time            `json:"certificate_expires_at,omitempty"`
 	Connectors            int                  `json:"connectors"`
 	ActiveStreams         uint32               `json:"active_streams"`
@@ -175,7 +235,7 @@ type Snapshot struct {
 }
 
 func NewHandler(s Sources) (http.Handler, error) {
-	if s.Node == nil || s.Manager == nil || s.Sessions == nil || s.SessionRoutes == nil || s.ActiveStreams == nil || s.RouteCount == nil || s.Usage == nil || s.ControlErr == nil || s.RouteErr == nil || s.UsageErr == nil || s.FRPRunning == nil || s.CaddyRunning == nil || s.CaddyTLS == nil || s.Events == nil || s.Traffic == nil {
+	if s.Node == nil || s.Manager == nil || s.Sessions == nil || s.SessionRoutes == nil || s.ActiveStreams == nil || s.RouteCount == nil || s.Usage == nil || s.ControlErr == nil || s.RouteErr == nil || s.UsageErr == nil || s.FRPRunning == nil || s.CaddyRunning == nil || s.STUN == nil || s.Signaling == nil || s.CaddyTLS == nil || s.Events == nil || s.Traffic == nil {
 		return nil, fmt.Errorf("observability sources are incomplete")
 	}
 	mux := http.NewServeMux()
@@ -192,8 +252,10 @@ func snapshot(s Sources) Snapshot {
 		now = s.Now().UTC()
 	}
 	manager, pending := s.Manager(), s.Usage()
+	stun := s.STUN()
+	signaling := s.Signaling()
 	routeErr := s.RouteErr()
-	result := Snapshot{At: now, Node: s.Node(), Control: statusFor(s.ControlErr()), Routes: statusFor(routeErr), Usage: statusFor(s.UsageErr()), FRP: runningStatus(s.FRPRunning()), Caddy: runningStatus(s.CaddyRunning()), Connectors: s.Sessions(), ActiveStreams: s.ActiveStreams(), AttachedRoutes: s.RouteCount(), UsagePendingReports: pending.Reports, UsagePendingBytes: pending.Bytes, Capacity: manager.Capacity, Events: s.Events()}
+	result := Snapshot{At: now, Node: s.Node(), Control: statusFor(s.ControlErr()), Routes: statusFor(routeErr), Usage: statusFor(s.UsageErr()), FRP: runningStatus(s.FRPRunning()), Caddy: runningStatus(s.CaddyRunning()), STUN: runningStatus(stun.Running), Signaling: runningStatus(signaling.Running), STUNRequests: stun.Accepted, STUNRejected: stun.Rejected, STUNErrors: stun.Errors, SignalingSessions: signaling.Sessions, SignalingAttachments: signaling.Attachments, SignalingCapacity: signaling.Capacity, Connectors: s.Sessions(), ActiveStreams: s.ActiveStreams(), AttachedRoutes: s.RouteCount(), UsagePendingReports: pending.Reports, UsagePendingBytes: pending.Bytes, Capacity: manager.Capacity, Events: s.Events()}
 	result.RouteDrift = s.SessionRoutes() != result.AttachedRoutes
 	if result.RouteDrift {
 		result.Routes = Degraded
@@ -235,6 +297,12 @@ func snapshot(s Sources) Snapshot {
 	} else if result.Caddy == Degraded {
 		result.FailureCodes = append(result.FailureCodes, "certificate_unavailable")
 	}
+	if result.STUN != Healthy {
+		result.FailureCodes = append(result.FailureCodes, "stun_unavailable")
+	}
+	if result.Signaling != Healthy {
+		result.FailureCodes = append(result.FailureCodes, "signaling_unavailable")
+	}
 	sort.Strings(result.FailureCodes)
 	return result
 }
@@ -253,7 +321,7 @@ func runningStatus(running bool) Status {
 }
 
 func (s Snapshot) ready() bool {
-	return s.Node.Ready && s.Control == Healthy && s.Routes == Healthy && s.Usage != Unavailable && s.FRP == Healthy && s.Caddy == Healthy
+	return s.Node.Ready && s.Control == Healthy && s.Routes == Healthy && s.Usage != Unavailable && s.FRP == Healthy && s.Caddy == Healthy && s.STUN == Healthy && s.Signaling == Healthy
 }
 
 func writeSnapshot(w http.ResponseWriter, value Snapshot, readiness bool) {
@@ -280,6 +348,12 @@ func writeMetrics(w http.ResponseWriter, s Snapshot) {
 		"paperboat_tunnel_usage_oldest_age_seconds " + strconv.FormatInt(s.UsageOldestAgeSeconds, 10),
 		"paperboat_tunnel_traffic_ingress_bytes_total " + strconv.FormatUint(s.TrafficIngressBytes, 10),
 		"paperboat_tunnel_traffic_egress_bytes_total " + strconv.FormatUint(s.TrafficEgressBytes, 10),
+		"paperboat_tunnel_stun_requests_total " + strconv.FormatUint(s.STUNRequests, 10),
+		"paperboat_tunnel_stun_rejected_total " + strconv.FormatUint(s.STUNRejected, 10),
+		"paperboat_tunnel_stun_errors_total " + strconv.FormatUint(s.STUNErrors, 10),
+		"paperboat_tunnel_signaling_sessions " + strconv.Itoa(s.SignalingSessions),
+		"paperboat_tunnel_signaling_attachments " + strconv.Itoa(s.SignalingAttachments),
+		"paperboat_tunnel_signaling_capacity " + strconv.Itoa(s.SignalingCapacity),
 	}
 	if !s.CertificateExpiresAt.IsZero() {
 		lines = append(lines, "paperboat_tunnel_certificate_expiry_timestamp_seconds "+strconv.FormatInt(s.CertificateExpiresAt.Unix(), 10))
@@ -287,7 +361,7 @@ func writeMetrics(w http.ResponseWriter, s Snapshot) {
 	for _, dependency := range []struct {
 		name   string
 		status Status
-	}{{"control", s.Control}, {"routes", s.Routes}, {"usage", s.Usage}, {"frps", s.FRP}, {"caddy", s.Caddy}} {
+	}{{"control", s.Control}, {"routes", s.Routes}, {"usage", s.Usage}, {"frps", s.FRP}, {"caddy", s.Caddy}, {"stun", s.STUN}, {"signaling", s.Signaling}} {
 		lines = append(lines, `paperboat_tunnel_dependency_healthy{dependency="`+dependency.name+`"} `+booleanMetric(dependency.status == Healthy))
 	}
 	keys := make([]MetricKey, 0, len(s.Events))

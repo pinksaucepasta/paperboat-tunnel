@@ -66,9 +66,11 @@ func TestPolicyLoginAndProxyAllowList(t *testing.T) {
 	if _, err := policy.Handle(context.Background(), "NewProxy", forgedProxy); err == nil {
 		t.Fatal("forged proxy group key accepted")
 	}
-	unsupported := json.RawMessage(`{"user":{"run_id":"run"},"proxy_name":"proxy","proxy_type":"tcp","custom_domains":["helper.test"]}`)
-	if _, err := policy.Handle(context.Background(), "NewProxy", unsupported); err == nil {
-		t.Fatal("unsupported proxy accepted")
+	for _, proxyType := range []string{"xtcp", "stcp", "sudp", "tcp", "udp", "https", "tcpmux"} {
+		unsupported, _ := json.Marshal(newProxyContent{User: userInfo{RunID: "run"}, ProxyName: identity.name, ProxyType: proxyType, CustomDomains: []string{"helper.test"}, Group: identity.group, GroupKey: identity.groupKey})
+		if _, err := policy.Handle(context.Background(), "NewProxy", unsupported); err == nil {
+			t.Fatalf("unsupported %s proxy accepted", proxyType)
+		}
 	}
 	unknown := json.RawMessage(`{"user":{"run_id":"run"},"proxy_name":"other","proxy_type":"http","custom_domains":["other.test"]}`)
 	if _, err := policy.Handle(context.Background(), "NewProxy", unknown); err == nil {
