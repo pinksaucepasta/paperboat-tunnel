@@ -302,6 +302,29 @@ func TestManagerExpiresPendingAttachment(t *testing.T) {
 	_ = client.Close()
 }
 
+func TestManagerEstablishedRelaySurvivesCredentialExpiry(t *testing.T) {
+	manager := newTestManager(t, DevelopmentConfig(), &recordingUsage{})
+	binding := testBinding(time.Now().Add(30*time.Millisecond), 1024)
+	initiator, initiatorRelay := net.Pipe()
+	host, hostRelay := net.Pipe()
+	results := attachPair(manager, binding, CarrierQUIC, CarrierQUIC, initiatorRelay, hostRelay)
+	waitStats(t, manager, Stats{Active: 1})
+
+	time.Sleep(50 * time.Millisecond)
+	writeAndRead(t, initiator, host, []byte("after-expiry"))
+	if stats := manager.Stats(); stats != (Stats{Active: 1}) {
+		t.Fatalf("stats after credential expiry=%+v", stats)
+	}
+
+	_ = initiator.Close()
+	_ = host.Close()
+	for range 2 {
+		if result := <-results; result.err != nil || result.usage.BytesToHost != uint64(len("after-expiry")) {
+			t.Fatalf("result after credential expiry=%+v", result)
+		}
+	}
+}
+
 func TestManagerRejectsCanceledContextAndTypedNilStream(t *testing.T) {
 	manager := newTestManager(t, DevelopmentConfig(), &recordingUsage{})
 	ctx, cancel := context.WithCancel(context.Background())

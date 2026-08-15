@@ -127,6 +127,7 @@ type relay struct {
 	stopMu      sync.Mutex
 	stopErr     error
 	expiry      *time.Timer
+	expired     bool
 	toInitiator atomic.Uint64
 	toHost      atomic.Uint64
 }
@@ -204,6 +205,11 @@ func (m *Manager) Attach(ctx context.Context, admission Admission, stream io.Rea
 		m.relays[key] = current
 		created = true
 	}
+	if current.expired {
+		m.mu.Unlock()
+		_ = stream.Close()
+		return Usage{}, ErrExpired
+	}
 	selected := &current.initiator
 	if admission.Role == RoleHost {
 		selected = &current.host
@@ -223,10 +229,13 @@ func (m *Manager) Attach(ctx context.Context, admission Admission, stream io.Rea
 	}
 	*selected = &leg{stream: stream, carrier: admission.Carrier}
 	if created {
-		current.expiry = time.AfterFunc(admission.Binding.ExpiresAt.Sub(m.now()), func() { m.terminate(current, ErrExpired) })
+		current.expiry = time.AfterFunc(admission.Binding.ExpiresAt.Sub(m.now()), func() { m.expirePending(current) })
 	}
 	if current.initiator != nil && current.host != nil && !current.started {
 		current.started = true
+		if current.expiry != nil {
+			current.expiry.Stop()
+		}
 		current.baseUsage = Usage{EnvironmentID: current.binding.EnvironmentID, RouteID: current.binding.RouteID, RouteRevision: current.binding.RouteRevision, IntentID: current.binding.IntentID, Attempt: current.binding.Attempt, Network: current.binding.Network, Path: relayPath(current.initiator.carrier, current.host.carrier), StartedAt: m.now().UTC()}
 		go m.run(current, current.baseUsage)
 	}
@@ -352,6 +361,20 @@ func (m *Manager) fail(key relayKey, current *relay, cause error) {
 	if owned {
 		m.terminate(current, cause)
 	}
+}
+
+// Credential expiry bounds how long an unmatched endpoint may occupy pending
+// capacity. Once both authenticated legs are paired, revocation, byte limits,
+// endpoint lifetime, draining, or shutdown own the established relay lifetime.
+func (m *Manager) expirePending(current *relay) {
+	m.mu.Lock()
+	if m.relays[current.key] != current || current.started {
+		m.mu.Unlock()
+		return
+	}
+	current.expired = true
+	m.mu.Unlock()
+	m.terminate(current, ErrExpired)
 }
 
 func (m *Manager) terminate(current *relay, cause error) {
