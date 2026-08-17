@@ -54,8 +54,9 @@ caddy_version=$(awk -F= '/^ARG CADDY_VERSION=/ { print $2; exit }' "$root/deploy
 grep -Fq "| Caddy | \`v$caddy_version\` |" "$root/RELEASE.md" || fail "RELEASE.md does not record Caddy v$caddy_version"
 grep -Eq "github.com/caddyserver/caddy/v2[[:space:]]+v${caddy_version}([[:space:]]|$)" "$root/caddymodules/paperboatquic/go.mod" || fail "Caddy module does not use v$caddy_version"
 grep -Eq -- '--with github.com/caddy-dns/cloudflare@v[0-9]+\.[0-9]+\.[0-9]+' "$root/deploy/Dockerfile" || fail "Caddy DNS plugin must use an exact version"
-grep -Eq '^FROM caddy:\$\{CADDY_VERSION\}-builder@sha256:[0-9a-f]{64} ' "$root/deploy/Dockerfile" || fail "Caddy builder must be digest-pinned"
-grep -Eq '^FROM golang:\$\{GO_VERSION\}-bookworm@sha256:[0-9a-f]{64} ' "$root/deploy/Dockerfile" || fail "Go builder must be digest-pinned"
+[ "$(grep -Ec '^FROM golang:\$\{GO_VERSION\}-bookworm@sha256:[0-9a-f]{64} ' "$root/deploy/Dockerfile")" -eq 2 ] || fail "Go and Caddy builders must use the digest-pinned Go image"
+grep -Eq '^ARG XCADDY_VERSION=[0-9]+\.[0-9]+\.[0-9]+$' "$root/deploy/Dockerfile" || fail "xcaddy must use an exact version"
+grep -Fq 'go install github.com/caddyserver/xcaddy/cmd/xcaddy@v${XCADDY_VERSION}' "$root/deploy/Dockerfile" || fail "Caddy must be built with the pinned xcaddy version"
 grep -Eq '^FROM debian:bookworm-slim@sha256:[0-9a-f]{64}$' "$root/deploy/Dockerfile" || fail "runtime image must be digest-pinned"
 
 if [ "$mode" = release ]; then
