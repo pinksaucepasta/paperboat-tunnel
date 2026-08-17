@@ -188,10 +188,7 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	routeWorker := &edgeruntime.RouteWorker{Registry: routes, Source: client, Observer: client, State: state, NodeID: cfg.NodeID, Interval: deployment.ControlInterval}
 	usageWorker := &edgeruntime.UsageWorker{Queue: queue, Sink: client, Prepare: meter, Persist: meter.Persist, Interval: 250 * time.Millisecond}
 	metrics := observability.NewMetrics()
-	tlsProbeHost := "probe." + deployment.PreviewBaseDomain
-	if len(deployment.PublicRoutes) > 0 {
-		tlsProbeHost = deployment.PublicRoutes[0].Host
-	}
+	tlsProbeHost := caddyProbeHost(deployment)
 	controlDependency := &edgeruntime.ControlDependency{Source: client, TrustSource: client, ApplyTrust: trust.Snapshot.ReplaceRevocations, NodeID: cfg.NodeID, Interval: deployment.ControlInterval}
 	trusted, err := edgehttp.ParseTrustedProxies(append(deployment.TrustedProxyCIDRs, "127.0.0.1/32"))
 	if err != nil {
@@ -354,6 +351,13 @@ func probeCaddyTLS(address, serverName string) (time.Time, error) {
 		return certificate.NotAfter, errors.New("Caddy certificate is outside its validity interval")
 	}
 	return certificate.NotAfter, nil
+}
+
+func caddyProbeHost(deployment config.Deployment) string {
+	if len(deployment.PublicRoutes) > 0 {
+		return deployment.PublicRoutes[0].Host
+	}
+	return deployment.SignalingHost
 }
 
 func controlTLS(caPath string) (*tls.Config, error) {

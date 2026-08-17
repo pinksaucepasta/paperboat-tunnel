@@ -12,7 +12,20 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/config"
 )
+
+func TestCaddyProbeHostUsesRelayHostWithoutPublicRoutes(t *testing.T) {
+	deployment := config.Deployment{SignalingHost: "mumbai.relay.example.test"}
+	if got := caddyProbeHost(deployment); got != deployment.SignalingHost {
+		t.Fatalf("probe host = %q, want %q", got, deployment.SignalingHost)
+	}
+	deployment.PublicRoutes = []config.PublicRoute{{Host: "api.example.test"}}
+	if got := caddyProbeHost(deployment); got != "api.example.test" {
+		t.Fatalf("probe host = %q, want public route", got)
+	}
+}
 
 func TestPeerServiceDispatchUsesExactNormalizedHostAndPath(t *testing.T) {
 	signaling := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
