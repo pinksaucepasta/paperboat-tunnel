@@ -1,4 +1,4 @@
-GO_VERSION := 1.26.5
+GO_VERSION := 1.26.6
 GO := GOTOOLCHAIN=local go
 GOFMT := $(shell GOTOOLCHAIN=local go env GOROOT 2>/dev/null)/bin/gofmt
 FRP_DIR := frp

@@ -1,6 +1,6 @@
 module github.com/pinksaucepasta/paperboat-tunnel/caddymodules/paperboatquic
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/caddyserver/caddy/v2 v2.11.4

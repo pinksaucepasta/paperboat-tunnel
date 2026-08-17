@@ -29,7 +29,7 @@ calendar tag, publication, and deployment by immutable image digest.
 
 | Component | Exact pin |
 | --- | --- |
-| Go builder | `golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651` |
+| Go builder | `golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36` |
 | frp upstream base | `v0.70.1` (`fa3bcca2ed54bcf80a5d98c8c76f40f72c6b5291`) |
 | frp fork branch | `paperboat/v0.70.1-edge` |
 | frp fork commit | `028f085af3c787d7c0c77cd58f133ca8aed7ee75` |

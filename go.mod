@@ -1,6 +1,6 @@
 module github.com/pinksaucepasta/paperboat-tunnel
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/coder/websocket v1.8.14

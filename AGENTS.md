@@ -10,7 +10,7 @@ node lifecycle, and byte measurement. Server state remains authoritative.
 
 ## Stack
 
-Go `1.26.5` for owned code; upstream frp pinned under `frp/` as a Git submodule; Caddy for
+Go `1.26.6` for owned code; upstream frp pinned under `frp/` as a Git submodule; Caddy for
 TLS and public edge policy. The frps dashboard is private diagnostics only.
 
 ## Local Rules
