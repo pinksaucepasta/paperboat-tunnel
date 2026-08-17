@@ -1,5 +1,6 @@
 ARG GO_VERSION=1.26.6
 ARG CADDY_VERSION=2.11.4
+ARG XCADDY_VERSION=0.4.5
 ARG PAPERBOAT_VERSION
 
 FROM golang:${GO_VERSION}-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS go-build
@@ -10,7 +11,12 @@ RUN printf '%s\n' "${PAPERBOAT_VERSION}" | grep -Eq '^[0-9]{4}\.[0-9]{2}\.[0-9]{
   && CGO_ENABLED=0 go build -p=2 -trimpath -ldflags='-s -w' -o /out/paperboat-tunnel ./cmd/paperboat-tunnel
 RUN cd frp && CGO_ENABLED=0 go build -p=2 -trimpath -buildvcs=false -ldflags='-s -w' -tags='frps,noweb' -o /out/frps ./cmd/frps
 
-FROM caddy:${CADDY_VERSION}-builder@sha256:198d47eaee306d4d0c38a9960c89ff2c959aa29ad51d3e2dafa3e93ac961782a AS caddy-build
+FROM golang:${GO_VERSION}-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS caddy-build
+ARG CADDY_VERSION
+ARG XCADDY_VERSION
+ENV CADDY_VERSION=v${CADDY_VERSION}
+ENV XCADDY_SKIP_CLEANUP=1
+RUN GOBIN=/usr/local/bin go install github.com/caddyserver/xcaddy/cmd/xcaddy@v${XCADDY_VERSION}
 WORKDIR /src
 COPY . .
 RUN xcaddy build \

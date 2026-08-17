@@ -8,12 +8,12 @@ module, or downstream-patch change. `MAINTENANCE.md` defines the procedure.
 
 | Field | Value |
 | --- | --- |
-| Release tag | `2026.08.17.0` |
+| Release tag | `2026.08.17.1` |
 | Tunnel commit | `5f7d3064849b73d8e6affe62d51b0d6b3d53f462` |
 | frp upstream release | `v0.70.1` |
 | frp fork commit | `028f085af3c787d7c0c77cd58f133ca8aed7ee75` |
 | Caddy | `v2.11.4` |
-| Caddy builder image | `caddy:2.11.4-builder@sha256:198d47eaee306d4d0c38a9960c89ff2c959aa29ad51d3e2dafa3e93ac961782a` |
+| Caddy builder | `golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36`; `xcaddy@v0.4.5` |
 | Caddy plugins | `github.com/caddy-dns/cloudflare@v0.2.4` |
 | Runtime image | `debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818` |
 | Rollback release | `2026.07.29.6`; deploy `ghcr.io/pinksaucepasta/paperboat-tunnel@sha256:bbad0c31333c4f1ac2abac77db91577fc1f9bb2dea5b54542d6ab0909e87880d` |
@@ -35,7 +35,8 @@ calendar tag, publication, and deployment by immutable image digest.
 | frp fork commit | `028f085af3c787d7c0c77cd58f133ca8aed7ee75` |
 | frp build tags | `frps,noweb` |
 | Caddy | `v2.11.4` |
-| Caddy builder | `caddy:2.11.4-builder@sha256:198d47eaee306d4d0c38a9960c89ff2c959aa29ad51d3e2dafa3e93ac961782a` |
+| Caddy builder | `golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36` |
+| xcaddy | `v0.4.5` |
 | Caddy DNS plugin | `github.com/caddy-dns/cloudflare@v0.2.4` |
 | Paperboat Caddy module | `github.com/pinksaucepasta/paperboat-tunnel/caddymodules/paperboatquic` at the tunnel release commit |
 | Owned STUN | `github.com/pion/stun/v3@v3.1.6`; bounded Binding-only UDP service on the deployment `stun_listen_address` |
@@ -108,5 +109,5 @@ hashes above are navigation aids. When an upstream release replaces any behavior
   imports only candidate parsing; tests reject the dependency's inactive TURN/TCP/mDNS/relay
   capabilities at the signaling boundary.
 - Rollback is pinned to the prior production manifest digest recorded above. Release
-  `2026.08.17.0` reconciles the complete P2P tunnel integration with the current `main`
+  `2026.08.17.1` reconciles the complete P2P tunnel integration with the current `main`
   contracts; its staged multi-region deployment evidence is recorded in the operator handoff.
