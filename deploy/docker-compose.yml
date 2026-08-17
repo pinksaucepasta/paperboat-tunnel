@@ -7,6 +7,12 @@ services:
       - ${PAPERBOAT_TUNNEL_NODE_ID:?set PAPERBOAT_TUNNEL_NODE_ID}
       - -edge-pool
       - ${PAPERBOAT_TUNNEL_EDGE_POOL:-default}
+      - -relay-id
+      - ${PAPERBOAT_TUNNEL_RELAY_ID:?set PAPERBOAT_TUNNEL_RELAY_ID}
+      - -relay-region
+      - ${PAPERBOAT_TUNNEL_RELAY_REGION:?set PAPERBOAT_TUNNEL_RELAY_REGION}
+      - -relay-name
+      - ${PAPERBOAT_TUNNEL_RELAY_NAME:?set PAPERBOAT_TUNNEL_RELAY_NAME}
       - -health-address
       - 127.0.0.1:9090
       - -deployment-config

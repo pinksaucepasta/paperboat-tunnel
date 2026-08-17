@@ -69,6 +69,9 @@ type RevocationSource interface {
 type NodeRegistration struct {
 	NodeID        string            `json:"edge_node_id"`
 	EdgePool      string            `json:"edge_pool"`
+	RelayID       string            `json:"relay_id"`
+	RelayRegion   string            `json:"relay_region"`
+	RelayName     string            `json:"relay_name"`
 	Artifact      string            `json:"artifact"`
 	Protocol      string            `json:"protocol"`
 	ProcessEpoch  string            `json:"process_epoch"`
