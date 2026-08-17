@@ -23,6 +23,9 @@ var identityPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,127}$`)
 type Config struct {
 	NodeID          string
 	EdgePool        string
+	RelayID         string
+	RelayRegion     string
+	RelayName       string
 	HealthAddress   string
 	StatePath       string
 	DeploymentPath  string
@@ -35,6 +38,9 @@ func Parse(args []string) (Config, error) {
 	var cfg Config
 	fs.StringVar(&cfg.NodeID, "node-id", "", "stable edge node identity")
 	fs.StringVar(&cfg.EdgePool, "edge-pool", "default", "assigned edge pool")
+	fs.StringVar(&cfg.RelayID, "relay-id", "", "stable public relay identity")
+	fs.StringVar(&cfg.RelayRegion, "relay-region", "", "public relay region")
+	fs.StringVar(&cfg.RelayName, "relay-name", "", "public relay display name")
 	fs.StringVar(&cfg.HealthAddress, "health-address", defaultHealthAddress, "private health listener")
 	fs.StringVar(&cfg.StatePath, "state-path", "state/edge-state.json", "private durable edge state path")
 	fs.StringVar(&cfg.DeploymentPath, "deployment-config", "", "strict deployment JSON path")
@@ -50,6 +56,26 @@ func Parse(args []string) (Config, error) {
 	}
 	if !identityPattern.MatchString(cfg.EdgePool) {
 		return Config{}, invalid("edge-pool", fmt.Errorf("must match %s", identityPattern))
+	}
+	if cfg.RelayID == "" {
+		cfg.RelayID = cfg.NodeID
+	}
+	if cfg.RelayRegion == "" {
+		cfg.RelayRegion = cfg.EdgePool
+	}
+	if cfg.RelayName == "" {
+		cfg.RelayName = cfg.RelayRegion
+	}
+	if !identityPattern.MatchString(cfg.RelayID) {
+		return Config{}, invalid("relay-id", fmt.Errorf("must match %s", identityPattern))
+	}
+	if !identityPattern.MatchString(cfg.RelayRegion) {
+		return Config{}, invalid("relay-region", fmt.Errorf("must match %s", identityPattern))
+	}
+	if value := strings.TrimSpace(cfg.RelayName); value == "" || len(value) > 80 || strings.ContainsAny(value, "\r\n\x00") {
+		return Config{}, invalid("relay-name", fmt.Errorf("must be a bounded single-line name"))
+	} else {
+		cfg.RelayName = value
 	}
 	if err := validatePrivateAddress(cfg.HealthAddress); err != nil {
 		return Config{}, invalid("health-address", err)
