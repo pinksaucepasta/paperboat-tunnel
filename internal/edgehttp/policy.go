@@ -81,15 +81,15 @@ func NewGatewayWithTransport(config Config, privateUpstream string, previewTrans
 	}
 	var next http.Handler = legacy
 	if previewTransport != nil {
-		previewTarget, _ := url.Parse("http://preview-relay.invalid")
-		preview := httputil.NewSingleHostReverseProxy(previewTarget)
-		preview.Transport = retryPreviewTransport{next: previewTransport}
-		preview.FlushInterval = -1
-		preview.Director = func(request *http.Request) {
-			request.URL.Scheme = "http"
-			request.URL.Host = request.Host
+		preview := &httputil.ReverseProxy{
+			Transport:     retryPreviewTransport{next: previewTransport},
+			FlushInterval: -1,
+			Rewrite: func(request *httputil.ProxyRequest) {
+				request.Out.URL.Scheme = "http"
+				request.Out.URL.Host = request.In.Host
+			},
+			ModifyResponse: legacy.ModifyResponse,
 		}
-		preview.ModifyResponse = legacy.ModifyResponse
 		next = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			if strings.HasSuffix(strings.ToLower(request.Host), "."+strings.ToLower(config.PreviewBaseDomain)) {
 				preview.ServeHTTP(writer, request)

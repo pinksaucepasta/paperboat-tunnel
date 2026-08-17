@@ -29,4 +29,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Install repository check tools
+        run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - run: make check race reproducible-builds binary-size-check static-analysis vulnerability-check license-check
