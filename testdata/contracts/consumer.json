@@ -2,7 +2,7 @@
   "repository": "paperboat-tunnel",
   "contract_version": "1.0.0",
   "canonical_source": "contracts/manifest.json",
-  "copied_manifest_sha256": "ab3267574f0bd19ca137d7a23d36a296629c756a36339b069132d7170c721bf0",
+  "copied_manifest_sha256": "e339b59e36b635c489d4352718049b4aa20f0e4bce3099f4f076218139386189",
   "supported": {
     "fixture_manifest": "1",
     "helper_protocol": "1.0-1.0",
