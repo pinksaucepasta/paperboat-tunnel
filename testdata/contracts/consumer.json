@@ -2,12 +2,12 @@
   "repository": "paperboat-tunnel",
   "contract_version": "1.0.0",
   "canonical_source": "contracts/manifest.json",
-  "copied_manifest_sha256": "3affefa65527916608c1031601b923603c98067f028c55b6bdcc35232e6f9433",
+  "copied_manifest_sha256": "b8291a4f3e27d96c3dfa167cde778107298952e9943495069356c80c67c8ac3e",
   "supported": {
     "fixture_manifest": "1",
     "helper_protocol": "1.0-1.0",
     "edge_control": "1.0-1.0",
     "frp": "v0.70.1@fa3bcca2ed54bcf80a5d98c8c76f40f72c6b5291"
   },
-  "last_review": "2026-07-27T23:41:35Z"
+  "last_review": "2026-08-17T15:00:00Z"
 }
