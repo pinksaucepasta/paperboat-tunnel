@@ -5,8 +5,8 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 mode=${1:-development}
 
 case "$mode" in
-  development|release) ;;
-  *) echo "usage: $0 development | release" >&2; exit 64 ;;
+  development|ci|release) ;;
+  *) echo "usage: $0 development | ci | release" >&2; exit 64 ;;
 esac
 
 fail() {
@@ -16,7 +16,7 @@ fail() {
 
 branch=$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
 if [ -z "$branch" ]; then
-  if [ "$mode" != release ] || [ -z "${GITHUB_REF_TYPE:-}" ] || [ "${GITHUB_REF_TYPE}" != tag ]; then
+  if [ "$mode" = development ] || { [ "$mode" = release ] && { [ -z "${GITHUB_REF_TYPE:-}" ] || [ "${GITHUB_REF_TYPE}" != tag ]; }; }; then
     fail "detached HEAD is forbidden; switch to a named branch"
   fi
 else

@@ -53,7 +53,13 @@ func TestHTTPClientTypedOperationsAndAuthentication(t *testing.T) {
 			}
 			data, _ := json.Marshal(UsageResult{Delta: 10})
 			return response(http.StatusOK, string(data)), nil
-		case "/v1/nodes/register", "/v1/nodes/heartbeat":
+		case "/v1/nodes/register":
+			var registration NodeRegistration
+			if err := json.NewDecoder(r.Body).Decode(&registration); err != nil || registration.SignalingHost != "signal.example.test" || registration.STUNEndpoint.Host != "edge.example.test" || registration.STUNEndpoint.Port != 3478 {
+				t.Errorf("registration wire = %+v, %v", registration, err)
+			}
+			return response(http.StatusNoContent, ""), nil
+		case "/v1/nodes/heartbeat":
 			return response(http.StatusNoContent, ""), nil
 		case "/v1/edge/routes/desired-state":
 			return response(http.StatusOK, `{"routes":[{"route_id":"route","route_revision":2,"environment_id":"env","connector_generation":3,"edge_node_id":"edge","kind":"runtime_https_wss","public_host":"app.example.test","target":{"host":"127.0.0.1","port":8080}}]}`), nil
@@ -76,7 +82,7 @@ func TestHTTPClientTypedOperationsAndAuthentication(t *testing.T) {
 	if err != nil || result.Delta != 10 {
 		t.Fatalf("usage = %+v, %v", result, err)
 	}
-	if err := client.RegisterNode(context.Background(), NodeRegistration{NodeID: "edge"}); err != nil {
+	if err := client.RegisterNode(context.Background(), NodeRegistration{NodeID: "edge", SignalingHost: "signal.example.test", STUNEndpoint: UDPEndpoint{Host: "edge.example.test", Port: 3478}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.Heartbeat(context.Background(), NodeObservation{NodeID: "edge"}); err != nil {
@@ -112,6 +118,12 @@ func TestHTTPClientRejectsPlaintextRedirectMalformedAndOversized(t *testing.T) {
 	})
 	if _, err := malformed.Current(context.Background(), "env", "machine", "runtime"); !errors.Is(err, ErrControlUnavailable) {
 		t.Fatalf("malformed = %v", err)
+	}
+	duplicate := controlClient(t, func(*http.Request) (*http.Response, error) {
+		return response(http.StatusOK, `{"connector_generation":3,"connector_generation":4,"edge_pool":"default","edge_node_id":"edge"}`), nil
+	})
+	if _, err := duplicate.Current(context.Background(), "env", "machine", "runtime"); !errors.Is(err, ErrControlUnavailable) {
+		t.Fatalf("duplicate = %v", err)
 	}
 	oversized := controlClient(t, func(*http.Request) (*http.Response, error) {
 		return response(http.StatusOK, strings.Repeat("x", maxControlDocument+1)), nil

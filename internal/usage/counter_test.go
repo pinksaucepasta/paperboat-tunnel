@@ -18,3 +18,17 @@ func TestReconcileIsMonotonic(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestCountersSaturateInsteadOfWrapping(t *testing.T) {
+	counters := NewCounters()
+	key := Key{Node: "edge", Epoch: "epoch", Environment: "env", Route: "route", Revision: 1, Direction: "ingress"}
+	if got := counters.Observe(key, ^uint64(0)-1); got != ^uint64(0)-1 {
+		t.Fatalf("baseline=%d", got)
+	}
+	if got := counters.Add(key, 2); got != ^uint64(0) {
+		t.Fatalf("saturated=%d", got)
+	}
+	if got := counters.Add(key, 1); got != ^uint64(0) {
+		t.Fatalf("post-saturation=%d", got)
+	}
+}

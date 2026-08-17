@@ -11,7 +11,7 @@ import (
 	"regexp"
 )
 
-const FRPCommit = "d8132a31265c0b5a6df76401476854550583319a"
+const FRPCommit = "028f085af3c787d7c0c77cd58f133ca8aed7ee75"
 const FRPVersion = "v0.70.1"
 
 var pathPattern = regexp.MustCompile(`^/[a-zA-Z0-9/_-]{16,255}$`)

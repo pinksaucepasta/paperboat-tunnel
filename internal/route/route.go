@@ -40,10 +40,11 @@ type Registry struct {
 	helperBaseDomain  string
 	byID              map[string]Attachment
 	byHost            map[string]string
+	changed           map[string]chan struct{}
 }
 
 func NewRegistry(previewBaseDomain, helperBaseDomain string) *Registry {
-	return &Registry{previewBaseDomain: normalizeHost(previewBaseDomain), helperBaseDomain: normalizeHost(helperBaseDomain), byID: make(map[string]Attachment), byHost: make(map[string]string)}
+	return &Registry{previewBaseDomain: normalizeHost(previewBaseDomain), helperBaseDomain: normalizeHost(helperBaseDomain), byID: make(map[string]Attachment), byHost: make(map[string]string), changed: make(map[string]chan struct{})}
 }
 
 func normalizeHost(host string) string {
@@ -80,6 +81,7 @@ func (r *Registry) Attach(a Attachment) (Attachment, error) {
 		delete(r.byHost, current.Host)
 	}
 	r.byID[a.ID], r.byHost[a.Host] = a, a.ID
+	r.signalChangedLocked(a.Host)
 	return a, nil
 }
 
@@ -95,7 +97,31 @@ func (r *Registry) Detach(id string, revision uint64) error {
 	}
 	delete(r.byID, id)
 	delete(r.byHost, a.Host)
+	r.signalChangedLocked(a.Host)
 	return nil
+}
+
+// Changed returns a host-scoped notification channel. The channel closes when
+// authoritative ownership for the host may have changed.
+func (r *Registry) Changed(host string) <-chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.changedLocked(normalizeHost(host))
+}
+
+func (r *Registry) changedLocked(host string) chan struct{} {
+	changed := r.changed[host]
+	if changed == nil {
+		changed = make(chan struct{})
+		r.changed[host] = changed
+	}
+	return changed
+}
+
+func (r *Registry) signalChangedLocked(host string) {
+	changed := r.changedLocked(host)
+	close(changed)
+	r.changed[host] = make(chan struct{})
 }
 
 func (r *Registry) Get(id string) (Attachment, bool) {
@@ -139,7 +165,22 @@ func (r *Registry) Replace(attachments []Attachment) error {
 			}
 		}
 	}
+	changedHosts := make(map[string]struct{})
+	for host, id := range r.byHost {
+		nextID, ok := next.byHost[host]
+		if !ok || nextID != id || !sameRoute(r.byID[id], next.byID[nextID]) {
+			changedHosts[host] = struct{}{}
+		}
+	}
+	for host := range next.byHost {
+		if _, ok := r.byHost[host]; !ok {
+			changedHosts[host] = struct{}{}
+		}
+	}
 	r.byID, r.byHost = next.byID, next.byHost
+	for host := range changedHosts {
+		r.signalChangedLocked(host)
+	}
 	r.mu.Unlock()
 	return nil
 }

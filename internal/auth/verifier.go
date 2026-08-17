@@ -1,18 +1,19 @@
 package auth
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
-	"io"
 	"strings"
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/admission"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/edgeerrors"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/peerrelay"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/peerrelayhttp"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/peersignaling"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/strictjson"
 )
 
 const maxCredentialBytes = 8192
@@ -24,8 +25,13 @@ type Revocations interface {
 	Revoked(context.Context, admission.Claims) (bool, error)
 }
 
+type revocationWatchSource interface {
+	Watch(admission.Claims) (<-chan struct{}, func(), error)
+}
+
 type Verifier struct {
 	Issuer      string
+	NodeID      string
 	Keys        KeySource
 	Revocations Revocations
 	Now         func() time.Time
@@ -65,10 +71,126 @@ type claims struct {
 	ConnectorGeneration    uint64              `json:"connector_generation"`
 	EdgePool               string              `json:"edge_pool"`
 	EdgeNodeID             string              `json:"edge_node_id"`
+	RouteBinding           string              `json:"route_binding"`
 	FileTransferPolicy     *fileTransferPolicy `json:"file_transfer_policy"`
 	UserID                 string              `json:"user_id"`
 	CLIClientSessionID     string              `json:"cli_client_session_id"`
 	SessionID              string              `json:"session_id"`
+	IntentID               string              `json:"intent_id"`
+	EndpointID             string              `json:"endpoint_id"`
+	PeerEndpointID         string              `json:"peer_endpoint_id"`
+	AttemptGeneration      uint64              `json:"attempt_generation"`
+	NetworkGeneration      uint64              `json:"network_generation"`
+	PeerRole               string              `json:"peer_role"`
+	RouteAllocation        string              `json:"route_allocation"`
+	RouteGeneration        uint64              `json:"route_generation"`
+	InitiatorEndpointID    string              `json:"initiator_endpoint_id"`
+	ResponderEndpointID    string              `json:"responder_endpoint_id"`
+	RelayByteLimit         uint64              `json:"relay_byte_limit"`
+	RelayCarriers          []string            `json:"relay_carriers"`
+}
+
+func (v *Verifier) AuthenticateRelay(ctx context.Context, token string, attachment peerrelayhttp.Attachment) (peerrelay.Admission, error) {
+	validCarrier := attachment.Carrier == peerrelay.CarrierQUIC || attachment.Carrier == peerrelay.CarrierWSS
+	if v == nil || v.Keys == nil || v.Issuer == "" || v.NodeID == "" || len(token) == 0 || len(token) > maxCredentialBytes || v.ClockSkew < 0 || v.ClockSkew > time.Minute || attachment.StreamHandle == [16]byte{} || !validCarrier {
+		return peerrelay.Admission{}, invalid()
+	}
+	parsedHeader, parsed, err := v.verifySigned(ctx, token)
+	if err != nil {
+		return peerrelay.Admission{}, err
+	}
+	now := time.Now().UTC()
+	if v.Now != nil {
+		now = v.Now().UTC()
+	}
+	routeAllocation, decodeErr := base64.RawURLEncoding.Strict().DecodeString(parsed.RouteAllocation)
+	if decodeErr != nil || len(routeAllocation) != 16 || base64.RawURLEncoding.EncodeToString(routeAllocation) != parsed.RouteAllocation || parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-edge" || parsed.Subject != parsed.IntentID || parsed.JTI == "" || parsed.CredentialClass != "peer_relay" || !exactScopes(parsed.Scope, []string{"peer:relay"}) || parsed.EnvironmentID == "" || parsed.EdgeNodeID != v.NodeID || parsed.IntentID == "" || parsed.InitiatorEndpointID == "" || parsed.ResponderEndpointID == "" || parsed.InitiatorEndpointID == parsed.ResponderEndpointID || parsed.AttemptGeneration == 0 || parsed.NetworkGeneration == 0 || parsed.RouteGeneration == 0 || parsed.RelayByteLimit == 0 || parsed.RelayByteLimit > 1<<40 || !exactRelayCarriers(parsed.RelayCarriers) || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 || time.Unix(parsed.IssuedAt, 0).After(now.Add(v.ClockSkew)) || !time.Unix(parsed.Expires, 0).After(now) {
+		return peerrelay.Admission{}, invalid()
+	}
+	validEndpoint := attachment.Role == peerrelay.RoleInitiator && attachment.EndpointID == parsed.InitiatorEndpointID || attachment.Role == peerrelay.RoleHost && attachment.EndpointID == parsed.ResponderEndpointID
+	if !validEndpoint {
+		return peerrelay.Admission{}, invalid()
+	}
+	revocationClaims := admission.Claims{KeyID: parsedHeader.KeyID, JTI: parsed.JTI, EnvironmentID: parsed.EnvironmentID, CredentialClass: parsed.CredentialClass, ExpiresAt: time.Unix(parsed.Expires, 0).UTC()}
+	if v.Revocations != nil {
+		revoked, revokeErr := v.Revocations.Revoked(ctx, revocationClaims)
+		if revokeErr != nil || revoked {
+			return peerrelay.Admission{}, edgeerrors.New(edgeerrors.CodeCredentialInvalid, "credential is unavailable", "request a fresh peer session")
+		}
+	}
+	var allocation [16]byte
+	copy(allocation[:], routeAllocation)
+	return peerrelay.Admission{Role: attachment.Role, Carrier: attachment.Carrier, Binding: peerrelay.Binding{RouteAllocation: allocation, StreamHandle: attachment.StreamHandle, EnvironmentID: parsed.EnvironmentID, RouteID: "peer_" + parsed.RouteAllocation, RouteRevision: parsed.RouteGeneration, IntentID: parsed.IntentID, Attempt: parsed.AttemptGeneration, Network: parsed.NetworkGeneration, ExpiresAt: time.Unix(parsed.Expires, 0).UTC(), MaximumBytes: parsed.RelayByteLimit}}, nil
+}
+
+// AuthenticatePMTU verifies a PMTU-only relay-region probe credential.
+func (v *Verifier) AuthenticatePMTU(ctx context.Context, token string) error {
+	if v == nil || ctx == nil || v.Keys == nil || v.Issuer == "" || v.NodeID == "" || len(token) == 0 || len(token) > maxCredentialBytes || v.ClockSkew < 0 || v.ClockSkew > time.Minute {
+		return invalid()
+	}
+	parsedHeader, parsed, err := v.verifySigned(ctx, token)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if v.Now != nil {
+		now = v.Now().UTC()
+	}
+	allocation, decodeErr := base64.RawURLEncoding.Strict().DecodeString(parsed.RouteAllocation)
+	if decodeErr != nil || len(allocation) != 16 || base64.RawURLEncoding.EncodeToString(allocation) != parsed.RouteAllocation || parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-edge" || parsed.Subject != parsed.IntentID || parsed.JTI == "" || parsed.CredentialClass != "peer_pmtu" || !exactScopes(parsed.Scope, []string{"peer:pmtu"}) || parsed.EnvironmentID == "" || parsed.EdgeNodeID != v.NodeID || parsed.IntentID == "" || parsed.InitiatorEndpointID == "" || parsed.ResponderEndpointID == "" || parsed.InitiatorEndpointID == parsed.ResponderEndpointID || parsed.AttemptGeneration == 0 || parsed.NetworkGeneration == 0 || parsed.RouteGeneration == 0 || len(parsed.RelayCarriers) != 0 || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 || time.Unix(parsed.IssuedAt, 0).After(now.Add(v.ClockSkew)) || !time.Unix(parsed.Expires, 0).After(now) {
+		return invalid()
+	}
+	if v.Revocations != nil {
+		revoked, revokeErr := v.Revocations.Revoked(ctx, admission.Claims{KeyID: parsedHeader.KeyID, JTI: parsed.JTI, EnvironmentID: parsed.EnvironmentID, CredentialClass: parsed.CredentialClass, ExpiresAt: time.Unix(parsed.Expires, 0).UTC()})
+		if revokeErr != nil || revoked {
+			return edgeerrors.New(edgeerrors.CodeCredentialInvalid, "credential is unavailable", "request a fresh peer session")
+		}
+	}
+	return nil
+}
+
+func exactRelayCarriers(carriers []string) bool {
+	return len(carriers) == 2 && carriers[0] == "relay_quic" && carriers[1] == "relay_wss"
+}
+
+// Authenticate verifies one endpoint's exact peer-attempt attachment and
+// registers a live revocation watcher when the trust source supports it.
+func (v *Verifier) Authenticate(ctx context.Context, token string) (peersignaling.Admission, error) {
+	if v == nil || v.Keys == nil || v.Issuer == "" || len(token) == 0 || len(token) > maxCredentialBytes || v.ClockSkew < 0 || v.ClockSkew > time.Minute {
+		return peersignaling.Admission{}, invalid()
+	}
+	parsedHeader, parsed, err := v.verifySigned(ctx, token)
+	if err != nil {
+		return peersignaling.Admission{}, err
+	}
+	now := time.Now().UTC()
+	if v.Now != nil {
+		now = v.Now().UTC()
+	}
+	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-edge" || parsed.Subject != parsed.EndpointID || parsed.JTI == "" || parsed.CredentialClass != "peer_signaling" || !exactScopes(parsed.Scope, []string{"peer:signal"}) || parsed.EnvironmentID == "" || parsed.EdgeNodeID == "" || parsed.IntentID == "" || parsed.EndpointID == "" || parsed.PeerEndpointID == "" || parsed.EndpointID == parsed.PeerEndpointID || parsed.AttemptGeneration == 0 || parsed.NetworkGeneration == 0 || parsed.PeerRole != string(peersignaling.RoleControlling) && parsed.PeerRole != string(peersignaling.RoleControlled) || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 || time.Unix(parsed.IssuedAt, 0).After(now.Add(v.ClockSkew)) || !time.Unix(parsed.Expires, 0).After(now) {
+		return peersignaling.Admission{}, invalid()
+	}
+	revocationClaims := admission.Claims{KeyID: parsedHeader.KeyID, JTI: parsed.JTI, EnvironmentID: parsed.EnvironmentID, CredentialClass: parsed.CredentialClass, ExpiresAt: time.Unix(parsed.Expires, 0).UTC()}
+	var revoked <-chan struct{}
+	release := func() {}
+	if watcher, ok := v.Revocations.(revocationWatchSource); ok {
+		revoked, release, err = watcher.Watch(revocationClaims)
+		if err != nil {
+			return peersignaling.Admission{}, edgeerrors.New(edgeerrors.CodeCredentialInvalid, "credential revocation state is unavailable", "retry after revocation synchronization")
+		}
+		select {
+		case <-revoked:
+			release()
+			return peersignaling.Admission{}, edgeerrors.New(edgeerrors.CodeCredentialInvalid, "credential is unavailable", "request a fresh peer session")
+		default:
+		}
+	} else if v.Revocations != nil {
+		isRevoked, revokeErr := v.Revocations.Revoked(ctx, revocationClaims)
+		if revokeErr != nil || isRevoked {
+			return peersignaling.Admission{}, edgeerrors.New(edgeerrors.CodeCredentialInvalid, "credential is unavailable", "request a fresh peer session")
+		}
+	}
+	return peersignaling.Admission{CredentialID: parsed.JTI, EnvironmentID: parsed.EnvironmentID, NodeID: parsed.EdgeNodeID, IntentID: parsed.IntentID, EndpointID: parsed.EndpointID, PeerEndpointID: parsed.PeerEndpointID, AttemptGeneration: parsed.AttemptGeneration, NetworkGeneration: parsed.NetworkGeneration, Role: peersignaling.Role(parsed.PeerRole), ExpiresAt: time.Unix(parsed.Expires, 0).UTC(), Revoked: revoked, Release: release}, nil
 }
 
 // VerifyHelperAccess verifies the signed credential carried by public helper
@@ -141,7 +263,7 @@ func (v *Verifier) verifySigned(ctx context.Context, token string) (header, clai
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return header{}, claims{}, invalid()
 	}
-	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	headerBytes, err := decodeCredentialSegment(parts[0])
 	if err != nil {
 		return header{}, claims{}, invalid()
 	}
@@ -153,11 +275,11 @@ func (v *Verifier) verifySigned(ctx context.Context, token string) (header, clai
 	if err != nil || len(key) != ed25519.PublicKeySize {
 		return header{}, claims{}, edgeerrors.New(edgeerrors.CodeCredentialInvalid, "credential signing key is unavailable", "retry after key synchronization")
 	}
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	signature, err := decodeCredentialSegment(parts[2])
 	if err != nil || !ed25519.Verify(key, []byte(parts[0]+"."+parts[1]), signature) {
 		return header{}, claims{}, invalid()
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	payload, err := decodeCredentialSegment(parts[1])
 	if err != nil {
 		return header{}, claims{}, invalid()
 	}
@@ -179,7 +301,7 @@ func (v *Verifier) Verify(ctx context.Context, token string) (admission.Claims, 
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialMalformed, "credential structure is invalid", "request a fresh admission")
 	}
-	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	headerBytes, err := decodeCredentialSegment(parts[0])
 	if err != nil {
 		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialMalformed, "credential header is malformed", "request a fresh admission")
 	}
@@ -191,11 +313,11 @@ func (v *Verifier) Verify(ctx context.Context, token string) (admission.Claims, 
 	if err != nil || len(key) != ed25519.PublicKeySize {
 		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialKeyUnavailable, "credential signing key is unavailable", "retry after key synchronization")
 	}
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	signature, err := decodeCredentialSegment(parts[2])
 	if err != nil || !ed25519.Verify(key, []byte(parts[0]+"."+parts[1]), signature) {
 		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialSignatureInvalid, "credential signature is invalid", "request a fresh admission")
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	payload, err := decodeCredentialSegment(parts[1])
 	if err != nil {
 		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialMalformed, "credential payload is malformed", "request a fresh admission")
 	}
@@ -207,7 +329,8 @@ func (v *Verifier) Verify(ctx context.Context, token string) (admission.Claims, 
 	if v.Now != nil {
 		now = v.Now().UTC()
 	}
-	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-edge" || parsed.Subject == "" || parsed.JTI == "" || parsed.CredentialClass != "connector_admission" || len(parsed.Scope) != 1 || parsed.Scope[0] != "connector:admit" || parsed.EnvironmentID == "" || parsed.MachineID == "" || parsed.InstallationGeneration < 1 || parsed.ConnectorID == "" || parsed.ConnectorGeneration == 0 || parsed.EdgePool == "" || parsed.EdgeNodeID == "" || !validFileTransferPolicy(parsed.FileTransferPolicy) || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 {
+	routeBinding, routeBindingErr := base64.RawURLEncoding.Strict().DecodeString(parsed.RouteBinding)
+	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-edge" || parsed.Subject == "" || parsed.JTI == "" || parsed.CredentialClass != "connector_admission" || len(parsed.Scope) != 1 || parsed.Scope[0] != "connector:admit" || parsed.EnvironmentID == "" || parsed.MachineID == "" || parsed.InstallationGeneration < 1 || parsed.ConnectorID == "" || parsed.ConnectorGeneration == 0 || parsed.EdgePool == "" || parsed.EdgeNodeID == "" || routeBindingErr != nil || len(routeBinding) != 32 || base64.RawURLEncoding.EncodeToString(routeBinding) != parsed.RouteBinding || !validFileTransferPolicy(parsed.FileTransferPolicy) || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 {
 		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeBindingInvalid, "credential claims are invalid", "request a fresh admission")
 	}
 	if time.Unix(parsed.IssuedAt, 0).After(now.Add(v.ClockSkew)) {
@@ -216,7 +339,7 @@ func (v *Verifier) Verify(ctx context.Context, token string) (admission.Claims, 
 	if !time.Unix(parsed.Expires, 0).After(now) {
 		return admission.Claims{}, edgeerrors.New(edgeerrors.CodeCredentialExpired, "credential is expired", "request a fresh admission")
 	}
-	result := admission.Claims{KeyID: parsedHeader.KeyID, Issuer: parsed.Issuer, Audience: parsed.Audience, JTI: parsed.JTI, CredentialClass: parsed.CredentialClass, Scopes: append([]string(nil), parsed.Scope...), EnvironmentID: parsed.EnvironmentID, MachineID: parsed.MachineID, InstallationGeneration: parsed.InstallationGeneration, ConnectorID: parsed.ConnectorID, ConnectorGeneration: parsed.ConnectorGeneration, EdgePool: parsed.EdgePool, EdgeNodeID: parsed.EdgeNodeID, ExpiresAt: time.Unix(parsed.Expires, 0).UTC()}
+	result := admission.Claims{KeyID: parsedHeader.KeyID, Issuer: parsed.Issuer, Audience: parsed.Audience, JTI: parsed.JTI, CredentialClass: parsed.CredentialClass, Scopes: append([]string(nil), parsed.Scope...), EnvironmentID: parsed.EnvironmentID, MachineID: parsed.MachineID, InstallationGeneration: parsed.InstallationGeneration, ConnectorID: parsed.ConnectorID, ConnectorGeneration: parsed.ConnectorGeneration, EdgePool: parsed.EdgePool, EdgeNodeID: parsed.EdgeNodeID, RouteBinding: parsed.RouteBinding, ExpiresAt: time.Unix(parsed.Expires, 0).UTC()}
 	if v.Revocations != nil {
 		revoked, err := v.Revocations.Revoked(ctx, result)
 		if err != nil {
@@ -234,15 +357,15 @@ func validFileTransferPolicy(policy *fileTransferPolicy) bool {
 }
 
 func strictJSON(data []byte, target any) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
+	return strictjson.Decode(data, target, maxSnapshotJSONDepth)
+}
+
+func decodeCredentialSegment(encoded string) ([]byte, error) {
+	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || base64.RawURLEncoding.EncodeToString(decoded) != encoded {
+		return nil, errors.New("credential segment is not canonical base64url")
 	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return errors.New("trailing JSON")
-	}
-	return nil
+	return decoded, nil
 }
 
 func invalid() error {

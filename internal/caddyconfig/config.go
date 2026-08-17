@@ -29,6 +29,7 @@ var domainPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:
 type Input struct {
 	PreviewBaseDomain string
 	HelperBaseDomain  string
+	SignalingHost     string
 	PrivateUpstream   string
 	ListenAddress     string
 	HTTPListenAddress string
@@ -56,6 +57,38 @@ func Generate(input Input) ([]byte, error) {
 	publicRoutes := make([]any, 0, len(input.PublicRoutes)+1)
 	staticHosts := make([]string, 0, len(input.PublicRoutes))
 	seenStaticHosts := make(map[string]struct{}, len(input.PublicRoutes))
+	publicRoutes = append(publicRoutes,
+		map[string]any{
+			"match":    []any{map[string]any{"host": []string{input.SignalingHost}, "path": []string{"/network-check/v1"}, "method": []string{"GET"}}},
+			"handle":   []any{reverseProxy(input.PrivateUpstream)},
+			"terminal": true,
+		},
+		map[string]any{
+			"match": []any{map[string]any{"host": []string{input.SignalingHost}, "path": []string{"/v1/peer-relay"}}},
+			"handle": []any{map[string]any{"handler": "headers", "request": map[string]any{"set": map[string][]string{"X-Paperboat-Relay-Carrier": {"{http.request.proto}"}}}, "response": map[string]any{"set": map[string][]string{
+				"X-Content-Type-Options": {"nosniff"}, "Referrer-Policy": {"no-referrer"}, "X-Frame-Options": {"DENY"},
+			}}}, relayReverseProxy(input.PrivateUpstream)},
+			"terminal": true,
+		},
+		map[string]any{
+			"match": []any{map[string]any{"host": []string{input.SignalingHost}, "path": []string{"/v1/public-preview-relay"}, "method": []string{"POST"}}},
+			"handle": []any{map[string]any{"handler": "headers", "request": map[string]any{"set": map[string][]string{"X-Paperboat-Relay-Carrier": {"{http.request.proto}"}}}, "response": map[string]any{"set": map[string][]string{
+				"X-Content-Type-Options": {"nosniff"}, "Referrer-Policy": {"no-referrer"}, "X-Frame-Options": {"DENY"},
+			}}}, relayReverseProxy(input.PrivateUpstream)},
+			"terminal": true,
+		},
+		map[string]any{
+			"match": []any{map[string]any{"host": []string{input.SignalingHost}, "path": []string{"/v1/peer-signaling"}}},
+			"handle": []any{map[string]any{"handler": "headers", "response": map[string]any{"set": map[string][]string{
+				"X-Content-Type-Options": {"nosniff"}, "Referrer-Policy": {"no-referrer"}, "X-Frame-Options": {"DENY"},
+			}}}, reverseProxy(input.PrivateUpstream)},
+			"terminal": true,
+		},
+		map[string]any{
+			"match":  []any{map[string]any{"host": []string{input.SignalingHost}}},
+			"handle": []any{map[string]any{"handler": "static_response", "status_code": 404}}, "terminal": true,
+		},
+	)
 	for _, route := range input.PublicRoutes {
 		match := map[string]any{"host": []string{route.Host}}
 		if route.PathPrefix != "" {
@@ -98,7 +131,7 @@ func Generate(input Input) ([]byte, error) {
 		"apps": map[string]any{
 			"paperboat_quic": map[string]any{
 				"listen": input.ListenAddress, "http_server": "paperboat_public", "broker_socket": input.StreamBrokerPath,
-				"max_connections": 4096, "max_connections_per_ip": 32, "max_streams_per_connection": 3,
+				"max_connections": 4096, "max_connections_per_ip": 32, "max_streams_per_connection": 3, "max_http3_streams_per_connection": 64,
 				"idle_timeout": 120_000_000_000, "handshake_timeout": 10_000_000_000,
 			},
 			"http": map[string]any{
@@ -126,7 +159,7 @@ func Generate(input Input) ([]byte, error) {
 		if input.DNSProvider != "" {
 			issuer["challenges"] = map[string]any{"dns": map[string]any{"provider": map[string]any{"name": input.DNSProvider, "api_token": "{env.CLOUDFLARE_API_TOKEN}"}}}
 		}
-		policies := []any{map[string]any{"subjects": wildcardHosts, "issuers": []any{issuer}, "on_demand": true}}
+		policies := []any{map[string]any{"subjects": wildcardHosts, "issuers": []any{issuer}, "on_demand": true}, map[string]any{"subjects": []string{input.SignalingHost}, "issuers": []any{issuer}}}
 		if len(staticHosts) > 0 {
 			policies = append(policies, map[string]any{"subjects": staticHosts, "issuers": []any{issuer}})
 		}
@@ -145,13 +178,22 @@ func reverseProxy(upstream string) map[string]any {
 	return map[string]any{"handler": "reverse_proxy", "upstreams": []any{map[string]any{"dial": upstream}}, "headers": map[string]any{"request": map[string]any{"delete": []string{"Forwarded", "X-Forwarded-Host", "X-Real-IP", "X-Paperboat-Environment", "X-Paperboat-Route"}, "set": map[string][]string{"X-Forwarded-Proto": {"https"}, "X-Real-IP": {"{http.request.client_ip}"}}}}}
 }
 
+func relayReverseProxy(upstream string) map[string]any {
+	result := reverseProxy(upstream)
+	result["flush_interval"] = -1
+	return result
+}
+
 func validate(input Input) error {
-	for _, baseHost := range []string{input.PreviewBaseDomain, input.HelperBaseDomain} {
+	for _, baseHost := range []string{input.PreviewBaseDomain, input.HelperBaseDomain, input.SignalingHost} {
 		if baseHost != strings.ToLower(baseHost) || !domainPattern.MatchString(baseHost) || net.ParseIP(baseHost) != nil {
 			return ErrInvalid
 		}
 	}
 	if input.PreviewBaseDomain == input.HelperBaseDomain || strings.HasSuffix(input.PreviewBaseDomain, "."+input.HelperBaseDomain) || strings.HasSuffix(input.HelperBaseDomain, "."+input.PreviewBaseDomain) {
+		return ErrInvalid
+	}
+	if input.SignalingHost == input.PreviewBaseDomain || input.SignalingHost == input.HelperBaseDomain || strings.HasSuffix(input.SignalingHost, "."+input.PreviewBaseDomain) || strings.HasSuffix(input.SignalingHost, "."+input.HelperBaseDomain) || strings.HasSuffix(input.PreviewBaseDomain, "."+input.SignalingHost) || strings.HasSuffix(input.HelperBaseDomain, "."+input.SignalingHost) {
 		return ErrInvalid
 	}
 	if err := validatePrivateEndpoint(input.PrivateUpstream); err != nil {
@@ -175,7 +217,7 @@ func validate(input Input) error {
 	seenRoutes := make(map[string]struct{}, len(input.PublicRoutes))
 	for _, route := range input.PublicRoutes {
 		key := route.Host + "\x00" + route.PathPrefix
-		if route.Host != strings.ToLower(route.Host) || !domainPattern.MatchString(route.Host) || net.ParseIP(route.Host) != nil || strings.HasSuffix(route.Host, "."+input.PreviewBaseDomain) || strings.HasSuffix(route.Host, "."+input.HelperBaseDomain) || validatePrivateRouteEndpoint(route.Upstream) != nil {
+		if route.Host != strings.ToLower(route.Host) || !domainPattern.MatchString(route.Host) || net.ParseIP(route.Host) != nil || route.Host == input.SignalingHost || strings.HasSuffix(route.Host, "."+input.PreviewBaseDomain) || strings.HasSuffix(route.Host, "."+input.HelperBaseDomain) || validatePrivateRouteEndpoint(route.Upstream) != nil {
 			return ErrInvalid
 		}
 		if _, exists := seenRoutes[key]; exists {

@@ -1,22 +1,28 @@
 package auth
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
-	"io"
 	"sync"
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/admission"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/strictjson"
 )
 
-const maxSnapshotBytes = 1 << 20
+const (
+	maxSnapshotBytes     = 1 << 20
+	maxSnapshotJSONDepth = 64
+)
 
-var ErrSnapshotInvalid = errors.New("credential trust snapshot is invalid")
+var (
+	ErrSnapshotInvalid  = errors.New("credential trust snapshot is invalid")
+	ErrSnapshotCapacity = errors.New("credential revocation watcher capacity exceeded")
+)
+
+const maximumRevocationWatchers = 8192
 
 type Snapshot struct {
 	mu                                         sync.RWMutex
@@ -26,6 +32,16 @@ type Snapshot struct {
 	revocationMaxAge                           time.Duration
 	revocationUpdatedAt                        time.Time
 	now                                        func() time.Time
+	watchers                                   map[*revocationOwner]revocationWatcher
+}
+
+type revocationOwner struct {
+	//lint:ignore U1000 The byte keeps independently allocated watcher owners pointer-distinct.
+	marker byte
+}
+type revocationWatcher struct {
+	claims admission.Claims
+	done   chan struct{}
 }
 type connectorGeneration struct {
 	Machine    string
@@ -34,7 +50,7 @@ type connectorGeneration struct {
 }
 
 func NewSnapshot() *Snapshot {
-	return &Snapshot{keys: map[string]ed25519.PublicKey{}, revokedJTI: map[string]struct{}{}, revokedEnvironment: map[string]struct{}{}, revokedKey: map[string]struct{}{}, revokedConnectorGeneration: map[connectorGeneration]struct{}{}, now: time.Now}
+	return &Snapshot{keys: map[string]ed25519.PublicKey{}, revokedJTI: map[string]struct{}{}, revokedEnvironment: map[string]struct{}{}, revokedKey: map[string]struct{}{}, revokedConnectorGeneration: map[connectorGeneration]struct{}{}, watchers: map[*revocationOwner]revocationWatcher{}, now: time.Now}
 }
 
 func (s *Snapshot) ConfigureRevocationFreshness(maxAge time.Duration, now func() time.Time) {
@@ -72,7 +88,7 @@ func (s *Snapshot) ReplaceJWKS(data []byte) error {
 			return ErrSnapshotInvalid
 		}
 		raw, err := base64.RawURLEncoding.DecodeString(item.X)
-		if err != nil || len(raw) != ed25519.PublicKeySize || next[item.KeyID] != nil {
+		if err != nil || len(raw) != ed25519.PublicKeySize || base64.RawURLEncoding.EncodeToString(raw) != item.X || next[item.KeyID] != nil {
 			return ErrSnapshotInvalid
 		}
 		next[item.KeyID] = append(ed25519.PublicKey(nil), raw...)
@@ -144,28 +160,75 @@ func (s *Snapshot) ReplaceRevocations(data []byte) error {
 		clock = time.Now
 	}
 	s.revocationUpdatedAt = clock()
+	for id, watcher := range s.watchers {
+		if s.revokedLocked(watcher.claims) {
+			close(watcher.done)
+			delete(s.watchers, id)
+		}
+	}
 	s.mu.Unlock()
 	return nil
 }
 func (s *Snapshot) Revoked(_ context.Context, claims admission.Claims) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.revocationMaxAge > 0 && (s.revocationUpdatedAt.IsZero() || s.now().Sub(s.revocationUpdatedAt) > s.revocationMaxAge) {
+	if !s.revocationsFreshLocked() {
 		return false, ErrSnapshotInvalid
 	}
+	return s.revokedLocked(claims), nil
+}
+
+func (s *Snapshot) Watch(claims admission.Claims) (<-chan struct{}, func(), error) {
+	if s == nil || claims.JTI == "" || claims.EnvironmentID == "" || claims.KeyID == "" {
+		return nil, nil, ErrSnapshotInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.revocationsFreshLocked() {
+		return nil, nil, ErrSnapshotInvalid
+	}
+	done := make(chan struct{})
+	if s.revokedLocked(claims) {
+		close(done)
+		return done, func() {}, nil
+	}
+	if len(s.watchers) >= maximumRevocationWatchers {
+		return nil, nil, ErrSnapshotCapacity
+	}
+	owner := &revocationOwner{}
+	s.watchers[owner] = revocationWatcher{claims: claims, done: done}
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			s.mu.Lock()
+			delete(s.watchers, owner)
+			s.mu.Unlock()
+		})
+	}
+	return done, release, nil
+}
+
+func (s *Snapshot) revocationsFreshLocked() bool {
+	if s.revocationMaxAge <= 0 {
+		return true
+	}
+	clock := s.now
+	if clock == nil || s.revocationUpdatedAt.IsZero() {
+		return false
+	}
+	now := clock()
+	return !now.Before(s.revocationUpdatedAt) && now.Sub(s.revocationUpdatedAt) <= s.revocationMaxAge
+}
+
+func (s *Snapshot) revokedLocked(claims admission.Claims) bool {
 	_, a := s.revokedJTI[claims.JTI]
 	_, b := s.revokedEnvironment[claims.EnvironmentID]
 	_, c := s.revokedConnectorGeneration[connectorGeneration{claims.MachineID, claims.ConnectorID, claims.ConnectorGeneration}]
 	_, d := s.revokedKey[claims.KeyID]
-	return a || b || c || d, nil
+	return a || b || c || d
 }
 func strictSnapshotJSON(data []byte, target any) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+	if strictjson.Decode(data, target, maxSnapshotJSONDepth) != nil {
 		return ErrSnapshotInvalid
 	}
 	return nil

@@ -1,21 +1,33 @@
-GO_VERSION := 1.25.7
+GO_VERSION := 1.26.6
 GO := GOTOOLCHAIN=local go
 GOFMT := $(shell GOTOOLCHAIN=local go env GOROOT 2>/dev/null)/bin/gofmt
 FRP_DIR := frp
 CADDY_MODULE_DIR := caddymodules/paperboatquic
 FRP_VERSION := v0.70.1
-FRP_COMMIT := f090f4a41868888d2e3b270ec6e7ad0a31d8d65e
+FRP_COMMIT := 028f085af3c787d7c0c77cd58f133ca8aed7ee75
 FRP_TAGS := noweb
 BUILD_FLAGS := -trimpath -buildvcs=false
 OWNED_GO_FILES := $(shell find . -path ./frp -prune -o -name '*.go' -print)
 
-.PHONY: build caddy-module-test check clean contracts fmt fmt-check generate maintenance-check race release-check submodule-check test tidy verify-toolchain vet
+.PHONY: binary-size-check build caddy-module-test check clean contracts dependencies fmt fmt-check generate license-check maintenance-check metrics-check metrics-generate race release-check reproducible-builds source-policy static-analysis submodule-check test tidy verification verify-toolchain vet vulnerability-check
 
 contracts:
 	@./testdata/contracts/validate.sh
 
+dependencies: submodule-check
+	@./tools/verify-dependencies.sh
+
+source-policy:
+	@./tools/verify-source-policy.sh
+
+metrics-generate:
+	$(GO) run ./tools/metric-schema -write docs/metrics.json
+
+metrics-check:
+	$(GO) run ./tools/metric-schema docs/metrics.json
+
 maintenance-check:
-	@./tools/verify-repository-state.sh development
+	@./tools/verify-repository-state.sh $(if $(CI),ci,development)
 
 release-check:
 	@./tools/verify-repository-state.sh release
@@ -54,14 +66,31 @@ test: submodule-check
 caddy-module-test:
 	cd $(CADDY_MODULE_DIR) && $(GO) test ./...
 
-race: submodule-check
+race: build
 	$(GO) test -race ./...
 	cd $(FRP_DIR) && $(GO) test -race -tags "$(FRP_TAGS)" ./assets/... ./cmd/... ./client/... ./server/... ./pkg/...
+
+reproducible-builds: verify-toolchain submodule-check
+	@./tools/verify-reproducible-builds.sh
+
+binary-size-check: verify-toolchain submodule-check
+	@./tools/verify-binary-sizes.sh
+
+static-analysis: verify-toolchain source-policy
+	@./tools/verify-static-analysis.sh
+
+vulnerability-check: verify-toolchain
+	@./tools/verify-vulnerabilities.sh
+
+license-check: verify-toolchain
+	@./tools/verify-licenses.sh
+
+verification: check race static-analysis vulnerability-check license-check
 
 tidy:
 	$(GO) mod tidy
 
-check: maintenance-check verify-toolchain contracts submodule-check fmt-check vet test caddy-module-test build
+check: maintenance-check verify-toolchain contracts dependencies source-policy metrics-check fmt-check vet test caddy-module-test build
 
 clean:
 	rm -rf bin dist coverage.out

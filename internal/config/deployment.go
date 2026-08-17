@@ -1,10 +1,8 @@
 package config
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -12,8 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/strictjson"
 )
 
 const maxDeploymentBytes = 1 << 20
@@ -40,6 +41,7 @@ type Deployment struct {
 	ConnectorAdvertiseHost       string        `json:"connector_advertise_host"`
 	ConnectorTCPPort             int           `json:"connector_tcp_port"`
 	ConnectorQUICPort            int           `json:"connector_quic_port"`
+	STUNListenAddress            string        `json:"stun_listen_address"`
 	ConnectorTCPMux              *bool         `json:"connector_tcp_mux,omitempty"`
 	PrivateVhostAddress          string        `json:"private_vhost_address"`
 	EdgeGatewayAddress           string        `json:"edge_gateway_address"`
@@ -48,6 +50,8 @@ type Deployment struct {
 	CaddyAdminAddress            string        `json:"caddy_admin_address"`
 	PreviewBaseDomain            string        `json:"preview_base_domain"`
 	HelperBaseDomain             string        `json:"helper_base_domain"`
+	SignalingHost                string        `json:"signaling_host"`
+	SignalingCapacity            uint32        `json:"signaling_capacity"`
 	TrustedProxyCIDRs            []string      `json:"trusted_proxy_cidrs"`
 	CertificateIssuer            string        `json:"certificate_issuer"`
 	CertificateDNSProvider       string        `json:"certificate_dns_provider,omitempty"`
@@ -77,13 +81,8 @@ func LoadDeployment(path string) (Deployment, error) {
 		return Deployment{}, invalid("deployment config", errors.New("document is unavailable or oversized"))
 	}
 	var deployment Deployment
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&deployment); err != nil {
+	if err := strictjson.Decode(data, &deployment, 64); err != nil {
 		return Deployment{}, invalid("deployment config", err)
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return Deployment{}, invalid("deployment config", errors.New("trailing JSON"))
 	}
 	if deployment.CredentialIssuer == "" {
 		deployment.CredentialIssuer = deployment.ControlURL
@@ -153,6 +152,9 @@ func (d Deployment) validate() error {
 	if net.ParseIP(d.ConnectorBindAddress) == nil || d.ConnectorTCPPort < 1 || d.ConnectorTCPPort > 65535 || d.ConnectorQUICPort < 1 || d.ConnectorQUICPort > 65535 {
 		return errors.New("connector listener configuration is invalid")
 	}
+	if err := publicUDPEndpoint(d.STUNListenAddress); err != nil || endpointPort(d.STUNListenAddress) == d.ConnectorQUICPort {
+		return errors.New("STUN listener configuration is invalid")
+	}
 	if d.ConnectorAdvertiseHost == "" || len(d.ConnectorAdvertiseHost) > 253 || strings.ContainsAny(d.ConnectorAdvertiseHost, "/:@") {
 		return errors.New("connector advertised host is invalid")
 	}
@@ -170,6 +172,9 @@ func (d Deployment) validate() error {
 	if d.PreviewBaseDomain == d.HelperBaseDomain || strings.HasSuffix(d.PreviewBaseDomain, "."+d.HelperBaseDomain) || strings.HasSuffix(d.HelperBaseDomain, "."+d.PreviewBaseDomain) {
 		return errors.New("route base domains must not overlap")
 	}
+	if !routeBaseDomainPattern.MatchString(d.SignalingHost) || net.ParseIP(d.SignalingHost) != nil || d.SignalingHost != strings.ToLower(d.SignalingHost) || d.SignalingHost == d.PreviewBaseDomain || d.SignalingHost == d.HelperBaseDomain || strings.HasSuffix(d.SignalingHost, "."+d.PreviewBaseDomain) || strings.HasSuffix(d.SignalingHost, "."+d.HelperBaseDomain) || strings.HasSuffix(d.PreviewBaseDomain, "."+d.SignalingHost) || strings.HasSuffix(d.HelperBaseDomain, "."+d.SignalingHost) {
+		return errors.New("signaling host is invalid or overlaps managed routes")
+	}
 	for _, cidr := range d.TrustedProxyCIDRs {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
 			return errors.New("trusted proxy CIDR is invalid")
@@ -177,7 +182,7 @@ func (d Deployment) validate() error {
 	}
 	seenPublicHosts := make(map[string]struct{}, len(d.PublicRoutes))
 	for _, route := range d.PublicRoutes {
-		if route.Host != strings.ToLower(route.Host) || !routeBaseDomainPattern.MatchString(route.Host) || net.ParseIP(route.Host) != nil || strings.HasSuffix(route.Host, "."+d.PreviewBaseDomain) || strings.HasSuffix(route.Host, "."+d.HelperBaseDomain) {
+		if route.Host != strings.ToLower(route.Host) || !routeBaseDomainPattern.MatchString(route.Host) || net.ParseIP(route.Host) != nil || route.Host == d.SignalingHost || strings.HasSuffix(route.Host, "."+d.PreviewBaseDomain) || strings.HasSuffix(route.Host, "."+d.HelperBaseDomain) {
 			return errors.New("public route host is invalid or overlaps managed routes")
 		}
 		key := route.Host + "\x00" + route.PathPrefix
@@ -195,10 +200,29 @@ func (d Deployment) validate() error {
 			return errors.New("public route cannot strip an empty prefix")
 		}
 	}
-	if d.CertificateIssuer == "" || (d.CertificateDNSProvider != "" && (d.CertificateIssuer != "acme" || d.CertificateDNSCredentialFile == "")) || d.NodeCapacity == 0 || d.NodeCapacity > 10000 || d.ControlInterval <= 0 || d.ControlInterval > time.Minute || d.UsageInterval <= 0 || d.UsageInterval > time.Minute || d.ControlTimeout <= 0 || d.ControlTimeout > 30*time.Second {
+	if d.CertificateIssuer == "" || (d.CertificateDNSProvider != "" && (d.CertificateIssuer != "acme" || d.CertificateDNSCredentialFile == "")) || d.NodeCapacity == 0 || d.NodeCapacity > 10000 || d.SignalingCapacity == 0 || d.SignalingCapacity > 10000 || d.ControlInterval <= 0 || d.ControlInterval > time.Minute || d.UsageInterval <= 0 || d.UsageInterval > time.Minute || d.ControlTimeout <= 0 || d.ControlTimeout > 30*time.Second {
 		return errors.New("deployment bounds are invalid")
 	}
 	return nil
+}
+
+func publicUDPEndpoint(address string) error {
+	host, port, err := net.SplitHostPort(address)
+	ip := net.ParseIP(host)
+	value, portErr := strconv.Atoi(port)
+	if err != nil || ip == nil || ip.IsMulticast() || portErr != nil || value < 1 || value > 65535 {
+		return errors.New("public UDP endpoint must use an explicit IP and fixed nonzero port")
+	}
+	return nil
+}
+
+func endpointPort(address string) int {
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return 0
+	}
+	value, _ := strconv.Atoi(port)
+	return value
 }
 
 func privateEndpoint(address string) error {

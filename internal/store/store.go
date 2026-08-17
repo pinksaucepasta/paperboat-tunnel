@@ -143,5 +143,9 @@ func strictJSON(payload []byte, target any) error {
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return ErrCorrupt
 	}
+	canonical, err := json.Marshal(target)
+	if err != nil || !bytes.Equal(canonical, payload) {
+		return ErrCorrupt
+	}
 	return nil
 }

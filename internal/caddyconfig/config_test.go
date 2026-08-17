@@ -11,7 +11,7 @@ import (
 )
 
 func validInput() Input {
-	return Input{PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", PrivateUpstream: "127.0.0.1:8080", ListenAddress: ":443", HTTPListenAddress: ":80", AdminAddress: "127.0.0.1:2019", TrustedProxies: []string{"10.0.0.0/8", "fd00::/8"}, IssuerModule: "internal", CertificateAskURL: "http://127.0.0.1:8080/private/certificate-ask", StreamBrokerPath: "/run/paperboat/frps-stream.sock"}
+	return Input{PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", SignalingHost: "signal.example.test", PrivateUpstream: "127.0.0.1:8080", ListenAddress: ":443", HTTPListenAddress: ":80", AdminAddress: "127.0.0.1:2019", TrustedProxies: []string{"10.0.0.0/8", "fd00::/8"}, IssuerModule: "internal", CertificateAskURL: "http://127.0.0.1:8080/private/certificate-ask", StreamBrokerPath: "/run/paperboat/frps-stream.sock"}
 }
 
 func TestGenerateCaddyPolicy(t *testing.T) {
@@ -30,6 +30,9 @@ func TestGenerateCaddyPolicy(t *testing.T) {
 	quicApp := apps["paperboat_quic"].(map[string]any)
 	if quicApp["listen"] != ":443" || quicApp["http_server"] != "paperboat_public" || quicApp["broker_socket"] != "/run/paperboat/frps-stream.sock" {
 		t.Fatalf("native QUIC app = %v", quicApp)
+	}
+	if quicApp["max_streams_per_connection"].(float64) != 3 || quicApp["max_http3_streams_per_connection"].(float64) != 64 {
+		t.Fatalf("QUIC stream limits=%v", quicApp)
 	}
 	policies := apps["tls"].(map[string]any)["automation"].(map[string]any)["policies"].([]any)
 	automation := apps["tls"].(map[string]any)["automation"].(map[string]any)
@@ -67,11 +70,26 @@ func TestGenerateCaddyPolicy(t *testing.T) {
 		t.Fatalf("trusted client IP source = %v", clientIPHeaders)
 	}
 	routes := server["routes"].([]any)
-	route := routes[0].(map[string]any)
+	probeRoute := routes[0].(map[string]any)
+	probeMatch := probeRoute["match"].([]any)[0].(map[string]any)
+	if probeMatch["path"].([]any)[0] != "/network-check/v1" || probeMatch["method"].([]any)[0] != "GET" {
+		t.Fatalf("network check route = %v", probeRoute)
+	}
+	route := routes[1].(map[string]any)
+	match := route["match"].([]any)[0].(map[string]any)
+	paths := match["path"].([]any)
+	if len(paths) != 1 || paths[0] != "/v1/peer-relay" {
+		t.Fatalf("peer service paths = %v", paths)
+	}
 	handlers := route["handle"].([]any)
+	relayHeaders := handlers[0].(map[string]any)["request"].(map[string]any)["set"].(map[string]any)
+	marker := relayHeaders["X-Paperboat-Relay-Carrier"].([]any)
+	if len(marker) != 1 || marker[0] != "{http.request.proto}" {
+		t.Fatalf("relay carrier marker=%v", marker)
+	}
 	proxy := handlers[1].(map[string]any)
-	if _, exists := proxy["flush_interval"]; exists {
-		t.Fatal("terminal flush workaround remains configured")
+	if proxy["flush_interval"].(float64) != -1 {
+		t.Fatalf("peer relay is not configured for immediate duplex flushing: %v", proxy["flush_interval"])
 	}
 	if _, exists := proxy["transport"]; exists {
 		t.Fatalf("global reverse-proxy transport workaround remains: %v", proxy["transport"])
@@ -141,10 +159,10 @@ func TestGenerateExactHostPublicRoutesBeforeManagedWildcards(t *testing.T) {
 	}
 	apps := document["apps"].(map[string]any)
 	routes := apps["http"].(map[string]any)["servers"].(map[string]any)["paperboat_public"].(map[string]any)["routes"].([]any)
-	if len(routes) != 4 {
+	if len(routes) != 9 {
 		t.Fatalf("routes = %v", routes)
 	}
-	first := routes[0].(map[string]any)
+	first := routes[5].(map[string]any)
 	match := first["match"].([]any)[0].(map[string]any)
 	paths := match["path"].([]any)
 	if match["host"].([]any)[0] != "api.example.test" || len(paths) != 2 || paths[0] != "/helper-releases" || paths[1] != "/helper-releases/*" {
@@ -154,16 +172,45 @@ func TestGenerateExactHostPublicRoutesBeforeManagedWildcards(t *testing.T) {
 	if handlers[0].(map[string]any)["strip_path_prefix"] != "/helper-releases" || handlers[1].(map[string]any)["handler"] != "reverse_proxy" {
 		t.Fatalf("first route handlers = %v", handlers)
 	}
-	reject := routes[2].(map[string]any)
+	reject := routes[7].(map[string]any)
 	if reject["handle"].([]any)[0].(map[string]any)["status_code"].(float64) != 404 {
 		t.Fatalf("static-host fallback = %v", reject)
 	}
 	policies := apps["tls"].(map[string]any)["automation"].(map[string]any)["policies"].([]any)
-	if len(policies) != 2 || policies[1].(map[string]any)["subjects"].([]any)[0] != "api.example.test" {
+	if len(policies) != 3 || policies[1].(map[string]any)["subjects"].([]any)[0] != "signal.example.test" || policies[2].(map[string]any)["subjects"].([]any)[0] != "api.example.test" {
 		t.Fatalf("exact-host TLS policy = %v", policies)
 	}
-	if _, exists := policies[1].(map[string]any)["on_demand"]; exists {
+	if _, exists := policies[2].(map[string]any)["on_demand"]; exists {
 		t.Fatal("exact-host certificates unexpectedly depend on dynamic route authorization")
+	}
+}
+
+func TestGenerateIsolatesPeerSignalingHost(t *testing.T) {
+	data, err := Generate(validInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	routes := document["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["paperboat_public"].(map[string]any)["routes"].([]any)
+	if len(routes) != 6 {
+		t.Fatalf("routes = %v", routes)
+	}
+	probe := routes[0].(map[string]any)
+	probeMatch := probe["match"].([]any)[0].(map[string]any)
+	if probeMatch["path"].([]any)[0] != "/network-check/v1" || probeMatch["method"].([]any)[0] != "GET" {
+		t.Fatalf("network-check route = %v", probe)
+	}
+	exact := routes[3].(map[string]any)
+	match := exact["match"].([]any)[0].(map[string]any)
+	if match["host"].([]any)[0] != "signal.example.test" || match["path"].([]any)[0] != "/v1/peer-signaling" || exact["handle"].([]any)[1].(map[string]any)["handler"] != "reverse_proxy" {
+		t.Fatalf("signaling route = %v", exact)
+	}
+	catchAll := routes[4].(map[string]any)
+	if catchAll["match"].([]any)[0].(map[string]any)["host"].([]any)[0] != "signal.example.test" || catchAll["handle"].([]any)[0].(map[string]any)["status_code"].(float64) != 404 {
+		t.Fatalf("signaling catch-all = %v", catchAll)
 	}
 }
 
@@ -182,6 +229,13 @@ func TestRejectsHostConfusionAndPublicAdmin(t *testing.T) {
 		func() Input { i := validInput(); i.PreviewBaseDomain = "Preview.example.test"; return i }(),
 		func() Input { i := validInput(); i.HelperBaseDomain = i.PreviewBaseDomain; return i }(),
 		func() Input { i := validInput(); i.HelperBaseDomain = "internal." + i.PreviewBaseDomain; return i }(),
+		func() Input { i := validInput(); i.SignalingHost = "SIGNAL.example.test"; return i }(),
+		func() Input { i := validInput(); i.SignalingHost = "x." + i.PreviewBaseDomain; return i }(),
+		func() Input {
+			i := validInput()
+			i.PublicRoutes = []PublicRoute{{Host: i.SignalingHost, Upstream: "127.0.0.1:8080"}}
+			return i
+		}(),
 		func() Input { i := validInput(); i.AdminAddress = "0.0.0.0:2019"; return i }(),
 		func() Input { i := validInput(); i.PrivateUpstream = "0.0.0.0:8080"; return i }(),
 		func() Input { i := validInput(); i.TrustedProxies = []string{"not-a-cidr"}; return i }(),

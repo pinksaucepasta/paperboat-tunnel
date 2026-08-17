@@ -37,6 +37,7 @@ type App struct {
 	MaxConnections          int            `json:"max_connections,omitempty"`
 	MaxConnectionsPerIP     int            `json:"max_connections_per_ip,omitempty"`
 	MaxStreamsPerConnection int            `json:"max_streams_per_connection,omitempty"`
+	MaxHTTP3Streams         int            `json:"max_http3_streams_per_connection,omitempty"`
 	IdleTimeout             caddy.Duration `json:"idle_timeout,omitempty"`
 	HandshakeTimeout        caddy.Duration `json:"handshake_timeout,omitempty"`
 
@@ -72,13 +73,16 @@ func (a *App) Provision(ctx caddy.Context) error {
 	if a.MaxStreamsPerConnection == 0 {
 		a.MaxStreamsPerConnection = 3
 	}
+	if a.MaxHTTP3Streams == 0 {
+		a.MaxHTTP3Streams = 64
+	}
 	if a.IdleTimeout == 0 {
 		a.IdleTimeout = caddy.Duration(2 * time.Minute)
 	}
 	if a.HandshakeTimeout == 0 {
 		a.HandshakeTimeout = caddy.Duration(10 * time.Second)
 	}
-	if a.MaxConnections < 1 || a.MaxConnectionsPerIP < 1 || a.MaxStreamsPerConnection < 1 || time.Duration(a.IdleTimeout) <= 0 || time.Duration(a.HandshakeTimeout) <= 0 {
+	if a.MaxConnections < 1 || a.MaxConnectionsPerIP < 1 || a.MaxStreamsPerConnection < 1 || a.MaxHTTP3Streams < a.MaxStreamsPerConnection || a.MaxHTTP3Streams > 1024 || time.Duration(a.IdleTimeout) <= 0 || time.Duration(a.HandshakeTimeout) <= 0 {
 		return errors.New("invalid Paperboat QUIC limits")
 	}
 	httpAppValue, err := ctx.App("http")
@@ -127,7 +131,7 @@ func (a *App) Start() error {
 		Allow0RTT:            false,
 		HandshakeIdleTimeout: time.Duration(a.HandshakeTimeout),
 		MaxIdleTimeout:       time.Duration(a.IdleTimeout),
-		MaxIncomingStreams:   int64(a.MaxStreamsPerConnection),
+		MaxIncomingStreams:   int64(a.MaxHTTP3Streams),
 		Versions:             []quic.Version{quic.Version1, quic.Version2},
 	})
 	if err != nil {

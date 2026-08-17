@@ -85,3 +85,19 @@ func TestDrainDeadlineFencesAllOwnership(t *testing.T) {
 		t.Fatalf("ownership remains: %+v", got)
 	}
 }
+
+func TestAggregateStreamCountsSaturateWithoutAppearingEmpty(t *testing.T) {
+	manager := readyManager(t, 2)
+	manager.connectors["first"] = &connector{generation: 1, streams: ^uint32(0), retired: make(map[uint64]uint32)}
+	manager.connectors["second"] = &connector{generation: 1, streams: 1, retired: map[uint64]uint32{2: 1}}
+
+	if got := manager.Snapshot().Streams; got != ^uint32(0) {
+		t.Fatalf("snapshot streams=%d", got)
+	}
+	manager.mu.Lock()
+	total := manager.totalStreamsLocked()
+	manager.mu.Unlock()
+	if total != ^uint32(0) {
+		t.Fatalf("drain stream total=%d", total)
+	}
+}

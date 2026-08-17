@@ -41,6 +41,10 @@ func (f revocationFunc) Revoked(ctx context.Context, claims admission.Claims) (b
 	return f(ctx, claims)
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
+
 func previewConfig() Config {
 	return Config{PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", MaxHeaderBytes: 4096, MaxBodyBytes: 1024}
 }
@@ -153,6 +157,69 @@ func TestGatewayForwardsReadyPreviewToPrivateUpstream(t *testing.T) {
 	gateway.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || recorder.Body.String() != "data: ready\n\n" || recorder.Header().Get("X-Robots-Tag") != "noindex, nofollow, noarchive" || len(recorder.Header().Values("X-Robots-Tag")) != 1 {
 		t.Fatalf("response status=%d headers=%v body=%q", recorder.Code, recorder.Header(), recorder.Body.String())
+	}
+}
+
+func TestPreviewTransportRetriesBodylessSafeRequestOnce(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
+		t.Run(method, func(t *testing.T) {
+			calls := 0
+			transport := retryPreviewTransport{next: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				calls++
+				if calls == 1 {
+					return nil, io.EOF
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok")), Request: request}, nil
+			})}
+			request := httptest.NewRequest(method, "http://app.preview.example.test/resource", nil)
+			response, err := transport.RoundTrip(request)
+			if err != nil || response.StatusCode != http.StatusOK || calls != 2 {
+				t.Fatalf("response=%v err=%v calls=%d", response, err, calls)
+			}
+		})
+	}
+}
+
+func TestPreviewTransportDoesNotReplayUnsafeOrUpgradedRequests(t *testing.T) {
+	tests := []struct {
+		name, method string
+		body         io.Reader
+		websocket    bool
+	}{
+		{name: "post", method: http.MethodPost},
+		{name: "get body", method: http.MethodGet, body: strings.NewReader("payload")},
+		{name: "websocket", method: http.MethodGet, websocket: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			transport := retryPreviewTransport{next: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				calls++
+				return nil, io.EOF
+			})}
+			request := httptest.NewRequest(test.method, "http://app.preview.example.test/resource", test.body)
+			if test.websocket {
+				request.Header.Set("Connection", "Upgrade")
+				request.Header.Set("Upgrade", "websocket")
+			}
+			if _, err := transport.RoundTrip(request); !errors.Is(err, io.EOF) || calls != 1 {
+				t.Fatalf("err=%v calls=%d", err, calls)
+			}
+		})
+	}
+}
+
+func TestPreviewTransportDoesNotRetryCallerCancellation(t *testing.T) {
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		calls := 0
+		transport := retryPreviewTransport{next: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			return nil, cause
+		})}
+		request := httptest.NewRequest(http.MethodGet, "http://app.preview.example.test/resource", nil)
+		if _, err := transport.RoundTrip(request); !errors.Is(err, cause) || calls != 1 {
+			t.Fatalf("cause=%v err=%v calls=%d", cause, err, calls)
+		}
 	}
 }
 
@@ -270,18 +337,57 @@ func TestFileTransferRoutesRequireAccessAndPreserveResumeHeaders(t *testing.T) {
 	}
 }
 
+func TestHTTP3AbsoluteHTTPSRequestTargetIsNormalized(t *testing.T) {
+	config := previewConfig()
+	config.HelperAccess = helperAccessFunc(func(context.Context, string) (admission.Claims, error) {
+		return admission.Claims{JTI: "jti_transfer", CredentialClass: "file_transfer", ExpiresAt: time.Now().Add(time.Minute)}, nil
+	})
+	config.Revocations = revocationFunc(func(context.Context, admission.Claims) (bool, error) { return false, nil })
+	config.RevocationCheckInterval = time.Second
+	var seen *http.Request
+	policy, err := New(config, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		seen = request.Clone(request.Context())
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://environment.helper.example.test/v1/file-transfers", nil)
+	request.Host = "environment.helper.example.test:443"
+	request.Header.Set("Authorization", "Bearer token")
+	recorder := httptest.NewRecorder()
+	policy.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent || seen == nil || seen.URL.IsAbs() || seen.URL.Path != "/v1/file-transfers" {
+		t.Fatalf("status=%d request=%v", recorder.Code, seen)
+	}
+	for _, target := range []string{"http://environment.helper.example.test/v1/file-transfers", "https://other.helper.example.test/v1/file-transfers"} {
+		request = httptest.NewRequest(http.MethodPost, target, nil)
+		request.Host = "environment.helper.example.test"
+		recorder = httptest.NewRecorder()
+		policy.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("target=%s status=%d", target, recorder.Code)
+		}
+	}
+}
+
 func TestHelperCredentialClassesCannotCrossCapabilityPaths(t *testing.T) {
 	allowed := map[string]string{
 		"file_transfer": "/v1/file-transfers", "preview_launch": "/v1/preview-launches",
-		"terminal_operation": "/v1/runtime", "codex_connect": "/v1/codex-sessions/cdx_1/ws",
+		"terminal_operation": "/v1/runtime",
 	}
-	paths := []string{"/v1/file-transfers", "/v1/preview-launches", "/v1/runtime", "/v1/codex-sessions/cdx_1/ws"}
+	paths := []string{"/v1/file-transfers", "/v1/preview-launches", "/v1/runtime", "/v1/codex-sessions/cdx_1/ws", "/v1/local-file-transfers", "/v1/local-file-transfers/transfer_1/content"}
 	for class, ownPath := range allowed {
 		for _, path := range paths {
 			got := credentialAllowsHelperPath(class, path)
 			if got != (path == ownPath) {
 				t.Fatalf("class=%s path=%s allowed=%v", class, path, got)
 			}
+		}
+	}
+	for _, path := range paths[3:] {
+		if helperAccessPath(path) {
+			t.Fatalf("peer-only path became edge reachable: %s", path)
 		}
 	}
 }
@@ -508,18 +614,13 @@ func TestCancellationAndStreamingInterfacesPassThrough(t *testing.T) {
 	}
 }
 
-func TestCodexSessionPathsUseAuthenticatedRuntimeRoute(t *testing.T) {
+func TestCodexSessionPathsArePeerOnly(t *testing.T) {
 	for _, path := range []string{
 		"/v1/codex-sessions/cdx_12345678",
 		"/v1/codex-sessions/cdx_12345678/ws",
 		"/v1/codex-sessions/cdx_12345678/renew",
 		"/v1/codex-sessions/cdx_12345678/directories",
 	} {
-		if !helperAccessPath(path) {
-			t.Fatalf("helperAccessPath(%q) = false", path)
-		}
-	}
-	for _, path := range []string{"/v1/codex-sessions", "/v1/codex-sessions/", "/v1/codex-sessions/id/other", "/v1/codex-sessions/id/ws/extra"} {
 		if helperAccessPath(path) {
 			t.Fatalf("helperAccessPath(%q) = true", path)
 		}

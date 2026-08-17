@@ -23,7 +23,7 @@ func bundleSpec(t *testing.T) BundleSpec {
 	checksum := hex.EncodeToString(digest[:])
 	return BundleSpec{Directory: filepath.Join(directory, "config"), FRPSBinary: binary, CaddyBinary: binary, FRPSSHA256: checksum, CaddySHA256: checksum, MaxOutputBytes: 1024,
 		FRPS:  frpconfig.Input{BindAddr: "127.0.0.1", BindPort: 7000, QUICBindPort: 7001, PrivateProxyAddr: "127.0.0.1", VhostHTTPPort: 8080, HookAddr: "127.0.0.1:19000", HookPath: "/paperboat/hook/0123456789abcdef", StreamBrokerPath: "/tmp/paperboat-frps-test.sock", InternalAuthToken: "internal-token-012345678901234567890123456789"},
-		Caddy: caddyconfig.Input{PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", PrivateUpstream: "127.0.0.1:8080", ListenAddress: ":443", HTTPListenAddress: ":80", AdminAddress: "127.0.0.1:2019", TrustedProxies: []string{"10.0.0.0/8"}, IssuerModule: "internal", CertificateAskURL: "http://127.0.0.1:8080/private/certificate-ask", StreamBrokerPath: "/tmp/paperboat-frps-test.sock"}}
+		Caddy: caddyconfig.Input{PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", SignalingHost: "signal.example.test", PrivateUpstream: "127.0.0.1:8080", ListenAddress: ":443", HTTPListenAddress: ":80", AdminAddress: "127.0.0.1:2019", TrustedProxies: []string{"10.0.0.0/8"}, IssuerModule: "internal", CertificateAskURL: "http://127.0.0.1:8080/private/certificate-ask", StreamBrokerPath: "/tmp/paperboat-frps-test.sock"}}
 }
 
 func TestPrepareBundleRejectsChecksumMismatch(t *testing.T) {
@@ -58,6 +58,10 @@ func TestPrepareBundleWritesPrivateConfigsAndSecretFreeArguments(t *testing.T) {
 	}
 	if bundle.CaddyMetadata.Version != caddyconfig.CaddyVersion || bundle.CaddyMetadata.Commit != caddyconfig.CaddyCommit || bundle.CaddyMetadata.LinuxAMD64SHA256 != caddyconfig.CaddyLinuxAMD64SHA256 || bundle.CaddyMetadata.LinuxARM64SHA256 != caddyconfig.CaddyLinuxARM64SHA256 || bundle.CaddyMetadata.MacARM64SHA256 != caddyconfig.CaddyMacARM64SHA256 {
 		t.Fatalf("Caddy provenance missing: %+v", bundle.CaddyMetadata)
+	}
+	caddyConfig, err := os.ReadFile(bundle.CaddyConfigPath)
+	if err != nil || !strings.Contains(string(caddyConfig), `"signal.example.test"`) || !strings.Contains(string(caddyConfig), `"/v1/peer-signaling"`) {
+		t.Fatalf("peer signaling route missing: %v", err)
 	}
 	second, err := PrepareBundle(spec)
 	if err != nil || second.FRPSMetadata != bundle.FRPSMetadata {

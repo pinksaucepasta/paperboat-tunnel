@@ -28,7 +28,12 @@ type signedEnvelope struct {
 }
 
 func NewSignedReport(keyID string, private ed25519.PrivateKey, document SignedDocument) (Report, error) {
-	if keyID == "" || len(private) != ed25519.PrivateKeySize || validateDocument(document) != nil {
+	if keyID == "" || len(keyID) > 128 || len(private) != ed25519.PrivateKeySize {
+		return Report{}, ErrSignature
+	}
+	document.Start = document.Start.UTC()
+	document.End = document.End.UTC()
+	if validateDocument(document) != nil {
 		return Report{}, ErrSignature
 	}
 	payload, err := json.Marshal(document)
@@ -48,19 +53,26 @@ func VerifySignedReport(expectedKeyID string, public ed25519.PublicKey, envelope
 		return SignedDocument{}, ErrSignature
 	}
 	var envelope signedEnvelope
-	if err := strictDecode(envelopeBytes, &envelope); err != nil || envelope.Algorithm != "EdDSA" || envelope.KeyID != expectedKeyID {
+	if err := strictDecode(envelopeBytes, &envelope); err != nil || envelope.Algorithm != "EdDSA" || envelope.KeyID != expectedKeyID || len(envelope.KeyID) > 128 {
 		return SignedDocument{}, ErrSignature
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(envelope.Payload)
-	if err != nil {
+	if err != nil || base64.RawURLEncoding.EncodeToString(payload) != envelope.Payload {
 		return SignedDocument{}, ErrSignature
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(envelope.Signature)
-	if err != nil || !ed25519.Verify(public, payload, signature) {
+	if err != nil || base64.RawURLEncoding.EncodeToString(signature) != envelope.Signature || !ed25519.Verify(public, payload, signature) {
 		return SignedDocument{}, ErrSignature
 	}
 	var document SignedDocument
 	if err := strictDecode(payload, &document); err != nil || validateDocument(document) != nil {
+		return SignedDocument{}, ErrSignature
+	}
+	canonicalDocument := document
+	canonicalDocument.Start = canonicalDocument.Start.UTC()
+	canonicalDocument.End = canonicalDocument.End.UTC()
+	canonicalPayload, err := json.Marshal(canonicalDocument)
+	if err != nil || !bytes.Equal(canonicalPayload, payload) {
 		return SignedDocument{}, ErrSignature
 	}
 	return document, nil
@@ -92,6 +104,10 @@ func strictDecode(data []byte, target any) error {
 		return err
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return ErrSignature
+	}
+	canonical, err := json.Marshal(target)
+	if err != nil || !bytes.Equal(canonical, data) {
 		return ErrSignature
 	}
 	return nil

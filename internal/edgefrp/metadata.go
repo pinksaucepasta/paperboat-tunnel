@@ -1,14 +1,11 @@
 package edgefrp
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
-	"io"
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/admission"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/route"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/strictjson"
 )
 
 const maxAdmissionMetadata = 64 << 10
@@ -47,12 +44,7 @@ func (MetadataResolver) ResolveLogin(_ context.Context, login LoginContent) (adm
 		return admission.Request{}, route.ErrInvalid
 	}
 	var handoff metadataHandoff
-	decoder := json.NewDecoder(bytes.NewBufferString(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&handoff); err != nil {
-		return admission.Request{}, route.ErrInvalid
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+	if err := strictjson.Decode([]byte(raw), &handoff, 64); err != nil {
 		return admission.Request{}, route.ErrInvalid
 	}
 	routes := make([]admission.Route, 0, len(handoff.Routes))

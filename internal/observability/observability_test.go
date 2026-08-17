@@ -48,7 +48,7 @@ func TestPrivateHandlerReportsBoundedDiagnosticsAndMetrics(t *testing.T) {
 	controlErr := errors.New("Authorization: Bearer secret")
 	var certificateErr error
 	sessionRoutes := 2
-	handler, err := NewHandler(Sources{Node: state.Snapshot, Manager: manager.Snapshot, Sessions: func() int { return 1 }, SessionRoutes: func() int { return sessionRoutes }, ActiveStreams: func() uint32 { return 3 }, RouteCount: func() int { return 2 }, Usage: queue.Stats, ControlErr: func() error { return controlErr }, RouteErr: func() error { return nil }, UsageErr: func() error { return nil }, FRPRunning: func() bool { return true }, CaddyRunning: func() bool { return true }, CaddyTLS: func() (time.Time, error) { return now.Add(time.Hour), certificateErr }, Events: NewMetrics().Snapshot, Traffic: usage.NewCounters().Snapshot, Now: func() time.Time { return now }})
+	handler, err := NewHandler(Sources{Node: state.Snapshot, Manager: manager.Snapshot, Sessions: func() int { return 1 }, SessionRoutes: func() int { return sessionRoutes }, ActiveStreams: func() uint32 { return 3 }, RouteCount: func() int { return 2 }, Usage: queue.Stats, ControlErr: func() error { return controlErr }, RouteErr: func() error { return nil }, UsageErr: func() error { return nil }, FRPRunning: func() bool { return true }, CaddyRunning: func() bool { return true }, STUN: func() STUNStats { return STUNStats{Running: true, Accepted: 7, Rejected: 2, Errors: 1} }, Signaling: func() SignalingStats { return SignalingStats{Running: true, Sessions: 2, Attachments: 3, Capacity: 16} }, CaddyTLS: func() (time.Time, error) { return now.Add(time.Hour), certificateErr }, Events: NewMetrics().Snapshot, Traffic: usage.NewCounters().Snapshot, Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestPrivateHandlerReportsBoundedDiagnosticsAndMetrics(t *testing.T) {
 	}
 	metrics := httptest.NewRecorder()
 	handler.ServeHTTP(metrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	for _, expected := range []string{"paperboat_tunnel_ready 0", "paperboat_tunnel_attached_routes 2", "paperboat_tunnel_usage_pending_reports 1", `dependency="control"} 0`} {
+	for _, expected := range []string{"paperboat_tunnel_ready 0", "paperboat_tunnel_attached_routes 2", "paperboat_tunnel_usage_pending_reports 1", "paperboat_tunnel_stun_requests_total 7", "paperboat_tunnel_stun_rejected_total 2", "paperboat_tunnel_stun_errors_total 1", "paperboat_tunnel_signaling_sessions 2", "paperboat_tunnel_signaling_attachments 3", "paperboat_tunnel_signaling_capacity 16", `dependency="control"} 0`, `dependency="stun"} 1`, `dependency="signaling"} 1`} {
 		if !strings.Contains(metrics.Body.String(), expected) {
 			t.Fatalf("metrics missing %q: %s", expected, metrics.Body.String())
 		}
@@ -97,7 +97,7 @@ func TestMetricsRejectUnboundedDimensions(t *testing.T) {
 }
 
 func TestDiagnosticsDistinguishDependencies(t *testing.T) {
-	healthy := Diagnostics{Control: Healthy, Store: Healthy, FRP: Healthy, Caddy: Healthy, Usage: Healthy}
+	healthy := Diagnostics{Control: Healthy, Store: Healthy, FRP: Healthy, Caddy: Healthy, STUN: Healthy, Signaling: Healthy, Usage: Healthy}
 	if !healthy.Ready() {
 		t.Fatal("healthy node is not ready")
 	}
