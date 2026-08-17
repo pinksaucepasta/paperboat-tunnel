@@ -67,8 +67,16 @@ func TestServerDefaultRateLimitAllowsTwoPMTUMeasurementsBehindOneNAT(t *testing.
 			t.Fatalf("probe %d returned an invalid response", index+1)
 		}
 	}
-	if stats := server.Stats(); stats.Accepted != 54 || stats.Rejected != 0 {
-		t.Fatalf("stats=%+v", stats)
+	deadline := time.Now().Add(time.Second)
+	for {
+		stats := server.Stats()
+		if stats.Accepted == 54 && stats.Rejected == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stats=%+v", stats)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
