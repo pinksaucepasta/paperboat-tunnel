@@ -8,15 +8,15 @@ module, or downstream-patch change. `MAINTENANCE.md` defines the procedure.
 
 | Field | Value |
 | --- | --- |
-| Release tag | `2026.07.29.6` |
-| Tunnel commit | `36798d7137a5a348c56ebd6d0cae07901162ac48` |
+| Release tag | `2026.08.17.0` |
+| Tunnel commit | `55ad16e795753d6820b5dcbc66b5d81356c56191` |
 | frp upstream release | `v0.70.1` |
-| frp fork commit | `f090f4a41868888d2e3b270ec6e7ad0a31d8d65e` |
+| frp fork commit | `028f085af3c787d7c0c77cd58f133ca8aed7ee75` |
 | Caddy | `v2.11.4` |
 | Caddy builder image | `caddy:2.11.4-builder@sha256:198d47eaee306d4d0c38a9960c89ff2c959aa29ad51d3e2dafa3e93ac961782a` |
 | Caddy plugins | `github.com/caddy-dns/cloudflare@v0.2.4` |
 | Runtime image | `debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818` |
-| Rollback release | `2026.07.29.3`; deploy its recorded immutable image digest |
+| Rollback release | `2026.07.29.6`; deploy `ghcr.io/pinksaucepasta/paperboat-tunnel@sha256:bbad0c31333c4f1ac2abac77db91577fc1f9bb2dea5b54542d6ab0909e87880d` |
 
 The production tag includes the local `paperboat_quic` Caddy module and immutable base
 image pins. Those properties must not be reintroduced as candidate-only behavior.
@@ -107,6 +107,6 @@ hashes above are navigation aids. When an upstream release replaces any behavior
 - Pion ICE `v4.4.0` is MIT licensed and pinned to the unified runtime version. The tunnel
   imports only candidate parsing; tests reject the dependency's inactive TURN/TCP/mDNS/relay
   capabilities at the signaling boundary.
-- Before releasing this candidate, replace this sentence with the prior production image
-  digest and attach real staged upgrade/rollback evidence. Never use a mutable tag as the
-  rollback identifier.
+- Rollback is pinned to the prior production manifest digest recorded above. Release
+  `2026.08.17.0` reconciles the complete P2P tunnel integration with the current `main`
+  contracts; its staged multi-region deployment evidence is recorded in the operator handoff.
