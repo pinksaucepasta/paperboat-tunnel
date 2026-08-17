@@ -8,8 +8,8 @@ module, or downstream-patch change. `MAINTENANCE.md` defines the procedure.
 
 | Field | Value |
 | --- | --- |
-| Release tag | `2026.08.17.1` |
-| Tunnel commit | `f000f0b62928d8d879cac6445ceccb9a4fe6a95f` |
+| Release tag | `2026.08.17.2` |
+| Tunnel commit | `126f2c53af3a5415da5f33377a6c1793353046ec` |
 | frp upstream release | `v0.70.1` |
 | frp fork commit | `028f085af3c787d7c0c77cd58f133ca8aed7ee75` |
 | Caddy | `v2.11.4` |
@@ -109,5 +109,5 @@ hashes above are navigation aids. When an upstream release replaces any behavior
   imports only candidate parsing; tests reject the dependency's inactive TURN/TCP/mDNS/relay
   capabilities at the signaling boundary.
 - Rollback is pinned to the prior production manifest digest recorded above. Release
-  `2026.08.17.1` reconciles the complete P2P tunnel integration with the current `main`
+  `2026.08.17.2` reconciles the complete P2P tunnel integration with the current `main`
   contracts; its staged multi-region deployment evidence is recorded in the operator handoff.
