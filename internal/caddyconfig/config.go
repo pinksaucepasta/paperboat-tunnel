@@ -59,7 +59,8 @@ func Generate(input Input) ([]byte, error) {
 	for _, route := range input.PublicRoutes {
 		match := map[string]any{"host": []string{route.Host}}
 		if route.PathPrefix != "" {
-			match["path"] = []string{strings.TrimSuffix(route.PathPrefix, "/") + "/*"}
+			prefix := strings.TrimSuffix(route.PathPrefix, "/")
+			match["path"] = []string{prefix, prefix + "/*"}
 		}
 		handlers := make([]any, 0, 2)
 		if route.StripPrefix {
@@ -71,6 +72,15 @@ func Generate(input Input) ([]byte, error) {
 			seenStaticHosts[route.Host] = struct{}{}
 			staticHosts = append(staticHosts, route.Host)
 		}
+	}
+	if len(staticHosts) > 0 {
+		publicRoutes = append(publicRoutes, map[string]any{
+			"match": []any{map[string]any{"host": staticHosts}},
+			"handle": []any{map[string]any{
+				"handler": "static_response", "status_code": 404,
+			}},
+			"terminal": true,
+		})
 	}
 	publicRoutes = append(publicRoutes, map[string]any{
 		"match": []any{map[string]any{"host": wildcardHosts}},

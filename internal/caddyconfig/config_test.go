@@ -141,17 +141,22 @@ func TestGenerateExactHostPublicRoutesBeforeManagedWildcards(t *testing.T) {
 	}
 	apps := document["apps"].(map[string]any)
 	routes := apps["http"].(map[string]any)["servers"].(map[string]any)["paperboat_public"].(map[string]any)["routes"].([]any)
-	if len(routes) != 3 {
+	if len(routes) != 4 {
 		t.Fatalf("routes = %v", routes)
 	}
 	first := routes[0].(map[string]any)
 	match := first["match"].([]any)[0].(map[string]any)
-	if match["host"].([]any)[0] != "api.example.test" || match["path"].([]any)[0] != "/helper-releases/*" {
+	paths := match["path"].([]any)
+	if match["host"].([]any)[0] != "api.example.test" || len(paths) != 2 || paths[0] != "/helper-releases" || paths[1] != "/helper-releases/*" {
 		t.Fatalf("first route match = %v", match)
 	}
 	handlers := first["handle"].([]any)
 	if handlers[0].(map[string]any)["strip_path_prefix"] != "/helper-releases" || handlers[1].(map[string]any)["handler"] != "reverse_proxy" {
 		t.Fatalf("first route handlers = %v", handlers)
+	}
+	reject := routes[2].(map[string]any)
+	if reject["handle"].([]any)[0].(map[string]any)["status_code"].(float64) != 404 {
+		t.Fatalf("static-host fallback = %v", reject)
 	}
 	policies := apps["tls"].(map[string]any)["automation"].(map[string]any)["policies"].([]any)
 	if len(policies) != 2 || policies[1].(map[string]any)["subjects"].([]any)[0] != "api.example.test" {
