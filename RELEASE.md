@@ -8,15 +8,15 @@ module, or downstream-patch change. `MAINTENANCE.md` defines the procedure.
 
 | Field | Value |
 | --- | --- |
-| Release tag | `2026.08.17.3` |
-| Tunnel commit | `0819377e3480585ec4e093b3f6322473f498eb6d` |
+| Release tag | `2026.08.22.0` |
+| Tunnel commit | `2c32f183e6e6d87f0cec76bcab6c4a2a2b8c767c` |
 | frp upstream release | `v0.70.1` |
 | frp fork commit | `028f085af3c787d7c0c77cd58f133ca8aed7ee75` |
 | Caddy | `v2.11.4` |
 | Caddy builder | `golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36`; `xcaddy@v0.4.5` |
 | Caddy plugins | `github.com/caddy-dns/cloudflare@v0.2.4` |
 | Runtime image | `debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818` |
-| Rollback release | `2026.08.17.2`; deploy `ghcr.io/pinksaucepasta/paperboat-tunnel@sha256:d9c072a349dc76c648abe9249336fe1790d90485380ada1ccbf6e2f49d068446` |
+| Rollback release | `2026.08.17.3`; deploy `ghcr.io/pinksaucepasta/paperboat-tunnel@sha256:9f6c4d9270919aee8415326c9922f34db254fd1f3fb0a9d7abea7be205a488cd` |
 
 The production tag includes the local `paperboat_quic` Caddy module and immutable base
 image pins. Those properties must not be reintroduced as candidate-only behavior.
