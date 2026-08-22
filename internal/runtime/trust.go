@@ -16,6 +16,7 @@ const maxTrustDocument = 1 << 20
 type Trust struct {
 	Snapshot        *auth.Snapshot
 	UsageKeyID      string
+	UsageEdgeNodeID string
 	UsagePrivateKey ed25519.PrivateKey
 }
 
@@ -41,9 +42,10 @@ func LoadTrust(jwksPath, revocationsPath, usageKeyPath string) (Trust, error) {
 	}
 	var key struct {
 		KeyID      string `json:"key_id"`
+		EdgeNodeID string `json:"edge_node_id"`
 		PrivateKey string `json:"private_key"`
 	}
-	if err := strictjson.Decode(keyDocument, &key, 64); err != nil || key.KeyID == "" || len(key.KeyID) > 128 {
+	if err := strictjson.Decode(keyDocument, &key, 64); err != nil || key.KeyID == "" || len(key.KeyID) > 128 || key.EdgeNodeID == "" || len(key.EdgeNodeID) > 128 {
 		return Trust{}, fmt.Errorf("decode usage key document: %w", ErrProcessInvalid)
 	}
 	private, err := base64.RawURLEncoding.DecodeString(key.PrivateKey)
@@ -59,7 +61,7 @@ func LoadTrust(jwksPath, revocationsPath, usageKeyPath string) (Trust, error) {
 	if len(private) == ed25519.SeedSize {
 		private = ed25519.NewKeyFromSeed(private)
 	}
-	return Trust{Snapshot: snapshot, UsageKeyID: key.KeyID, UsagePrivateKey: ed25519.PrivateKey(append([]byte(nil), private...))}, nil
+	return Trust{Snapshot: snapshot, UsageKeyID: key.KeyID, UsageEdgeNodeID: key.EdgeNodeID, UsagePrivateKey: ed25519.PrivateKey(append([]byte(nil), private...))}, nil
 }
 
 func readTrustFile(path string, ownerOnly bool) ([]byte, error) {

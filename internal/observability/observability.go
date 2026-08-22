@@ -256,7 +256,11 @@ func snapshot(s Sources) Snapshot {
 	signaling := s.Signaling()
 	routeErr := s.RouteErr()
 	result := Snapshot{At: now, Node: s.Node(), Control: statusFor(s.ControlErr()), Routes: statusFor(routeErr), Usage: statusFor(s.UsageErr()), FRP: runningStatus(s.FRPRunning()), Caddy: runningStatus(s.CaddyRunning()), STUN: runningStatus(stun.Running), Signaling: runningStatus(signaling.Running), STUNRequests: stun.Accepted, STUNRejected: stun.Rejected, STUNErrors: stun.Errors, SignalingSessions: signaling.Sessions, SignalingAttachments: signaling.Attachments, SignalingCapacity: signaling.Capacity, Connectors: s.Sessions(), ActiveStreams: s.ActiveStreams(), AttachedRoutes: s.RouteCount(), UsagePendingReports: pending.Reports, UsagePendingBytes: pending.Bytes, Capacity: manager.Capacity, Events: s.Events()}
-	result.RouteDrift = s.SessionRoutes() != result.AttachedRoutes
+	// Desired routes may legitimately outnumber active session routes while an
+	// admitted connector is offline. Active routes must, however, always remain
+	// a subset of the authoritative registry. A larger active set proves that a
+	// stale or unauthorized route survived reconciliation.
+	result.RouteDrift = s.SessionRoutes() > result.AttachedRoutes
 	if result.RouteDrift {
 		result.Routes = Degraded
 	}

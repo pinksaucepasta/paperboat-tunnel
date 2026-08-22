@@ -75,7 +75,17 @@ func TestPrivateHandlerReportsBoundedDiagnosticsAndMetrics(t *testing.T) {
 		t.Fatalf("certificate diagnostics = %d %s", certificate.Code, certificate.Body.String())
 	}
 	certificateErr = nil
+	// An offline connector leaves a desired route without an active FRP route;
+	// this is normal availability state, not route ownership drift.
 	sessionRoutes = 0
+	offline := httptest.NewRecorder()
+	handler.ServeHTTP(offline, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if offline.Code != http.StatusOK || strings.Contains(offline.Body.String(), `"route_drift":true`) {
+		t.Fatalf("offline connector diagnostics = %d %s", offline.Code, offline.Body.String())
+	}
+	// More active session routes than authoritative attachments cannot be a
+	// valid subset and must keep readiness closed.
+	sessionRoutes = 3
 	drift := httptest.NewRecorder()
 	handler.ServeHTTP(drift, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if drift.Code != http.StatusServiceUnavailable || !strings.Contains(drift.Body.String(), `"route_drift":true`) || !strings.Contains(drift.Body.String(), `"route_drift"`) {
