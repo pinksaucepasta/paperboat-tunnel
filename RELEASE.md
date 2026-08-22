@@ -95,6 +95,12 @@ hashes above are navigation aids. When an upstream release replaces any behavior
 
 ### Compatibility And Rollback
 
+- Usage signing-key documents are bound to their configured `edge_node_id`. Before upgrading,
+  add that field to the private key document and verify it exactly matches `-node-id`; the
+  tunnel now refuses startup on a missing or mismatched binding so a node rename cannot silently
+  accumulate undeliverable usage. Older releases reject the added field, so retain the
+  pre-upgrade key document as protected rollback evidence and restore it before rolling back.
+
 - frp `v0.70.1-edge` is paired with helper connector behavior that supports QUIC/TCP-TLS
   racing, generation replacement, admission sessions, reconnect, and control-loss reporting.
 - Caddy `v2.11.4` is paired with the local `paperboat_quic` module and Cloudflare DNS

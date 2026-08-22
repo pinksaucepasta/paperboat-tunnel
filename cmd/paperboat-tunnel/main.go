@@ -103,6 +103,9 @@ func buildService(cfg config.Config, deployment config.Deployment) (*edgeruntime
 	if err != nil {
 		return nil, fmt.Errorf("load trust: %w", err)
 	}
+	if trust.UsageEdgeNodeID != cfg.NodeID {
+		return nil, fmt.Errorf("load trust: usage signing key is bound to edge node %q, configured node is %q", trust.UsageEdgeNodeID, cfg.NodeID)
+	}
 	trust.Snapshot.ConfigureRevocationFreshness(3*deployment.ControlInterval, time.Now)
 	tlsConfig, err := controlTLS(deployment.ControlCAFile)
 	if err != nil {
