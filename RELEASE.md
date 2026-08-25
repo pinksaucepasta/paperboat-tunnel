@@ -11,7 +11,7 @@ module, or downstream-patch change. `MAINTENANCE.md` defines the procedure.
 | Release tag | `2026.08.22.0` |
 | Tunnel commit | `2c32f183e6e6d87f0cec76bcab6c4a2a2b8c767c` |
 | frp upstream release | `v0.70.1` |
-| frp fork commit | `028f085af3c787d7c0c77cd58f133ca8aed7ee75` |
+| frp fork commit | `fba6ff3284044b7c3030c6f23c4ec109d5d5417d` |
 | Caddy | `v2.11.4` |
 | Caddy builder | `golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36`; `xcaddy@v0.4.5` |
 | Caddy plugins | `github.com/caddy-dns/cloudflare@v0.2.4` |
@@ -64,6 +64,7 @@ All entries are currently `required` and live on `paperboat/v0.70.1-edge`:
 | `ee67f633` | Synchronize client control shutdown | required |
 | `f090f4a4` | Expose client control loss to its owner | required |
 | `028f085a` | Align the pinned Go toolchain and module metadata | required build |
+| `fba6ff32` | Return gateway failures for matched HTTP routes | required |
 
 The authoritative full hashes are the fork history and `FRP_COMMIT` in `Makefile`; short
 hashes above are navigation aids. When an upstream release replaces any behavior, mark it

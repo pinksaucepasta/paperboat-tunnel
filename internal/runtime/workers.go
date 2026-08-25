@@ -163,7 +163,7 @@ func (w *NodeWorker) run(ctx context.Context) {
 				if !ok {
 					return
 				}
-				w.recordError(w.Sink.Heartbeat(ctx, w.Manager.Observation(w.Registration.NodeID, w.Registration.ProcessEpoch, at)))
+				w.recordError(w.heartbeat(ctx, at))
 			}
 		}
 	}
@@ -174,9 +174,17 @@ func (w *NodeWorker) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case at := <-ticker.C:
-			w.recordError(w.Sink.Heartbeat(ctx, w.Manager.Observation(w.Registration.NodeID, w.Registration.ProcessEpoch, at)))
+			w.recordError(w.heartbeat(ctx, at))
 		}
 	}
+}
+
+func (w *NodeWorker) heartbeat(ctx context.Context, at time.Time) error {
+	err := w.Sink.Heartbeat(ctx, w.Manager.Observation(w.Registration.NodeID, w.Registration.ProcessEpoch, at))
+	if !errors.Is(err, control.ErrNodeObservationStale) {
+		return err
+	}
+	return w.Manager.RegisterAndHeartbeat(ctx, w.Sink, w.Registration, at)
 }
 
 func (w *NodeWorker) recordError(err error) {

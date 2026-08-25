@@ -19,8 +19,9 @@ import (
 const maxControlDocument = 1 << 20
 
 var (
-	ErrControlInvalid     = errors.New("private control configuration is invalid")
-	ErrControlUnavailable = errors.New("private control is unavailable")
+	ErrControlInvalid       = errors.New("private control configuration is invalid")
+	ErrControlUnavailable   = errors.New("private control is unavailable")
+	ErrNodeObservationStale = errors.New("node observation is stale")
 )
 
 type HTTPConfig struct {
@@ -197,6 +198,9 @@ func (c *HTTPClient) post(ctx context.Context, path string, input, output any) e
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxControlDocument))
+		if path == "/v1/nodes/heartbeat" && response.StatusCode == http.StatusConflict {
+			return ErrNodeObservationStale
+		}
 		return ErrControlUnavailable
 	}
 	if output == nil {

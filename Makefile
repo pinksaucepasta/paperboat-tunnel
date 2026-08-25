@@ -4,7 +4,7 @@ GOFMT := $(shell GOTOOLCHAIN=local go env GOROOT 2>/dev/null)/bin/gofmt
 FRP_DIR := frp
 CADDY_MODULE_DIR := caddymodules/paperboatquic
 FRP_VERSION := v0.70.1
-FRP_COMMIT := 028f085af3c787d7c0c77cd58f133ca8aed7ee75
+FRP_COMMIT := fba6ff3284044b7c3030c6f23c4ec109d5d5417d
 FRP_TAGS := noweb
 BUILD_FLAGS := -trimpath -buildvcs=false
 OWNED_GO_FILES := $(shell find . -path ./frp -prune -o -name '*.go' -print)

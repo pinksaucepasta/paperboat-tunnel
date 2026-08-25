@@ -2,6 +2,9 @@ services:
   tunnel:
     image: ${PAPERBOAT_TUNNEL_IMAGE:?set PAPERBOAT_TUNNEL_IMAGE}
     restart: unless-stopped
+    # Let the tunnel drain long-lived relay streams before Docker force-kills it.
+    # This prevents Caddy's graceful shutdown from leaving stale runtime locks.
+    stop_grace_period: 45s
     command:
       - -node-id
       - ${PAPERBOAT_TUNNEL_NODE_ID:?set PAPERBOAT_TUNNEL_NODE_ID}

@@ -101,6 +101,18 @@ func TestHTTPClientTypedOperationsAndAuthentication(t *testing.T) {
 	}
 }
 
+func TestHTTPClientClassifiesStaleHeartbeat(t *testing.T) {
+	client := controlClient(t, func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/v1/nodes/heartbeat" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		return response(http.StatusConflict, `{"code":"node_observation_stale"}`), nil
+	})
+	if err := client.Heartbeat(context.Background(), NodeObservation{NodeID: "edge"}); !errors.Is(err, ErrNodeObservationStale) {
+		t.Fatalf("heartbeat error = %v", err)
+	}
+}
+
 func TestHTTPClientRejectsPlaintextRedirectMalformedAndOversized(t *testing.T) {
 	if _, err := NewHTTPClient(HTTPConfig{BaseURL: "http://control.test", Credential: testControlCredential, Timeout: time.Second}); !errors.Is(err, ErrControlInvalid) {
 		t.Fatalf("plaintext = %v", err)
