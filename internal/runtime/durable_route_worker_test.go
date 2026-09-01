@@ -198,6 +198,98 @@ func TestRouteWorkerReadyFailureLeavesPreviousCanonicalGeneration(t *testing.T) 
 	}
 }
 
+func TestRouteWorkerIsolatesCanonicalTunnelActivation(t *testing.T) {
+	publicKey, thumbprint := durableWorkerIdentity(t)
+	tunnelA := durableWorkerAssignmentForTunnel(publicKey, thumbprint, "a")
+	tunnelB := durableWorkerAssignmentForTunnel(publicKey, thumbprint, "b")
+	carrierUnavailable := errors.New("tunnel A carrier unavailable")
+	carrier := &workerCarrierProbe{probeErrors: map[string]error{tunnelA.TunnelID: carrierUnavailable}}
+	canonical := route.NewRegistry("", "")
+	durable, err := datacarrier.NewDurableAdmissionRegistry(datacarrier.DurableAdmissionRegistryConfig{
+		NodeID: "edge_1", ProcessEpoch: "edge_epoch_1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := node.New("edge_1")
+	state.MarkReady()
+	source := &workerSnapshotSource{snapshot: control.RouteSnapshot{
+		Routes: []control.RouteAssignment{tunnelA, tunnelB}, Complete: true, Canonical: true,
+	}}
+	observer := &appendRouteObserver{}
+	worker := &RouteWorker{
+		Registry: canonical, Source: source, Observer: observer, State: state,
+		NodeID: "edge_1", ProcessEpoch: "edge_epoch_1", Carrier: carrier,
+		DurableAdmissions: durable, Pulse: make(chan time.Time), DrainTimeout: time.Second,
+	}
+	if err := worker.Start(context.Background()); err != nil {
+		t.Fatalf("ready tunnel B did not activate while tunnel A was unavailable: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = worker.Shutdown(ctx)
+	}()
+	if len(observer.observations) != 1 || observer.observations[0].AssignmentID != tunnelB.AssignmentID || observer.observations[0].ObservedState != "ready" {
+		t.Fatalf("initial observations = %+v, want only tunnel B ready", observer.observations)
+	}
+	if _, err := canonical.Match(tunnelA.PublicHost, "/"); !errors.Is(err, route.ErrNoMatch) {
+		t.Fatalf("unavailable tunnel A entered matcher: %v", err)
+	}
+	match, err := canonical.Match(tunnelB.PublicHost, "/")
+	if err != nil {
+		t.Fatalf("ready tunnel B was not published: %v", err)
+	}
+	if match.Rule.AssignmentID != tunnelB.AssignmentID {
+		t.Fatalf("active tunnel B assignment = %s, want %s", match.Rule.AssignmentID, tunnelB.AssignmentID)
+	}
+
+	// Once tunnel A's carrier arrives, the same complete snapshot promotes both
+	// tunnel groups as one new local generation without disturbing tunnel B.
+	delete(carrier.probeErrors, tunnelA.TunnelID)
+	if err := worker.reconcile(context.Background()); err != nil {
+		t.Fatalf("tunnel A recovery: %v", err)
+	}
+	for _, assignment := range []control.RouteAssignment{tunnelA, tunnelB} {
+		match, err := canonical.Match(assignment.PublicHost, "/recovered")
+		if err != nil {
+			t.Fatalf("recovered route %s unavailable: %v", assignment.TunnelID, err)
+		}
+		if match.Rule.AssignmentID != assignment.AssignmentID {
+			t.Fatalf("recovered route %s assignment = %s, want %s", assignment.TunnelID, match.Rule.AssignmentID, assignment.AssignmentID)
+		}
+	}
+
+	// Replace both connectors, then replay stale draining rows. Detached ACK
+	// cleanup must be exact and retryable; it must never remove either current
+	// replacement from the matcher or admission authority.
+	replacementA := durableWorkerReplacement(tunnelA, "a")
+	replacementB := durableWorkerReplacement(tunnelB, "b")
+	source.snapshot.Routes = []control.RouteAssignment{tunnelA, replacementA, tunnelB, replacementB}
+	if err := worker.reconcile(context.Background()); err != nil {
+		t.Fatalf("replacement activation: %v", err)
+	}
+	tunnelA.State = "draining"
+	tunnelB.State = "draining"
+	source.snapshot.Routes = []control.RouteAssignment{replacementA, replacementB, tunnelA, tunnelB}
+	if err := worker.reconcile(context.Background()); err != nil {
+		t.Fatalf("stale detached cleanup: %v", err)
+	}
+	for _, assignment := range []control.RouteAssignment{replacementA, replacementB} {
+		match, err := canonical.Match(assignment.PublicHost, "/after-stale-cleanup")
+		if err != nil {
+			t.Fatalf("replacement route %s removed by stale cleanup: %v", assignment.TunnelID, err)
+		}
+		if match.Rule.AssignmentID != assignment.AssignmentID {
+			t.Fatalf("replacement route %s assignment = %s, want %s", assignment.TunnelID, match.Rule.AssignmentID, assignment.AssignmentID)
+		}
+	}
+	admissions := durable.Snapshot()
+	if len(admissions) != 2 || admissions[0].AssignmentID != replacementA.AssignmentID || admissions[1].AssignmentID != replacementB.AssignmentID {
+		t.Fatalf("durable admissions after stale cleanup = %+v, want both replacements", admissions)
+	}
+}
+
 func TestRouteWorkerRestartDetachesSupersededActiveAssignmentAfterReplacement(t *testing.T) {
 	publicKey := make(ed25519.PublicKey, ed25519.PublicKeySize)
 	for index := range publicKey {
@@ -284,9 +376,21 @@ func (s *workerSnapshotSource) DesiredRoutes(context.Context, string) ([]control
 type workerCarrierProbe struct {
 	privateProbes int
 	privateRules  []route.RouteRule
+	probeErrors   map[string]error
+	routeProbes   map[string]int
 }
 
-func (p *workerCarrierProbe) ProbeRoutes(context.Context, []route.RouteRule) error { return nil }
+func (p *workerCarrierProbe) ProbeRoutes(_ context.Context, rules []route.RouteRule) error {
+	if len(rules) == 0 {
+		return nil
+	}
+	if p.routeProbes == nil {
+		p.routeProbes = make(map[string]int)
+	}
+	tunnelID := rules[0].TunnelID
+	p.routeProbes[tunnelID]++
+	return p.probeErrors[tunnelID]
+}
 
 func (p *workerCarrierProbe) ProbePrivateRoutes(_ context.Context, rules []route.RouteRule) error {
 	p.privateProbes++
@@ -307,6 +411,31 @@ func durableWorkerAssignment(publicKey, thumbprint, routeID, assignmentID string
 		AssignmentGeneration: 1, EdgeFailureDomain: "zone_1", EdgeProcessEpoch: "edge_epoch_1", NodeID: "edge_1", Kind: string(kind),
 		PublicHost: "app.example.test", MatchType: route.MatchExact, MatchHostname: "app.example.test", PathPrefix: "/", Protocol: "https", AccessMode: "public", State: "active",
 	}
+}
+
+func durableWorkerAssignmentForTunnel(publicKey, thumbprint, suffix string) control.RouteAssignment {
+	assignment := durableWorkerAssignment(publicKey, thumbprint, "route_"+suffix, "assignment_"+suffix, route.TunnelHTTPSWSS)
+	assignment.HostID = "host_" + suffix
+	assignment.TunnelID = "tunnel_" + suffix
+	assignment.ConnectorID = "connector_" + suffix
+	assignment.ConnectorSessionID = "session_" + suffix
+	assignment.PublicHost = "app-" + suffix + ".example.test"
+	assignment.MatchHostname = assignment.PublicHost
+	return assignment
+}
+
+func durableWorkerReplacement(assignment control.RouteAssignment, suffix string) control.RouteAssignment {
+	replacement := assignment
+	replacement.AssignmentID = "assignment_" + suffix + "_replacement"
+	replacement.AssignmentGeneration++
+	replacement.Revision++
+	replacement.Generation++
+	replacement.ConnectorSessionID = "session_" + suffix + "_replacement"
+	replacement.ConnectorProcessGeneration++
+	replacement.ConfigGeneration++
+	replacement.ConfigContentHash = "sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+	replacement.State = "staged"
+	return replacement
 }
 
 func durableWorkerIdentity(t *testing.T) (string, string) {

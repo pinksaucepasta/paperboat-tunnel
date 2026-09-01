@@ -509,20 +509,55 @@ func (w *RouteWorker) reconcileRoutes(ctx context.Context) error {
 		if w.ProcessEpoch == "" || w.Carrier == nil && w.Ready == nil || w.Observer == nil {
 			return route.ErrGenerationNotReady
 		}
-		activeAssignments, err := selectCanonicalAssignments(desired, w.NodeID, w.ProcessEpoch)
+		selectedAssignments, err := selectCanonicalAssignments(desired, w.NodeID, w.ProcessEpoch)
 		if err != nil {
 			return err
 		}
 		if w.DurableAdmissions == nil {
 			return route.ErrGenerationNotReady
 		}
-		supersededAssignments, err := canonicalSupersededAssignments(desired, activeAssignments, w.NodeID, w.ProcessEpoch)
+		// A complete snapshot can contain assignments for several tunnels. A
+		// carrier failure is scoped to the tunnel that owns the failed
+		// assignment. Resolve each tunnel independently so a ready tunnel can
+		// still be published while another tunnel keeps its LKG (or remains
+		// pending when it has no LKG yet).
+		candidateHash := canonicalRouteHash(selectedAssignments)
+		probeCandidate := !w.canonicalSet || candidateHash != w.canonicalHash || !w.Registry.HasActiveGeneration()
+		// Carrier probing is authenticated by the durable admission authority.
+		// Install the exact candidate/LKG pending set before opening any probe
+		// stream, otherwise a healthy carrier is incorrectly reported as missing
+		// during the first reconcile after a control update.
+		if probeCandidate && len(selectedAssignments) != 0 && !w.canonicalPendingAdmissions {
+			admissionAssignments := canonicalPendingAdmissionAssignments(selectedAssignments, w.canonicalAssignments, desired)
+			admissions, admissionErr := canonicalDurableAdmissions(admissionAssignments)
+			if admissionErr != nil {
+				return admissionErr
+			}
+			if err := w.DurableAdmissions.Replace(admissions, time.Now().UTC()); err != nil {
+				return err
+			}
+			w.canonicalPendingAdmissions = true
+		}
+		activeAssignments := append([]control.RouteAssignment(nil), selectedAssignments...)
+		readyAssignments := append([]control.RouteAssignment(nil), selectedAssignments...)
+		var probeFailures []error
+		var failedAssignments []control.RouteAssignment
+		if probeCandidate {
+			activeAssignments, readyAssignments, probeFailures, failedAssignments = w.resolveCanonicalGroups(ctx, selectedAssignments, w.canonicalAssignments)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if len(selectedAssignments) != 0 && len(activeAssignments) == 0 && len(probeFailures) != 0 {
+				return errors.Join(probeFailures...)
+			}
+		}
+		supersededSelection := append(append([]control.RouteAssignment(nil), activeAssignments...), failedAssignments...)
+		supersededAssignments, err := canonicalSupersededAssignments(desired, supersededSelection, w.NodeID, w.ProcessEpoch)
 		if err != nil {
 			return err
 		}
-		httpAssignments, privateAssignments := splitCanonicalAssignments(activeAssignments)
+		httpAssignments, _ := splitCanonicalAssignments(activeAssignments)
 		rules := canonicalRouteRules(httpAssignments)
-		privateRules := canonicalPrivateRouteRules(privateAssignments)
 		sortRouteRules(rules)
 		contentHash := canonicalRouteHash(activeAssignments)
 		localGeneration := w.canonicalGeneration
@@ -553,8 +588,13 @@ func (w *RouteWorker) reconcileRoutes(ctx context.Context) error {
 			// generation until the exact ready observation is accepted, so dropping
 			// its admission at this point would make existing LKG routes fail
 			// closed for new streams even though they remain authoritative.
-			if !w.canonicalPendingAdmissions {
-				admissionAssignments := canonicalPendingAdmissionAssignments(activeAssignments, w.canonicalAssignments, desired)
+			// Keep an already-installed pending set across retries. The durable
+			// admission registry fences lower assignment generations, so replaying
+			// an older LKG row after a staged row has been recorded is rejected by
+			// design. A new pending set is installed only when the previous one has
+			// not yet crossed that fence.
+			if len(selectedAssignments) != 0 && !w.canonicalPendingAdmissions {
+				admissionAssignments := canonicalPendingAdmissionAssignments(selectedAssignments, w.canonicalAssignments, desired)
 				admissions, admissionErr := canonicalDurableAdmissions(admissionAssignments)
 				if admissionErr != nil {
 					return admissionErr
@@ -564,31 +604,14 @@ func (w *RouteWorker) reconcileRoutes(ctx context.Context) error {
 				}
 				w.canonicalPendingAdmissions = true
 			}
-			ready := w.Ready
-			if len(rules) != 0 && ready == nil {
-				ready = w.Carrier.ProbeRoutes
-			}
-			if len(rules) != 0 && ready == nil {
-				return route.ErrGenerationNotReady
-			}
-			if ready != nil && len(rules) != 0 {
-				if err := ready(ctx, rules); err != nil {
-					return err
-				}
-			}
-			if len(privateRules) != 0 {
-				privateProbe, ok := w.Carrier.(PrivateRouteCarrier)
-				if !ok {
-					return route.ErrGenerationNotReady
-				}
-				if err := privateProbe.ProbePrivateRoutes(ctx, privateRules); err != nil {
-					return err
-				}
-			}
 			// The server must durably accept the exact ready tuple before local
 			// promotion. A failed or uncertain ACK leaves the pending candidate
 			// staged while the old generation remains authoritative.
-			if err := w.Observer.ObserveRoutes(ctx, w.NodeID, canonicalRouteObservations(activeAssignments, "ready")); err != nil {
+			observedAssignments := activeAssignments
+			if len(probeFailures) != 0 {
+				observedAssignments = readyAssignments
+			}
+			if err := w.Observer.ObserveRoutes(ctx, w.NodeID, canonicalRouteObservations(observedAssignments, "ready")); err != nil {
 				return err
 			}
 			if err := w.Registry.MarkGenerationReady(localGeneration); err != nil {
@@ -601,11 +624,11 @@ func (w *RouteWorker) reconcileRoutes(ctx context.Context) error {
 			// Promotion is now complete. Retire the prior admission so future
 			// requests cannot select the drained connector, while streams that
 			// were already established continue under their stream lifetime.
-			admissions, admissionErr := canonicalDurableAdmissions(activeAssignments)
-			if admissionErr != nil {
-				return admissionErr
+			activeAdmissions, activeAdmissionErr := canonicalDurableAdmissions(activeAssignments)
+			if activeAdmissionErr != nil {
+				return activeAdmissionErr
 			}
-			if err := w.DurableAdmissions.Replace(admissions, time.Now().UTC()); err != nil {
+			if err := w.DurableAdmissions.Replace(activeAdmissions, time.Now().UTC()); err != nil {
 				return err
 			}
 			w.canonicalPendingAdmissions = false
@@ -620,18 +643,45 @@ func (w *RouteWorker) reconcileRoutes(ctx context.Context) error {
 			}
 		}
 		if !changed {
-			admissions, admissionErr := canonicalDurableAdmissions(activeAssignments)
-			if admissionErr != nil {
-				return admissionErr
+			admissionAssignments := activeAssignments
+			if len(probeFailures) != 0 {
+				// Keep both the LKG and any staged candidate while a failed tunnel
+				// is retried. Its route is not in the active matcher until it is
+				// ready, but dropping the candidate here loses the durable retry
+				// context and can make an LKG replacement fail closed.
+				admissionAssignments = canonicalPendingAdmissionAssignments(selectedAssignments, w.canonicalAssignments, desired)
+				if !w.canonicalPendingAdmissions {
+					admissions, admissionErr := canonicalDurableAdmissions(admissionAssignments)
+					if admissionErr != nil {
+						return admissionErr
+					}
+					if err := w.DurableAdmissions.Replace(admissions, time.Now().UTC()); err != nil {
+						return err
+					}
+					w.canonicalPendingAdmissions = true
+				}
 			}
-			if err := w.DurableAdmissions.Replace(admissions, time.Now().UTC()); err != nil {
-				return err
+			if len(probeFailures) == 0 {
+				admissions, admissionErr := canonicalDurableAdmissions(admissionAssignments)
+				if admissionErr != nil {
+					return admissionErr
+				}
+				if err := w.DurableAdmissions.Replace(admissions, time.Now().UTC()); err != nil {
+					return err
+				}
 			}
 			w.canonicalPendingDetached = mergeCanonicalAssignments(w.canonicalPendingDetached, supersededAssignments)
 			if err := w.flushCanonicalDetached(ctx); err != nil {
 				return err
 			}
-			if err := w.Observer.ObserveRoutes(ctx, w.NodeID, canonicalRouteObservations(activeAssignments, "ready")); err != nil {
+			if len(probeFailures) != 0 && len(readyAssignments) == 0 {
+				return errors.Join(probeFailures...)
+			}
+			observedAssignments := activeAssignments
+			if len(probeFailures) != 0 {
+				observedAssignments = readyAssignments
+			}
+			if err := w.Observer.ObserveRoutes(ctx, w.NodeID, canonicalRouteObservations(observedAssignments, "ready")); err != nil {
 				return err
 			}
 		}
@@ -834,6 +884,107 @@ func splitCanonicalAssignments(assignments []control.RouteAssignment) (httpAssig
 	return httpAssignments, privateAssignments
 }
 
+// canonicalAssignmentGroup is the unit of durable route readiness. A
+// complete feed can contain routes for many tunnels, but a carrier failure
+// only makes the owning tunnel unavailable. Keeping this boundary in the
+// worker lets one tunnel activate while another tunnel retains its LKG.
+type canonicalAssignmentGroup struct {
+	key         string
+	assignments []control.RouteAssignment
+}
+
+func canonicalAssignmentGroupKey(assignment control.RouteAssignment) string {
+	return assignment.AccountID + "\x00" + assignment.TunnelID
+}
+
+func canonicalAssignmentGroups(assignments []control.RouteAssignment) []canonicalAssignmentGroup {
+	byKey := make(map[string][]control.RouteAssignment)
+	for _, assignment := range assignments {
+		key := canonicalAssignmentGroupKey(assignment)
+		byKey[key] = append(byKey[key], assignment)
+	}
+	groups := make([]canonicalAssignmentGroup, 0, len(byKey))
+	for key, values := range byKey {
+		sort.Slice(values, func(i, j int) bool {
+			if values[i].RouteID != values[j].RouteID {
+				return values[i].RouteID < values[j].RouteID
+			}
+			return values[i].AssignmentID < values[j].AssignmentID
+		})
+		groups = append(groups, canonicalAssignmentGroup{key: key, assignments: values})
+	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].key < groups[j].key })
+	return groups
+}
+
+func (w *RouteWorker) probeCanonicalGroup(ctx context.Context, assignments []control.RouteAssignment) error {
+	httpAssignments, privateAssignments := splitCanonicalAssignments(assignments)
+	httpRules := canonicalRouteRules(httpAssignments)
+	privateRules := canonicalPrivateRouteRules(privateAssignments)
+	sortRouteRules(httpRules)
+
+	if len(httpRules) != 0 {
+		ready := w.Ready
+		if ready == nil {
+			if w.Carrier == nil {
+				return route.ErrGenerationNotReady
+			}
+			ready = w.Carrier.ProbeRoutes
+		}
+		if err := ready(ctx, httpRules); err != nil {
+			return err
+		}
+	}
+	if len(privateRules) != 0 {
+		privateProbe, ok := w.Carrier.(PrivateRouteCarrier)
+		if !ok {
+			return route.ErrGenerationNotReady
+		}
+		if err := privateProbe.ProbePrivateRoutes(ctx, privateRules); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resolveCanonicalGroups probes each tunnel independently. Successful
+// candidate groups are returned for promotion; a failed group falls back to
+// the previous group for that same account/tunnel when one exists. Failures
+// are deliberately returned separately so the caller can report a failure
+// only when no other candidate group made progress.
+func (w *RouteWorker) resolveCanonicalGroups(ctx context.Context, candidates, previous []control.RouteAssignment) (effective, ready []control.RouteAssignment, failures []error, failedAssignments []control.RouteAssignment) {
+	previousByKey := make(map[string][]control.RouteAssignment)
+	for _, group := range canonicalAssignmentGroups(previous) {
+		previousByKey[group.key] = group.assignments
+	}
+	for _, group := range canonicalAssignmentGroups(candidates) {
+		if err := w.probeCanonicalGroup(ctx, group.assignments); err != nil {
+			failures = append(failures, err)
+			failedAssignments = append(failedAssignments, group.assignments...)
+			slog.Warn("canonical tunnel route group unavailable", "account_id", group.assignments[0].AccountID, "tunnel_id", group.assignments[0].TunnelID, "error", err)
+			if lkg, ok := previousByKey[group.key]; ok {
+				effective = append(effective, lkg...)
+			}
+			continue
+		}
+		effective = append(effective, group.assignments...)
+		ready = append(ready, group.assignments...)
+	}
+	sort.Slice(effective, func(i, j int) bool {
+		if effective[i].RouteID != effective[j].RouteID {
+			return effective[i].RouteID < effective[j].RouteID
+		}
+		return effective[i].AssignmentID < effective[j].AssignmentID
+	})
+	sort.Slice(ready, func(i, j int) bool {
+		if ready[i].RouteID != ready[j].RouteID {
+			return ready[i].RouteID < ready[j].RouteID
+		}
+		return ready[i].AssignmentID < ready[j].AssignmentID
+	})
+	return effective, ready, failures, failedAssignments
+}
+
 func isCanonicalAssignment(assignment control.RouteAssignment) bool {
 	return assignment.Canonical || assignment.AssignmentID != "" || assignment.Kind == string(route.TunnelHTTPSWSS) || assignment.Kind == string(route.TunnelPrivateTCP) || assignment.ConfigContentHash != ""
 }
@@ -871,8 +1022,11 @@ func canonicalPendingAdmissionAssignments(candidate, previous, desired []control
 		}
 		// An assignment omitted from the complete snapshot, or already marked
 		// draining/detached by the server, is no longer an LKG authorization.
+		// A staged row is retained: it is the server's pending replacement and
+		// must remain available to the next exact readiness attempt alongside
+		// the active LKG.
 		state, exists := desiredState[assignment.AssignmentID]
-		if !exists || state != "active" {
+		if !exists || state != "active" && state != "staged" {
 			continue
 		}
 		result = append(result, assignment)
