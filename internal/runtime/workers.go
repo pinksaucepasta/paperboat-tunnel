@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"sort"
 	"strconv"
@@ -272,16 +273,20 @@ type RouteWorker struct {
 	Ready        func(context.Context, []route.RouteRule) error
 	DrainTimeout time.Duration
 
-	mu                       sync.Mutex
-	cancel                   context.CancelFunc
-	done                     chan struct{}
-	starting                 bool
-	lastErr                  error
-	canonicalSet             bool
-	canonicalHash            [sha256.Size]byte
-	canonicalGeneration      uint64
-	canonicalAssignments     []control.RouteAssignment
-	canonicalPendingDetached []control.RouteAssignment
+	mu                         sync.Mutex
+	cancel                     context.CancelFunc
+	done                       chan struct{}
+	starting                   bool
+	lastErr                    error
+	canonicalSet               bool
+	canonicalHash              [sha256.Size]byte
+	canonicalGeneration        uint64
+	canonicalPendingSet        bool
+	canonicalPendingHash       [sha256.Size]byte
+	canonicalPendingGeneration uint64
+	canonicalPendingAdmissions bool
+	canonicalAssignments       []control.RouteAssignment
+	canonicalPendingDetached   []control.RouteAssignment
 }
 
 // RouteCarrier is implemented by the edge's authenticated carrier registry.
@@ -381,9 +386,6 @@ func (w *RouteWorker) run(ctx context.Context) {
 }
 
 func (w *RouteWorker) recordReconcile(err error) {
-	w.mu.Lock()
-	w.lastErr = err
-	w.mu.Unlock()
 	// A transient control outage must not withdraw this process's ready
 	// registration. The control endpoints intentionally reject unready nodes,
 	// so doing that would turn a short outage into a permanent startup loop.
@@ -391,6 +393,16 @@ func (w *RouteWorker) recordReconcile(err error) {
 	// reconcile proves the local state safe again.
 	if err == nil || !transientControlUnavailable(err) {
 		w.State.SetControlAvailable(err == nil)
+	}
+	// Publish the diagnostic only after the readiness projection has been
+	// updated. Callers use LastError as the completion fence for a reconcile;
+	// publishing it first would let them observe the failure while the node
+	// still reported Ready, and made a failed replacement look successful.
+	w.mu.Lock()
+	w.lastErr = err
+	w.mu.Unlock()
+	if err != nil {
+		slog.Warn("route reconciliation failed", "edge_node_id", w.NodeID, "error", err)
 	}
 }
 
@@ -516,7 +528,14 @@ func (w *RouteWorker) reconcileRoutes(ctx context.Context) error {
 		localGeneration := w.canonicalGeneration
 		changed := !w.canonicalSet || contentHash != w.canonicalHash || !w.Registry.HasActiveGeneration()
 		if changed {
-			localGeneration++
+			if w.canonicalPendingSet && contentHash == w.canonicalPendingHash {
+				localGeneration = w.canonicalPendingGeneration
+			} else {
+				if w.canonicalPendingGeneration > localGeneration {
+					localGeneration = w.canonicalPendingGeneration
+				}
+				localGeneration++
+			}
 			if localGeneration == 0 {
 				localGeneration = 1
 			}
@@ -526,12 +545,24 @@ func (w *RouteWorker) reconcileRoutes(ctx context.Context) error {
 			if err := w.Registry.StageGeneration(localGeneration, rules); err != nil {
 				return err
 			}
-			admissions, admissionErr := canonicalDurableAdmissions(activeAssignments)
-			if admissionErr != nil {
-				return admissionErr
-			}
-			if err := w.DurableAdmissions.Replace(admissions, time.Now().UTC()); err != nil {
-				return err
+			w.canonicalPendingSet = true
+			w.canonicalPendingHash = contentHash
+			w.canonicalPendingGeneration = localGeneration
+			// Keep the last-known-good active assignment authorized while a
+			// replacement is staged and probed. The matcher still serves the old
+			// generation until the exact ready observation is accepted, so dropping
+			// its admission at this point would make existing LKG routes fail
+			// closed for new streams even though they remain authoritative.
+			if !w.canonicalPendingAdmissions {
+				admissionAssignments := canonicalPendingAdmissionAssignments(activeAssignments, w.canonicalAssignments, desired)
+				admissions, admissionErr := canonicalDurableAdmissions(admissionAssignments)
+				if admissionErr != nil {
+					return admissionErr
+				}
+				if err := w.DurableAdmissions.Replace(admissions, time.Now().UTC()); err != nil {
+					return err
+				}
+				w.canonicalPendingAdmissions = true
 			}
 			ready := w.Ready
 			if len(rules) != 0 && ready == nil {
@@ -567,7 +598,19 @@ func (w *RouteWorker) reconcileRoutes(ctx context.Context) error {
 			if drainErr != nil && !errors.Is(drainErr, route.ErrDrainTimeout) {
 				return drainErr
 			}
+			// Promotion is now complete. Retire the prior admission so future
+			// requests cannot select the drained connector, while streams that
+			// were already established continue under their stream lifetime.
+			admissions, admissionErr := canonicalDurableAdmissions(activeAssignments)
+			if admissionErr != nil {
+				return admissionErr
+			}
+			if err := w.DurableAdmissions.Replace(admissions, time.Now().UTC()); err != nil {
+				return err
+			}
+			w.canonicalPendingAdmissions = false
 			w.canonicalGeneration, w.canonicalHash, w.canonicalSet = localGeneration, contentHash, true
+			w.canonicalPendingSet = false
 			w.canonicalPendingDetached = mergeCanonicalAssignments(
 				detachedCanonicalAssignments(w.canonicalAssignments, activeAssignments), supersededAssignments,
 			)
@@ -592,53 +635,44 @@ func (w *RouteWorker) reconcileRoutes(ctx context.Context) error {
 				return err
 			}
 		}
-		return nil
-	} else {
-		legacyRegistry := w.LegacyRegistry
-		if legacyRegistry == nil {
-			legacyRegistry = w.Registry
-		}
-		attachments := make([]route.Attachment, 0, len(desired))
+	}
+
+	// A process-fenced canonical snapshot may contain the retained legacy
+	// control_routes projection as well. Keep that projection in its own
+	// registry and report its observations independently; canonical activation
+	// above must never replace or erase it. For a legacy-only response, desired
+	// is unchanged and this remains the original atomic replacement path.
+	legacyDesired := desired
+	if canonical {
+		legacyDesired = make([]control.RouteAssignment, 0, len(desired))
 		for _, assignment := range desired {
-			if assignment.NodeID != w.NodeID {
-				return route.ErrInvalid
+			if !isCanonicalAssignment(assignment) {
+				legacyDesired = append(legacyDesired, assignment)
 			}
-			attachments = append(attachments, route.Attachment{ID: assignment.RouteID, Revision: assignment.Revision, Environment: assignment.Environment, Node: assignment.NodeID, Generation: assignment.Generation, Kind: route.Kind(assignment.Kind), Host: assignment.PublicHost, Target: net.JoinHostPort(assignment.TargetHost, strconv.Itoa(int(assignment.TargetPort))), PreviewState: assignment.PreviewState, PreviewReason: assignment.PreviewReason})
 		}
-		if err := legacyRegistry.Replace(attachments); err != nil {
-			return err
+	}
+	legacyRegistry := w.LegacyRegistry
+	if legacyRegistry == nil {
+		legacyRegistry = w.Registry
+	}
+	attachments := make([]route.Attachment, 0, len(legacyDesired))
+	for _, assignment := range legacyDesired {
+		if assignment.NodeID != w.NodeID {
+			return route.ErrInvalid
 		}
+		attachments = append(attachments, route.Attachment{ID: assignment.RouteID, Revision: assignment.Revision, Environment: assignment.Environment, Node: assignment.NodeID, Generation: assignment.Generation, Kind: route.Kind(assignment.Kind), Host: assignment.PublicHost, Target: net.JoinHostPort(assignment.TargetHost, strconv.Itoa(int(assignment.TargetPort))), PreviewState: assignment.PreviewState, PreviewReason: assignment.PreviewReason})
+	}
+	if err := legacyRegistry.Replace(attachments); err != nil {
+		return err
 	}
 	if w.Observer == nil {
 		return nil
 	}
-	observations := make([]control.RouteObservation, 0, len(desired))
-	for _, assignment := range desired {
-		if canonical {
-			if !isCanonicalAssignment(assignment) {
-				continue
-			}
-			if err := validateCanonicalAssignment(assignment, w.NodeID, w.ProcessEpoch); err != nil {
-				return err
-			}
-			state := assignment.State
-			if state == "" {
-				state = "active"
-			}
-			observed := "ready"
-			if state == "draining" {
-				observed = "detached"
-			}
-			observations = append(observations, control.RouteObservation{
-				RouteID: assignment.RouteID, RouteRevision: assignment.Revision, AssignmentID: assignment.AssignmentID,
-				AssignmentGeneration: assignment.AssignmentGeneration, EdgeNodeID: assignment.NodeID,
-				EdgeProcessEpoch: assignment.EdgeProcessEpoch, EdgeFailureDomain: assignment.EdgeFailureDomain,
-				ConnectorID: assignment.ConnectorID, ConnectorGeneration: assignment.Generation,
-				ConnectorSessionID: assignment.ConnectorSessionID, ConnectorProcessGeneration: assignment.ConnectorProcessGeneration,
-				ConfigGeneration: assignment.ConfigGeneration, State: observed, ObservedState: observed,
-			})
-			continue
-		}
+	if len(legacyDesired) == 0 {
+		return nil
+	}
+	observations := make([]control.RouteObservation, 0, len(legacyDesired))
+	for _, assignment := range legacyDesired {
 		observations = append(observations, control.RouteObservation{RouteID: assignment.RouteID, RouteRevision: assignment.Revision, EdgeNodeID: assignment.NodeID, ConnectorGeneration: assignment.Generation})
 	}
 	return w.Observer.ObserveRoutes(ctx, w.NodeID, observations)
@@ -804,6 +838,49 @@ func isCanonicalAssignment(assignment control.RouteAssignment) bool {
 	return assignment.Canonical || assignment.AssignmentID != "" || assignment.Kind == string(route.TunnelHTTPSWSS) || assignment.Kind == string(route.TunnelPrivateTCP) || assignment.ConfigContentHash != ""
 }
 
+// canonicalPendingAdmissionAssignments returns the candidate set needed while
+// a generation is being staged. A complete server snapshot can contain both
+// the currently active assignment and a newer staged replacement for the same
+// route. The matcher keeps the active generation authoritative until the
+// ready observation is durably accepted, so the old active identity must stay
+// in the carrier authorizer during that window as well. Once promotion
+// succeeds the caller replaces the registry with activeAssignments only.
+func canonicalPendingAdmissionAssignments(candidate, previous, desired []control.RouteAssignment) []control.RouteAssignment {
+	result := append([]control.RouteAssignment(nil), candidate...)
+	selected := make(map[string]struct{}, len(result))
+	for _, assignment := range result {
+		selected[assignment.AssignmentID] = struct{}{}
+	}
+	desiredState := make(map[string]string, len(desired))
+	for _, assignment := range desired {
+		if !isCanonicalAssignment(assignment) || assignment.AssignmentID == "" {
+			continue
+		}
+		state := assignment.State
+		if state == "" {
+			state = "active"
+		}
+		desiredState[assignment.AssignmentID] = state
+	}
+	for _, assignment := range previous {
+		if assignment.AssignmentID == "" {
+			continue
+		}
+		if _, exists := selected[assignment.AssignmentID]; exists {
+			continue
+		}
+		// An assignment omitted from the complete snapshot, or already marked
+		// draining/detached by the server, is no longer an LKG authorization.
+		state, exists := desiredState[assignment.AssignmentID]
+		if !exists || state != "active" {
+			continue
+		}
+		result = append(result, assignment)
+		selected[assignment.AssignmentID] = struct{}{}
+	}
+	return result
+}
+
 func canonicalDurableAdmissions(assignments []control.RouteAssignment) ([]datacarrier.DurableAdmission, error) {
 	result := make([]datacarrier.DurableAdmission, 0, len(assignments))
 	for _, assignment := range assignments {
@@ -836,8 +913,8 @@ func canonicalRouteObservations(assignments []control.RouteAssignment, observedS
 		result = append(result, control.RouteObservation{
 			RouteID: assignment.RouteID, RouteRevision: assignment.Revision, AssignmentID: assignment.AssignmentID,
 			AssignmentGeneration: assignment.AssignmentGeneration, EdgeNodeID: assignment.NodeID,
-			EdgeProcessEpoch: assignment.EdgeProcessEpoch, EdgeFailureDomain: assignment.EdgeFailureDomain,
-			ConnectorID: assignment.ConnectorID, HostID: assignment.HostID, ConnectorGeneration: assignment.Generation,
+			EdgeProcessEpoch: assignment.EdgeProcessEpoch,
+			ConnectorID:      assignment.ConnectorID, HostID: assignment.HostID, ConnectorGeneration: assignment.Generation,
 			ConnectorSessionID: assignment.ConnectorSessionID, ConnectorProcessGeneration: assignment.ConnectorProcessGeneration,
 			ConfigGeneration: assignment.ConfigGeneration, ConfigContentHash: assignment.ConfigContentHash,
 			State: observedState, ObservedState: observedState,

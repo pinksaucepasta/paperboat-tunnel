@@ -120,6 +120,22 @@ func TestHTTPClientClassifiesStaleHeartbeat(t *testing.T) {
 	}
 }
 
+func TestHTTPClientNormalizesCanonicalManagedMatchType(t *testing.T) {
+	client := controlClient(t, func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/v1/edge/routes/desired-state" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		return response(http.StatusOK, `{"complete":true,"routes":[{"route_id":"rte_1","route_revision":1,"assignment_id":"asn_1","config_content_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","kind":"tunnel_http_wss","match_type":"managed"}]}`), nil
+	})
+	snapshot, err := client.DesiredRouteSnapshot(context.Background(), "edge", "process_epoch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Routes) != 1 || snapshot.Routes[0].MatchType != "managed_exact" {
+		t.Fatalf("routes = %+v", snapshot.Routes)
+	}
+}
+
 func TestHTTPClientRejectsPlaintextRedirectMalformedAndOversized(t *testing.T) {
 	if _, err := NewHTTPClient(HTTPConfig{BaseURL: "http://control.test", Credential: testControlCredential, Timeout: time.Second}); !errors.Is(err, ErrControlInvalid) {
 		t.Fatalf("plaintext = %v", err)

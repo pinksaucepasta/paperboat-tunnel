@@ -308,6 +308,112 @@ func TestDataCarrierPreviewTransportStreamsHTTPAndTrailers(t *testing.T) {
 	}
 }
 
+func TestDataCarrierPreviewTransportRetriesAfterStaleResponseHeaderTimeout(t *testing.T) {
+	registry, err := NewDataCarrierPreviewRegistry(DataCarrierPreviewRegistryConfig{
+		BaseDomain: "preview.example.test", ProcessEpoch: "edge_epoch_1", MaximumRoutes: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	identityOne := testEdgePreviewIdentity(1, 1)
+	serverOne, clientOne := testEdgePreviewCarrierPair(t, identityOne)
+	identityTwo := testEdgePreviewIdentity(2, 2)
+	serverTwo, clientTwo := testEdgePreviewCarrierPair(t, identityTwo)
+	route := DataCarrierPreviewRoute{
+		RouteID: "preview_01", Hostname: "app.preview.example.test", Kind: dataCarrierPreviewRouteKind,
+		EdgeProcessEpoch: "edge_epoch_1", Revision: 1, Server: serverOne,
+	}
+	if err := registry.Attach(route); err != nil {
+		t.Fatal(err)
+	}
+	transport, err := NewDataCarrierPreviewTransport(DataCarrierPreviewTransportConfig{
+		Registry: registry, StreamOpenTimeout: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oldAccepted := make(chan struct{})
+	oldClosed := make(chan struct{})
+	go func() {
+		stream, _, acceptErr := clientOne.AcceptStream(context.Background())
+		if acceptErr != nil {
+			close(oldClosed)
+			return
+		}
+		close(oldAccepted)
+		_, _ = io.Copy(io.Discard, stream)
+		_ = stream.Close()
+		close(oldClosed)
+	}()
+
+	newServed := make(chan error, 1)
+	go func() {
+		stream, _, acceptErr := clientTwo.AcceptStream(context.Background())
+		if acceptErr != nil {
+			newServed <- acceptErr
+			return
+		}
+		_, writeErr := io.WriteString(stream, "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nhealthy")
+		_ = stream.Close()
+		newServed <- writeErr
+	}()
+
+	result := make(chan struct {
+		response *http.Response
+		err      error
+	}, 1)
+	request := httptest.NewRequest(http.MethodGet, "https://app.preview.example.test/", nil)
+	request.Host = "app.preview.example.test"
+	go func() {
+		response, roundTripErr := (retryPreviewTransport{next: transport}).RoundTrip(request)
+		result <- struct {
+			response *http.Response
+			err      error
+		}{response, roundTripErr}
+	}()
+
+	select {
+	case <-oldAccepted:
+	case <-time.After(time.Second):
+		t.Fatal("stale carrier stream was not opened")
+	}
+	if err := registry.Attach(DataCarrierPreviewRoute{
+		RouteID: "preview_01", Hostname: "app.preview.example.test", Kind: dataCarrierPreviewRouteKind,
+		EdgeProcessEpoch: "edge_epoch_1", Revision: 2, Server: serverTwo,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case got := <-result:
+		if got.err != nil {
+			t.Fatalf("retrying stale response headers: %v", got.err)
+		}
+		body, readErr := io.ReadAll(got.response.Body)
+		closeErr := got.response.Body.Close()
+		if readErr != nil || closeErr != nil || got.response.StatusCode != http.StatusOK || string(body) != "healthy" {
+			t.Fatalf("retried response status=%d body=%q read=%v close=%v", got.response.StatusCode, body, readErr, closeErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale response-header timeout did not retry the replacement route")
+	}
+	select {
+	case err := <-newServed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replacement carrier did not serve the retried request")
+	}
+	select {
+	case <-oldClosed:
+	case <-time.After(time.Second):
+		t.Fatal("stale response-header timeout did not close the old stream")
+	}
+}
+
 func TestDataCarrierPreviewTransportCancellationClosesStream(t *testing.T) {
 	identity := testEdgePreviewIdentity(1, 1)
 	server, client := testEdgePreviewCarrierPair(t, identity)

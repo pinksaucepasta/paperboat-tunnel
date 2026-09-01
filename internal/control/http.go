@@ -239,6 +239,14 @@ func (c *HTTPClient) DesiredRouteSnapshot(ctx context.Context, nodeID, processEp
 		if !isCanonical && originAddress == "" {
 			originAddress = wire.Target.Address
 		}
+		matchType := wire.MatchType
+		// The durable store calls its server-owned endpoint match "managed".
+		// The edge matcher uses the more explicit "managed_exact" name to
+		// distinguish it from customer exact and wildcard bindings. Normalize
+		// that persistence vocabulary at the control boundary.
+		if isCanonical && matchType == "managed" {
+			matchType = "managed_exact"
+		}
 		assignment := RouteAssignment{
 			RouteID: wire.RouteID, Revision: wire.Revision, Environment: wire.Environment, AccountID: wire.AccountID,
 			HostID: wire.HostID, MachineIdentityPublicKey: wire.MachineIdentityPublicKey, MachineIdentityThumbprint: wire.MachineIdentityThumbprint,
@@ -247,7 +255,7 @@ func (c *HTTPClient) DesiredRouteSnapshot(ctx context.Context, nodeID, processEp
 			ConfigGeneration: wire.ConfigGeneration, ConfigContentHash: wire.ConfigContentHash,
 			AssignmentID: wire.AssignmentID, AssignmentGeneration: wire.AssignmentGeneration,
 			EdgeFailureDomain: wire.EdgeFailureDomain, EdgeProcessEpoch: wire.EdgeProcessEpoch,
-			NodeID: wire.NodeID, Kind: wire.Kind, PublicHost: wire.PublicHost, MatchType: wire.MatchType,
+			NodeID: wire.NodeID, Kind: wire.Kind, PublicHost: wire.PublicHost, MatchType: matchType,
 			MatchHostname: wire.MatchHostname, WildcardSuffix: wire.WildcardSuffix, PathPrefix: wire.PathPrefix,
 			Priority: wire.Priority, Protocol: wire.Protocol, OriginScheme: wire.OriginScheme, AccessMode: wire.AccessMode, OriginAddress: originAddress,
 			PreserveHost: wire.PreserveHost, HostOverride: wire.HostOverride, DomainBindings: append([]DomainBinding(nil), wire.DomainBindings...), State: wire.State,

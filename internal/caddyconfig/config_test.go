@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -45,6 +46,13 @@ func TestGenerateCaddyPolicy(t *testing.T) {
 	}
 	if len(policies) != 1 || policies[0].(map[string]any)["subjects"].([]any)[0] != "signal.example.test" {
 		t.Fatalf("TLS signaling policy = %v", policies)
+	}
+	wildcardRoutes := apps["http"].(map[string]any)["servers"].(map[string]any)["paperboat_public"].(map[string]any)["routes"].([]any)
+	wildcardRoute := wildcardRoutes[4].(map[string]any)
+	wildcardMatch := wildcardRoute["match"].([]any)[0].(map[string]any)
+	wantWildcardHosts := []any{"*.preview.example.test", "*.tunnels.example.test", "*.runtime.example.test"}
+	if got := wildcardMatch["host"].([]any); !reflect.DeepEqual(got, wantWildcardHosts) {
+		t.Fatalf("HTTPS wildcard host matcher = %v, want %v", got, wantWildcardHosts)
 	}
 	logging := document["logging"].(map[string]any)["logs"].(map[string]any)["default"].(map[string]any)
 	if logging["level"] != "PANIC" {
@@ -164,6 +172,17 @@ func TestGenerateUsesBrokerAsSoleManagedCertificateSource(t *testing.T) {
 	if len(policies) != 4 {
 		t.Fatalf("broker policies = %v", policies)
 	}
+	wantWildcardSubjects := []any{"*.preview.example.test", "*.tunnels.example.test", "*.runtime.example.test"}
+	wildcardPolicy := policies[0].(map[string]any)
+	if got := wildcardPolicy["subjects"].([]any); !reflect.DeepEqual(got, wantWildcardSubjects) {
+		t.Fatalf("broker wildcard TLS subjects = %v, want %v", got, wantWildcardSubjects)
+	}
+	if _, exists := wildcardPolicy["issuers"]; exists {
+		t.Fatalf("managed wildcard policy retained issuer fallback: %v", wildcardPolicy)
+	}
+	if _, exists := wildcardPolicy["on_demand"]; exists {
+		t.Fatalf("managed wildcard policy retained on-demand fallback: %v", wildcardPolicy)
+	}
 	for _, raw := range policies {
 		policy := raw.(map[string]any)
 		subjects, hasSubjects := policy["subjects"].([]any)
@@ -190,7 +209,7 @@ func TestGenerateUsesBrokerAsSoleManagedCertificateSource(t *testing.T) {
 			}
 			continue
 		}
-		managed := len(subjects) > 0 && (subjects[0] == "*.preview.example.test" || subjects[0] == "*.tunnels.example.test")
+		managed := len(subjects) > 0 && (subjects[0] == "*.preview.example.test" || subjects[0] == "*.tunnels.example.test" || subjects[0] == "*.runtime.example.test")
 		if !managed {
 			continue
 		}

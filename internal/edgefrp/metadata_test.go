@@ -2,8 +2,11 @@ package edgefrp
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/route"
 )
 
 func TestMetadataResolverDecodesExactHandoff(t *testing.T) {
@@ -20,5 +23,48 @@ func TestMetadataResolverRejectsUnknownOversizedAndAdditionalMetadata(t *testing
 		if _, err := resolver.ResolveLogin(context.Background(), LoginContent{Metas: metas}); err == nil {
 			t.Fatalf("metadata accepted: %v", metas)
 		}
+	}
+}
+
+func TestMetadataResolverDiagnosticsAreTypedAndSecretFree(t *testing.T) {
+	secret := "credential-secret-that-must-not-appear"
+	tests := []struct {
+		name   string
+		metas  map[string]string
+		reason MetadataRejectReason
+		count  int
+		bytes  int
+	}{
+		{name: "missing", metas: map[string]string{}, reason: MetadataRejectCount, count: 0},
+		{name: "additional metadata", metas: map[string]string{AdmissionMetadataKey: `{}`, "other": secret}, reason: MetadataRejectCount, count: 2, bytes: 0},
+		{name: "missing admission key", metas: map[string]string{"other": secret}, reason: MetadataRejectMissing, count: 1, bytes: 0},
+		{name: "empty admission", metas: map[string]string{AdmissionMetadataKey: ""}, reason: MetadataRejectSize, count: 1, bytes: 0},
+		{name: "oversized admission", metas: map[string]string{AdmissionMetadataKey: strings.Repeat("x", maxAdmissionMetadata+1)}, reason: MetadataRejectSize, count: 1, bytes: maxAdmissionMetadata + 1},
+		{name: "malformed admission", metas: map[string]string{AdmissionMetadataKey: "{" + secret}, reason: MetadataRejectDecode, count: 1, bytes: len("{" + secret)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := (MetadataResolver{}).ResolveLogin(context.Background(), LoginContent{Metas: test.metas})
+			if err == nil {
+				t.Fatal("metadata was accepted")
+			}
+			if !errors.Is(err, route.ErrInvalid) {
+				t.Fatalf("error=%v does not retain route classification", err)
+			}
+			var metadataErr *MetadataError
+			if !errors.As(err, &metadataErr) {
+				t.Fatalf("error=%T does not retain metadata diagnostics", err)
+			}
+			if metadataErr.Diagnostic.Reason != test.reason || metadataErr.Diagnostic.MetadataCount != test.count || metadataErr.Diagnostic.AdmissionBytes != test.bytes {
+				t.Fatalf("diagnostic=%+v", metadataErr.Diagnostic)
+			}
+			if !metadataErr.Diagnostic.AdmissionPresent && test.name == "malformed admission" {
+				t.Fatal("diagnostic lost admission presence")
+			}
+			safe := metadataErr.SafeReason()
+			if strings.Contains(safe, secret) || strings.Contains(safe, "other") {
+				t.Fatalf("safe reason leaked metadata: %q", safe)
+			}
+		})
 	}
 }

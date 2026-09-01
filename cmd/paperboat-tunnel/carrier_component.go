@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/config"
@@ -84,13 +85,24 @@ func newCarrierComponentWithTelemetry(
 	}
 	handle := func(ctx context.Context, server *datacarrier.Server) error {
 		identity := server.Identity()
-		durableAttached := durableExpected != nil && durableExpected.HasIdentity(identity, time.Now().UTC())
-		if durableAttached {
-			publicKey, thumbprint, ok := durableExpected.MachineBinding(identity, time.Now().UTC())
+		slog.Info("carrier session accepted", "account_id", identity.AccountID, "host_id", identity.HostID, "tunnel_id", identity.TunnelID, "connector_id", identity.ConnectorID, "session_id", identity.SessionID, "process_generation", identity.ProcessGeneration, "config_generation", identity.Generation)
+		durableRegistered := false
+		syncDurable := func(now time.Time) error {
+			if durableExpected == nil || !durableExpected.HasIdentity(identity, now) {
+				if durableExpected != nil {
+					slog.Warn("carrier has no matching durable admission", "tunnel_id", identity.TunnelID, "connector_id", identity.ConnectorID, "session_id", identity.SessionID, "process_generation", identity.ProcessGeneration, "config_generation", identity.Generation, "durable_admissions", len(durableExpected.Snapshot()))
+				}
+				if durableRegistered {
+					_ = durableRoutes.Detach(server)
+					durableRegistered = false
+				}
+				return nil
+			}
+			publicKey, thumbprint, ok := durableExpected.MachineBinding(identity, now)
 			if !ok {
 				return datacarrier.ErrDurableAdmissionMissing
 			}
-			admissions := durableExpected.ForIdentity(identity, time.Now().UTC())
+			admissions := durableExpected.ForIdentity(identity, now)
 			routeIDs := make([]string, 0, len(admissions))
 			routeBindings := make([]edgehttp.ReplicaRouteBinding, 0, len(admissions))
 			for _, admission := range admissions {
@@ -102,20 +114,55 @@ func newCarrierComponentWithTelemetry(
 			if len(routeIDs) == 0 {
 				return datacarrier.ErrDurableAdmissionMissing
 			}
-			if err := durableRoutes.AttachReplica(server, publicKey, thumbprint, edgehttp.ReplicaState{Ready: true, Generation: identity.Generation, RouteIDs: routeIDs, HealthyRoutes: routeIDs, RouteBindings: routeBindings, FailureDomain: identity.HostID, Latency: time.Nanosecond, Capacity: deployment.NodeCapacity}); err != nil {
+			state := edgehttp.ReplicaState{Ready: true, Generation: identity.Generation, RouteIDs: routeIDs, HealthyRoutes: routeIDs, RouteBindings: routeBindings, FailureDomain: identity.HostID, Latency: time.Nanosecond, Capacity: deployment.NodeCapacity}
+			if durableRegistered {
+				if err := durableRoutes.UpdateReplicaState(server, state); err != nil {
+					return fmt.Errorf("refresh durable carrier: %w", err)
+				}
+				return nil
+			}
+			if err := durableRoutes.AttachReplica(server, publicKey, thumbprint, state); err != nil {
 				return fmt.Errorf("attach durable carrier: %w", err)
 			}
-			defer func() { _ = durableRoutes.Detach(server) }()
+			slog.Info("carrier promoted to durable routes", "tunnel_id", identity.TunnelID, "connector_id", identity.ConnectorID, "session_id", identity.SessionID, "routes", len(routeIDs))
+			durableRegistered = true
+			return nil
+		}
+		durableAuthorized := durableExpected != nil && durableExpected.HasIdentity(identity, time.Now().UTC())
+		if err := syncDurable(time.Now().UTC()); err != nil {
+			return err
 		}
 		previewAttached := len(previewExpected.ForIdentity(identity, time.Now().UTC())) != 0
 		accessorAttached := accessorExpected != nil && accessorExpected.HasIdentity(identity, time.Now().UTC())
-		if !previewAttached && !durableAttached && !accessorAttached {
+		if !previewAttached && !durableAuthorized && !accessorAttached {
 			return datacarrier.ErrDurableAdmissionMissing
+		}
+		if durableRoutes != nil {
+			defer func() { _ = durableRoutes.Detach(server) }()
 		}
 		handlerCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		results := make(chan error, 2)
+		results := make(chan error, 3)
 		workers := 0
+		if durableExpected != nil {
+			workers++
+			go func() {
+				ticker := time.NewTicker(deployment.ControlInterval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-handlerCtx.Done():
+						results <- handlerCtx.Err()
+						return
+					case now := <-ticker.C:
+						if err := syncDurable(now.UTC()); err != nil {
+							results <- err
+							return
+						}
+					}
+				}
+			}()
+		}
 		if privateAccess != nil {
 			workers++
 			go func() { results <- privateAccess.Serve(handlerCtx, server) }()

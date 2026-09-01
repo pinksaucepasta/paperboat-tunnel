@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,8 +36,8 @@ func TestExpectedAdmissionRegistryPeerBindingUsesCarrierURNSessionFence(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry.byKey["old"] = ExpectedAdmission{Identity: oldIdentity, EdgeProcessEpoch: "_epoch12", MachineIdentityPublicKey: encoded, MachineIdentityThumbprint: thumbprint, ExpiresAt: time.Now().Add(time.Minute), Admitted: true}
-	registry.byKey["new"] = ExpectedAdmission{Identity: newIdentity, EdgeProcessEpoch: "_epoch12", MachineIdentityPublicKey: encoded, MachineIdentityThumbprint: thumbprint, ExpiresAt: time.Now().Add(time.Minute), Admitted: true}
+	registry.byKey["old"] = ExpectedAdmission{Identity: oldIdentity, EdgeProcessEpoch: "_epoch12", EdgeCarrierServerSPKISHA256: "sha256:" + strings.Repeat("a", 64), EdgeCarrierServerCertificateChainPEM: "test-public-certificate-chain", MachineIdentityPublicKey: encoded, MachineIdentityThumbprint: thumbprint, ExpiresAt: time.Now().Add(time.Minute), Admitted: true}
+	registry.byKey["new"] = ExpectedAdmission{Identity: newIdentity, EdgeProcessEpoch: "_epoch12", EdgeCarrierServerSPKISHA256: "sha256:" + strings.Repeat("a", 64), EdgeCarrierServerCertificateChainPEM: "test-public-certificate-chain", MachineIdentityPublicKey: encoded, MachineIdentityThumbprint: thumbprint, ExpiresAt: time.Now().Add(time.Minute), Admitted: true}
 
 	for name, identity := range map[string]Identity{"old": oldIdentity, "new": newIdentity} {
 		uri, err := connectorprotocol.CarrierIdentityURN(connectorprotocol.CarrierIdentityBinding{
@@ -155,7 +156,9 @@ func testExpectedAdmissionForRegistry(expiresAt time.Time) ExpectedAdmission {
 		RouteID:           "route_1", EdgeProcessEpoch: "_epoch12", AccessMode: PreviewCarrierAccessPublic,
 		RouteKind: PreviewCarrierRoute, Hostname: "preview-1.preview.example.test", RouteRevision: 1,
 		AttachmentGeneration: 1, Endpoint: "https://preview-1.preview.example.test", ExpiresAt: expiresAt,
-		MachineIdentityPublicKey:  base64.RawURLEncoding.EncodeToString(public),
-		MachineIdentityThumbprint: "sha256:" + base64.RawURLEncoding.EncodeToString(digest[:]), Admitted: true,
+		EdgeCarrierServerSPKISHA256:          "sha256:" + strings.Repeat("a", 64),
+		EdgeCarrierServerCertificateChainPEM: "test-public-certificate-chain",
+		MachineIdentityPublicKey:             base64.RawURLEncoding.EncodeToString(public),
+		MachineIdentityThumbprint:            "sha256:" + base64.RawURLEncoding.EncodeToString(digest[:]), Admitted: true,
 	}
 }

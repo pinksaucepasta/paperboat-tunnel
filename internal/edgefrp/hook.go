@@ -92,7 +92,8 @@ func safeReason(err error) string {
 	if errors.Is(err, context.Canceled) {
 		return "request canceled"
 	}
-	if safe, ok := err.(interface{ SafeReason() string }); ok {
+	var safe interface{ SafeReason() string }
+	if errors.As(err, &safe) {
 		return safe.SafeReason()
 	}
 	if code, ok := edgeerrors.CodeOf(err); ok {

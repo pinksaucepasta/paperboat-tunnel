@@ -48,6 +48,9 @@ func TestRouteWorkerSeparatesCanonicalHTTPAndPrivateTCPFromLegacyRoutes(t *testi
 	if _, err := legacy.Attach(route.Attachment{ID: "legacy_route", Revision: 1, Environment: "env", Node: "edge_1", Generation: 1, Kind: route.HelperHTTPSWSS, Host: "helper.example.test", Target: "127.0.0.1:8080"}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := legacy.Attach(route.Attachment{ID: "legacy_stale", Revision: 1, Environment: "env", Node: "edge_1", Generation: 1, Kind: route.HelperHTTPSWSS, Host: "stale.example.test", Target: "127.0.0.1:8081"}); err != nil {
+		t.Fatal(err)
+	}
 	canonical := route.NewRegistry("", "")
 	durable, err := datacarrier.NewDurableAdmissionRegistry(datacarrier.DurableAdmissionRegistryConfig{NodeID: "edge_1", ProcessEpoch: "edge_epoch_1"})
 	if err != nil {
@@ -61,7 +64,7 @@ func TestRouteWorkerSeparatesCanonicalHTTPAndPrivateTCPFromLegacyRoutes(t *testi
 		private,
 		{RouteID: "legacy_route", Revision: 1, Environment: "env", Generation: 1, NodeID: "edge_1", Kind: string(route.HelperHTTPSWSS), PublicHost: "helper.example.test", TargetHost: "127.0.0.1", TargetPort: 8080},
 	}, Complete: true, Canonical: true}}
-	observer := &routeObserver{}
+	observer := &appendRouteObserver{}
 	worker := &RouteWorker{
 		Registry: canonical, LegacyRegistry: legacy, Source: source, Observer: observer, State: state,
 		NodeID: "edge_1", ProcessEpoch: "edge_epoch_1", Carrier: carrier, DurableAdmissions: durable,
@@ -86,6 +89,9 @@ func TestRouteWorkerSeparatesCanonicalHTTPAndPrivateTCPFromLegacyRoutes(t *testi
 	if _, err := legacy.Match("helper.example.test", "/healthz"); err != nil {
 		t.Fatalf("legacy route was erased by canonical snapshot: %v", err)
 	}
+	if _, err := legacy.Match("stale.example.test", "/healthz"); !errors.Is(err, route.ErrNoMatch) {
+		t.Fatalf("stale legacy route survived replacement: %v", err)
+	}
 	admissions := durable.Snapshot()
 	if len(admissions) != 2 {
 		t.Fatalf("durable admissions = %d, want 2", len(admissions))
@@ -93,8 +99,19 @@ func TestRouteWorkerSeparatesCanonicalHTTPAndPrivateTCPFromLegacyRoutes(t *testi
 	if carrier.privateProbes != 1 || len(carrier.privateRules) != 1 || carrier.privateRules[0].Kind != route.TunnelPrivateTCP {
 		t.Fatalf("private carrier probes = %d rules=%+v", carrier.privateProbes, carrier.privateRules)
 	}
-	if len(observer.observations) != 2 {
-		t.Fatalf("observations = %+v, want HTTP and private", observer.observations)
+	if len(observer.observations) != 3 {
+		t.Fatalf("observations = %+v, want HTTP, private, and legacy", observer.observations)
+	}
+	var legacyObservation *control.RouteObservation
+	for index := range observer.observations {
+		observation := &observer.observations[index]
+		if observation.RouteID == "legacy_route" {
+			legacyObservation = observation
+			break
+		}
+	}
+	if legacyObservation == nil || legacyObservation.EdgeNodeID != "edge_1" || legacyObservation.ConnectorGeneration != 1 || legacyObservation.AssignmentID != "" {
+		t.Fatalf("legacy observation = %+v", legacyObservation)
 	}
 }
 

@@ -56,10 +56,9 @@ func Generate(input Input) ([]byte, error) {
 	if err := validate(input); err != nil {
 		return nil, err
 	}
-	// The platform certificate worker owns exactly these two wildcard
-	// families. Runtime control hosts are legacy infrastructure and are not a
-	// managed durable-tunnel endpoint namespace.
-	wildcardHosts := []string{"*." + input.PreviewBaseDomain, "*." + input.TunnelBaseDomain}
+	// The platform certificate worker owns the preview, durable tunnel, and
+	// host-runtime wildcard families.
+	wildcardHosts := []string{"*." + input.PreviewBaseDomain, "*." + input.TunnelBaseDomain, "*." + input.RuntimeBaseDomain}
 	publicRoutes := make([]any, 0, len(input.PublicRoutes)+1)
 	staticHosts := make([]string, 0, len(input.PublicRoutes))
 	seenStaticHosts := make(map[string]struct{}, len(input.PublicRoutes))

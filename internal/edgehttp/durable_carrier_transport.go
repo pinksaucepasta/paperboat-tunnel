@@ -403,8 +403,17 @@ func (r *DataCarrierRouteRegistry) entryForExactAssignment(rule route.RouteRule)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	entry := r.byKey[carrierRouteIdentityKey(identity)]
-	if entry == nil || entry.identity != identity || entry.server == nil || !entry.state.Ready || entry.state.Generation != rule.ConfigGeneration || uint32(entry.server.ActiveStreams()) >= entry.state.Capacity {
-		return nil, ErrDataCarrierRouteUnavailable
+	if entry == nil {
+		candidates := 0
+		for _, candidate := range r.byKey {
+			if candidate != nil && candidate.identity.AccountID == rule.AccountID && candidate.identity.TunnelID == rule.TunnelID {
+				candidates++
+			}
+		}
+		return nil, fmt.Errorf("%w: exact carrier missing for connector=%s session=%s process=%d config=%d candidates=%d", ErrDataCarrierRouteUnavailable, rule.ConnectorID, rule.ConnectorSessionID, rule.ConnectorProcessGeneration, rule.ConfigGeneration, candidates)
+	}
+	if entry.identity != identity || entry.server == nil || !entry.state.Ready || entry.state.Generation != rule.ConfigGeneration || uint32(entry.server.ActiveStreams()) >= entry.state.Capacity {
+		return nil, fmt.Errorf("%w: exact carrier is not ready for connector=%s session=%s process=%d config=%d", ErrDataCarrierRouteUnavailable, rule.ConnectorID, rule.ConnectorSessionID, rule.ConnectorProcessGeneration, rule.ConfigGeneration)
 	}
 	select {
 	case <-entry.server.Done():
@@ -413,7 +422,7 @@ func (r *DataCarrierRouteRegistry) entryForExactAssignment(rule route.RouteRule)
 	}
 	binding, ok := replicaRouteBinding(entry.state.RouteBindings, carrierRouteID(rule))
 	if !ok || !sortedContains(entry.state.HealthyRoutes, carrierRouteID(rule)) || binding.AssignmentID != rule.AssignmentID || binding.AssignmentGeneration != rule.AssignmentGeneration || binding.RouteGeneration != rule.RouteGeneration || binding.ConfigContentHash != rule.ConfigContentHash {
-		return nil, ErrDataCarrierRouteUnavailable
+		return nil, fmt.Errorf("%w: exact route binding mismatch route=%s assignment=%s generation=%d", ErrDataCarrierRouteUnavailable, carrierRouteID(rule), rule.AssignmentID, rule.AssignmentGeneration)
 	}
 	return entry, nil
 }

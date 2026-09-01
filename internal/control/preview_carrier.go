@@ -280,6 +280,7 @@ func (a PreviewCarrierAdmission) Expected(nodeID string, now time.Time) (datacar
 		Identity:        datacarrier.Identity{AccountID: normalized.Binding.AccountID, HostID: normalized.Binding.HostID, TunnelID: normalized.Binding.TunnelID, ConnectorID: normalized.Binding.ConnectorID, SessionID: normalized.Binding.SessionID, ProcessGeneration: normalized.Binding.ProcessGeneration, Generation: normalized.Binding.ConfigGeneration},
 		LeaseGeneration: normalized.Binding.LeaseGeneration, ConfigGeneration: normalized.Binding.ConfigGeneration,
 		ConfigContentHash: normalized.ConfigContentHash, RouteID: normalized.Binding.RouteID, EdgeProcessEpoch: normalized.Binding.EdgeProcessEpoch,
+		EdgeCarrierServerSPKISHA256: normalized.Binding.EdgeCarrierServerSPKISHA256, EdgeCarrierServerCertificateChainPEM: normalized.Binding.EdgeCarrierServerCertificateChainPEM,
 		AccessMode: normalized.AccessMode, RouteKind: normalized.RouteKind, Hostname: normalized.Hostname, RouteRevision: normalized.RouteRevision,
 		AttachmentGeneration: normalized.AttachmentGeneration, Endpoint: normalized.Endpoint, ExpiresAt: normalized.ExpiresAt,
 		MachineIdentityPublicKey: normalized.Binding.MachineIdentityPublicKey, MachineIdentityThumbprint: normalized.Binding.MachineIdentityThumbprint,

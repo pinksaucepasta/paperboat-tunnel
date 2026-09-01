@@ -73,9 +73,32 @@ type claims struct {
 	EdgeNodeID             string              `json:"edge_node_id"`
 	RouteBinding           string              `json:"route_binding"`
 	FileTransferPolicy     *fileTransferPolicy `json:"file_transfer_policy"`
+	AccountID              string              `json:"account_id,omitempty"`
 	UserID                 string              `json:"user_id"`
+	ActorID                string              `json:"actor_id,omitempty"`
 	CLIClientSessionID     string              `json:"cli_client_session_id"`
 	SessionID              string              `json:"session_id"`
+	OperationID            string              `json:"operation_id,omitempty"`
+	PreviewID              string              `json:"preview_id,omitempty"`
+	OwnerSessionID         string              `json:"owner_session_id,omitempty"`
+	IdempotencyKey         string              `json:"idempotency_key,omitempty"`
+	RequestID              string              `json:"request_id,omitempty"`
+	CorrelationID          string              `json:"correlation_id,omitempty"`
+	TargetScheme           string              `json:"target_scheme,omitempty"`
+	TargetAddress          string              `json:"target_address,omitempty"`
+	AccessMode             string              `json:"access_mode,omitempty"`
+	PreviewEndpoint        string              `json:"endpoint,omitempty"`
+	LeaseDeadline          int64               `json:"lease_deadline,omitempty"`
+	UserDeadline           *int64              `json:"user_deadline,omitempty"`
+	LeaseETag              string              `json:"lease_etag,omitempty"`
+	State                  string              `json:"state,omitempty"`
+	AllocationState        string              `json:"allocation_state,omitempty"`
+	EdgeState              string              `json:"edge_state,omitempty"`
+	OriginState            string              `json:"origin_state,omitempty"`
+	CreatedAt              int64               `json:"created_at,omitempty"`
+	LastRenewedAt          int64               `json:"last_renewed_at,omitempty"`
+	ExpectedGeneration     int64               `json:"expected_generation,omitempty"`
+	RequestHash            string              `json:"request_hash,omitempty"`
 	IntentID               string              `json:"intent_id"`
 	EndpointID             string              `json:"endpoint_id"`
 	PeerEndpointID         string              `json:"peer_endpoint_id"`
@@ -224,7 +247,12 @@ func (v *Verifier) VerifyHelperAccess(ctx context.Context, token string) (admiss
 		return admission.Claims{}, invalid()
 	}
 	codexCredential := parsed.CredentialClass == "codex_connect" || parsed.CredentialClass == "codex_manage"
-	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-machine" || parsed.Subject == "" || parsed.JTI == "" || !exactScopes(parsed.Scope, wantScopes) || parsed.EnvironmentID == "" || parsed.MachineID == "" || parsed.CredentialClass == "file_transfer" && parsed.SourceMachineID == "" || parsed.CredentialClass == "terminal_operation" && parsed.SessionID == "" || codexCredential && (parsed.SessionID == "" || parsed.InstallationGeneration < 1 || parsed.ConnectorID == "" || parsed.ConnectorGeneration < 1 || parsed.EdgePool == "" || parsed.EdgeNodeID == "") || parsed.UserID == "" || parsed.CLIClientSessionID == "" || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 || time.Unix(parsed.IssuedAt, 0).After(now.Add(v.ClockSkew)) || !time.Unix(parsed.Expires, 0).After(now) {
+	// preview_launch is a control-plane-to-host credential. It may originate
+	// from a browser or a CLI request, so it binds the authenticated user and
+	// operation but deliberately has no CLI client-session claim. Interactive
+	// terminal, transfer, and Codex credentials remain client-session bound.
+	requiresClientSession := parsed.CredentialClass != "preview_launch"
+	if parsed.Issuer != v.Issuer || parsed.Audience != "paperboat-machine" || parsed.Subject == "" || parsed.JTI == "" || !exactScopes(parsed.Scope, wantScopes) || parsed.EnvironmentID == "" || parsed.MachineID == "" || parsed.CredentialClass == "file_transfer" && parsed.SourceMachineID == "" || parsed.CredentialClass == "terminal_operation" && parsed.SessionID == "" || codexCredential && (parsed.SessionID == "" || parsed.InstallationGeneration < 1 || parsed.ConnectorID == "" || parsed.ConnectorGeneration < 1 || parsed.EdgePool == "" || parsed.EdgeNodeID == "") || parsed.UserID == "" || requiresClientSession && parsed.CLIClientSessionID == "" || parsed.Expires <= parsed.IssuedAt || parsed.Expires-parsed.IssuedAt > 300 || time.Unix(parsed.IssuedAt, 0).After(now.Add(v.ClockSkew)) || !time.Unix(parsed.Expires, 0).After(now) {
 		return admission.Claims{}, invalid()
 	}
 	result := admission.Claims{KeyID: parsedHeader.KeyID, Issuer: parsed.Issuer, Audience: parsed.Audience, JTI: parsed.JTI, CredentialClass: parsed.CredentialClass, Scopes: append([]string(nil), parsed.Scope...), EnvironmentID: parsed.EnvironmentID, MachineID: parsed.MachineID, HelperID: parsed.HelperID, ConnectorGeneration: parsed.ConnectorGeneration, ExpiresAt: time.Unix(parsed.Expires, 0).UTC()}

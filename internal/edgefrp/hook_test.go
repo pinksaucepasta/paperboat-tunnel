@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -100,6 +101,29 @@ func TestHookReportsBoundedTypedErrorCode(t *testing.T) {
 	}
 	if bytes.Contains(recorder.Body.Bytes(), []byte("secret-token")) || bytes.Contains(recorder.Body.Bytes(), []byte("private cause")) {
 		t.Fatalf("response leaks error: %s", recorder.Body.String())
+	}
+}
+
+func TestHookReportsWrappedTypedSafeReasonWithoutErrorContent(t *testing.T) {
+	const secret = "credential-secret-never-logged"
+	hook := Hook{Path: "/hook", Handle: func(_ context.Context, _ string, _ json.RawMessage) (json.RawMessage, error) {
+		return nil, fmt.Errorf("internal context: %w", &MetadataError{Diagnostic: MetadataDiagnostic{
+			Reason: MetadataRejectDecode, MetadataCount: 1, AdmissionPresent: true, AdmissionBytes: 42,
+		}})
+	}}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/hook", bytes.NewBufferString(`{"version":"0.1.0","op":"Login","content":{}}`))
+	request.Header.Set("Content-Type", "application/json")
+	hook.ServeHTTP(recorder, request)
+	var response wireResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.RejectReason != "request rejected:metadata_decode count=1 present=true bytes=42" {
+		t.Fatalf("reject reason = %q", response.RejectReason)
+	}
+	if bytes.Contains(recorder.Body.Bytes(), []byte(secret)) || bytes.Contains(recorder.Body.Bytes(), []byte("internal context")) {
+		t.Fatalf("response leaks error content: %s", recorder.Body.String())
 	}
 }
 

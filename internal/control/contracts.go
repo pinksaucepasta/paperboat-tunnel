@@ -128,7 +128,6 @@ type RouteObservation struct {
 	AssignmentGeneration       uint64 `json:"assignment_generation,omitempty"`
 	EdgeNodeID                 string `json:"edge_node_id"`
 	EdgeProcessEpoch           string `json:"edge_process_epoch,omitempty"`
-	EdgeFailureDomain          string `json:"edge_failure_domain,omitempty"`
 	ConnectorID                string `json:"connector_id,omitempty"`
 	HostID                     string `json:"host_id,omitempty"`
 	ConnectorGeneration        uint64 `json:"connector_generation"`

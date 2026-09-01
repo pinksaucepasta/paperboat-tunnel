@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -41,28 +42,30 @@ var (
 // type before publishing it. This keeps TLS peer binding and stream
 // authorization dependent on one validated representation.
 type ExpectedAdmission struct {
-	Schema                    string
-	Kind                      string
-	EdgeNodeID                string
-	PreviewID                 string
-	OperationID               string
-	OwnerDeviceID             string
-	OwnerSessionID            string
-	Identity                  Identity
-	LeaseGeneration           uint64
-	ConfigGeneration          uint64
-	ConfigContentHash         string
-	RouteID                   string
-	EdgeProcessEpoch          string
-	AccessMode                string
-	RouteKind                 string
-	Hostname                  string
-	RouteRevision             uint64
-	AttachmentGeneration      uint64
-	Endpoint                  string
-	ExpiresAt                 time.Time
-	MachineIdentityPublicKey  string
-	MachineIdentityThumbprint string
+	Schema                               string
+	Kind                                 string
+	EdgeNodeID                           string
+	PreviewID                            string
+	OperationID                          string
+	OwnerDeviceID                        string
+	OwnerSessionID                       string
+	Identity                             Identity
+	LeaseGeneration                      uint64
+	ConfigGeneration                     uint64
+	ConfigContentHash                    string
+	RouteID                              string
+	EdgeProcessEpoch                     string
+	EdgeCarrierServerSPKISHA256          string
+	EdgeCarrierServerCertificateChainPEM string
+	AccessMode                           string
+	RouteKind                            string
+	Hostname                             string
+	RouteRevision                        uint64
+	AttachmentGeneration                 uint64
+	Endpoint                             string
+	ExpiresAt                            time.Time
+	MachineIdentityPublicKey             string
+	MachineIdentityThumbprint            string
 	// Admitted is an internal edge state. A validated pull is installed as
 	// pending first; only a successful durable server ACK flips it true. TLS
 	// peer binding and stream authorization reject pending entries.
@@ -110,6 +113,15 @@ func (a ExpectedAdmission) Validate(now time.Time, nodeID string) error {
 	if !validAdmissionContentHash(a.ConfigContentHash) {
 		return fmt.Errorf("%w: config content hash is invalid", ErrAdmissionNotExpected)
 	}
+	if len(a.EdgeCarrierServerSPKISHA256) != len("sha256:")+sha256.Size*2 || !strings.HasPrefix(a.EdgeCarrierServerSPKISHA256, "sha256:") {
+		return fmt.Errorf("%w: edge carrier SPKI pin is invalid", ErrAdmissionNotExpected)
+	}
+	if decoded, err := hex.DecodeString(strings.TrimPrefix(a.EdgeCarrierServerSPKISHA256, "sha256:")); err != nil || len(decoded) != sha256.Size {
+		return fmt.Errorf("%w: edge carrier SPKI pin is invalid", ErrAdmissionNotExpected)
+	}
+	if len(a.EdgeCarrierServerCertificateChainPEM) == 0 || len(a.EdgeCarrierServerCertificateChainPEM) > 64<<10 {
+		return fmt.Errorf("%w: edge carrier certificate chain is invalid", ErrAdmissionNotExpected)
+	}
 	if a.ExpiresAt.IsZero() || !a.ExpiresAt.After(now) {
 		return ErrAdmissionExpired
 	}
@@ -136,6 +148,8 @@ func (a ExpectedAdmission) exactEqual(other ExpectedAdmission) bool {
 		a.Kind == other.Kind &&
 		a.EdgeNodeID == other.EdgeNodeID &&
 		a.EdgeProcessEpoch == other.EdgeProcessEpoch &&
+		a.EdgeCarrierServerSPKISHA256 == other.EdgeCarrierServerSPKISHA256 &&
+		a.EdgeCarrierServerCertificateChainPEM == other.EdgeCarrierServerCertificateChainPEM &&
 		a.PreviewID == other.PreviewID &&
 		a.OperationID == other.OperationID &&
 		a.OwnerDeviceID == other.OwnerDeviceID &&

@@ -379,6 +379,52 @@ func TestVerifierAcceptsBoundCodexCredentials(t *testing.T) {
 	}
 }
 
+func TestVerifierAcceptsPreviewLaunchWithoutCLIClientSession(t *testing.T) {
+	public, private, _ := ed25519.GenerateKey(rand.Reader)
+	verifier := &Verifier{Issuer: "https://api.paperboat.test", Keys: StaticKeys{"key-1": public}, Now: func() time.Time { return time.Unix(1000, 0) }}
+	token := tokenFor(t, private, "key-1", func(claims map[string]any) {
+		claims["aud"] = "paperboat-machine"
+		claims["sub"] = "usr_1"
+		claims["credential_class"] = "preview_launch"
+		claims["scope"] = []string{"preview:launch"}
+		claims["account_id"] = "usr_1"
+		claims["machine_id"] = "machine_1"
+		claims["user_id"] = "usr_1"
+		claims["actor_id"] = "usr_1"
+		claims["preview_id"] = "prv_1"
+		claims["owner_session_id"] = "owner_local_1"
+		claims["operation_id"] = "op_1"
+		claims["target_scheme"] = "http"
+		claims["target_address"] = "127.0.0.1:43871"
+		claims["access_mode"] = "public"
+		claims["endpoint"] = "https://preview-1.preview.pprbt.dev"
+		claims["lease_deadline"] = int64(1100)
+		claims["lease_etag"] = `"ptv1:preview_lease:cHJ2XzE:1"`
+		claims["state"] = "connecting"
+		claims["allocation_state"] = "pending"
+		claims["edge_state"] = "pending"
+		claims["origin_state"] = "unknown"
+		claims["created_at"] = int64(1000)
+		claims["last_renewed_at"] = int64(1000)
+		claims["expected_generation"] = int64(1)
+		claims["request_hash"] = "sha256:test"
+		claims["idempotency_key"] = "idem_1"
+		claims["request_id"] = "req_1"
+		claims["correlation_id"] = "cor_1"
+		delete(claims, "cli_client_session_id")
+		delete(claims, "session_id")
+		delete(claims, "connector_id")
+		delete(claims, "connector_generation")
+		delete(claims, "edge_pool")
+		delete(claims, "edge_node_id")
+		delete(claims, "file_transfer_policy")
+	})
+	claims, err := verifier.VerifyHelperAccess(context.Background(), token)
+	if err != nil || claims.CredentialClass != "preview_launch" || claims.MachineID != "machine_1" {
+		t.Fatalf("preview claims=%+v err=%v", claims, err)
+	}
+}
+
 func TestVerifierRejectsMalformedWrongKeySignatureAndClaims(t *testing.T) {
 	public, private, _ := ed25519.GenerateKey(rand.Reader)
 	_, otherPrivate, _ := ed25519.GenerateKey(rand.Reader)

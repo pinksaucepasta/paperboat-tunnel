@@ -19,12 +19,13 @@ import (
 )
 
 var (
-	ErrDataCarrierPreviewRegistryInvalid     = errors.New("invalid data-carrier preview registry entry")
-	ErrDataCarrierPreviewRegistryClosed      = errors.New("data-carrier preview registry is closed")
-	ErrDataCarrierPreviewRegistryConflict    = errors.New("data-carrier preview route conflicts with an existing route")
-	ErrDataCarrierPreviewRegistryStale       = errors.New("stale data-carrier preview route registration")
-	ErrDataCarrierPreviewRegistryUnavailable = errors.New("data-carrier preview carrier unavailable")
-	ErrDataCarrierPreviewTransport           = errors.New("data-carrier preview transport failed")
+	ErrDataCarrierPreviewRegistryInvalid       = errors.New("invalid data-carrier preview registry entry")
+	ErrDataCarrierPreviewRegistryClosed        = errors.New("data-carrier preview registry is closed")
+	ErrDataCarrierPreviewRegistryConflict      = errors.New("data-carrier preview route conflicts with an existing route")
+	ErrDataCarrierPreviewRegistryStale         = errors.New("stale data-carrier preview route registration")
+	ErrDataCarrierPreviewRegistryUnavailable   = errors.New("data-carrier preview carrier unavailable")
+	ErrDataCarrierPreviewTransport             = errors.New("data-carrier preview transport failed")
+	ErrDataCarrierPreviewResponseHeaderTimeout = errors.New("data-carrier preview response headers timed out")
 )
 
 const (
@@ -39,26 +40,28 @@ const (
 // one authenticated edge carrier. Identity is copied from Server when the
 // route is attached and is never accepted as a mutable authorization token.
 type DataCarrierPreviewRoute struct {
-	RouteID                   string
-	Hostname                  string
-	Kind                      string
-	Revision                  uint64
-	Identity                  datacarrier.Identity
-	Server                    *datacarrier.Server
-	PreviewID                 string
-	OperationID               string
-	OwnerDeviceID             string
-	OwnerSessionID            string
-	AccessMode                string
-	EdgeNodeID                string
-	EdgeProcessEpoch          string
-	LeaseGeneration           uint64
-	AttachmentGeneration      uint64
-	ConfigContentHash         string
-	Endpoint                  string
-	ExpiresAt                 time.Time
-	MachineIdentityPublicKey  string
-	MachineIdentityThumbprint string
+	RouteID                              string
+	Hostname                             string
+	Kind                                 string
+	Revision                             uint64
+	Identity                             datacarrier.Identity
+	Server                               *datacarrier.Server
+	PreviewID                            string
+	OperationID                          string
+	OwnerDeviceID                        string
+	OwnerSessionID                       string
+	AccessMode                           string
+	EdgeNodeID                           string
+	EdgeProcessEpoch                     string
+	EdgeCarrierServerSPKISHA256          string
+	EdgeCarrierServerCertificateChainPEM string
+	LeaseGeneration                      uint64
+	AttachmentGeneration                 uint64
+	ConfigContentHash                    string
+	Endpoint                             string
+	ExpiresAt                            time.Time
+	MachineIdentityPublicKey             string
+	MachineIdentityThumbprint            string
 }
 
 type DataCarrierPreviewRegistryConfig struct {
@@ -186,10 +189,12 @@ func (r *DataCarrierPreviewRegistry) AttachAdmission(admission datacarrier.Expec
 		Revision: admission.RouteRevision, Identity: admission.Identity, Server: server,
 		PreviewID: admission.PreviewID, OperationID: admission.OperationID,
 		OwnerDeviceID: admission.OwnerDeviceID, OwnerSessionID: admission.OwnerSessionID,
-		AccessMode:       admission.AccessMode,
-		EdgeNodeID:       admission.EdgeNodeID,
-		EdgeProcessEpoch: admission.EdgeProcessEpoch,
-		LeaseGeneration:  admission.LeaseGeneration, AttachmentGeneration: admission.AttachmentGeneration,
+		AccessMode:                           admission.AccessMode,
+		EdgeNodeID:                           admission.EdgeNodeID,
+		EdgeProcessEpoch:                     admission.EdgeProcessEpoch,
+		EdgeCarrierServerSPKISHA256:          admission.EdgeCarrierServerSPKISHA256,
+		EdgeCarrierServerCertificateChainPEM: admission.EdgeCarrierServerCertificateChainPEM,
+		LeaseGeneration:                      admission.LeaseGeneration, AttachmentGeneration: admission.AttachmentGeneration,
 		ConfigContentHash: admission.ConfigContentHash, Endpoint: admission.Endpoint,
 		ExpiresAt: admission.ExpiresAt, MachineIdentityPublicKey: admission.MachineIdentityPublicKey,
 		MachineIdentityThumbprint: admission.MachineIdentityThumbprint,
@@ -595,12 +600,26 @@ func (t *DataCarrierPreviewTransport) RoundTrip(request *http.Request) (*http.Re
 		}
 		writeDone <- writeErr
 	}()
+	headerContext, cancelHeader := context.WithTimeout(request.Context(), t.openWait)
+	stopHeader := context.AfterFunc(headerContext, func() { _ = stream.Close() })
 	headerReader := &boundedPreviewResponseHeaderReader{reader: stream, maximum: dataCarrierPreviewMaxResponseHeader}
 	response, err := http.ReadResponse(bufio.NewReader(headerReader), out)
+	headerTimedOut := errors.Is(headerContext.Err(), context.DeadlineExceeded)
+	stopHeader()
+	cancelHeader()
 	if err != nil {
 		stopCancel()
 		stopPreviewStreamLifetime(lifetimeCancel, lifetimeTimer)
 		_ = stream.Close()
+		if headerTimedOut {
+			timeoutErr := &dataCarrierPreviewResponseHeaderTimeoutError{timeout: t.openWait}
+			select {
+			case writeErr := <-writeDone:
+				return nil, errors.Join(ErrDataCarrierPreviewTransport, timeoutErr, writeErr)
+			default:
+				return nil, errors.Join(ErrDataCarrierPreviewTransport, timeoutErr)
+			}
+		}
 		select {
 		case writeErr := <-writeDone:
 			return nil, errors.Join(ErrDataCarrierPreviewTransport, err, writeErr)
@@ -646,6 +665,24 @@ func (r *boundedPreviewResponseHeaderReader) Read(payload []byte) (int, error) {
 	}
 	return n, err
 }
+
+type dataCarrierPreviewResponseHeaderTimeoutError struct {
+	timeout time.Duration
+}
+
+func (e *dataCarrierPreviewResponseHeaderTimeoutError) Error() string {
+	if e == nil {
+		return ErrDataCarrierPreviewResponseHeaderTimeout.Error()
+	}
+	return fmt.Sprintf("%s after %s", ErrDataCarrierPreviewResponseHeaderTimeout, e.timeout)
+}
+
+func (e *dataCarrierPreviewResponseHeaderTimeoutError) Is(target error) bool {
+	return target == ErrDataCarrierPreviewResponseHeaderTimeout
+}
+
+func (*dataCarrierPreviewResponseHeaderTimeoutError) Timeout() bool   { return true }
+func (*dataCarrierPreviewResponseHeaderTimeoutError) Temporary() bool { return true }
 
 func previewStreamKind(request *http.Request) string {
 	if request != nil && strings.EqualFold(strings.TrimSpace(request.Header.Get("Upgrade")), "websocket") {
