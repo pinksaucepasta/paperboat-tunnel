@@ -24,13 +24,14 @@ import (
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/tlscert"
 )
 
-// TestPlatformWildcardTLS13Handshake exercises the same boundaries used by
-// the embedded Caddy listener: the registry is served by the Unix certificate
-// broker, the broker is consumed through the certificate-source seam, and
-// DynamicTLSConfig installs the selected certificate for an actual TLS 1.3
-// handshake. Both platform wildcard families are covered through replacement
-// and revoke, so a stale or absent bundle cannot silently be served.
-func TestPlatformWildcardTLS13Handshake(t *testing.T) {
+// TestPlatformAndInfrastructureTLS13Handshake exercises the same boundaries
+// used by the embedded Caddy listener: the registry is served by the Unix
+// certificate broker, the broker is consumed through the certificate-source
+// seam, and DynamicTLSConfig installs the selected certificate for an actual
+// TLS 1.3 handshake. Both platform wildcard families and the explicit
+// signaling/health infrastructure names are covered, so a broker catch-all
+// cannot strand the bootstrap SNI with an internal TLS error.
+func TestPlatformAndInfrastructureTLS13Handshake(t *testing.T) {
 	now := time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC)
 	registry, err := tlscert.NewRegistry(tlscert.Config{Now: func() time.Time { return now }})
 	if err != nil {
@@ -42,6 +43,10 @@ func TestPlatformWildcardTLS13Handshake(t *testing.T) {
 	tunnel := platformWildcardBinding("platform_tunnel", "*.tunnels.example.test", 1)
 	previewBundle := wildcardBundle(t, preview.Hostname, now, 101)
 	tunnelBundle := wildcardBundle(t, tunnel.Hostname, now, 201)
+	signaling := infrastructureBinding("platform_signaling", "signal.example.test", 1)
+	health := infrastructureBinding("platform_health", "edge.example.test", 1)
+	signalingBundle := wildcardBundle(t, signaling.Hostname, now, 301)
+	healthBundle := wildcardBundle(t, health.Hostname, now, 302)
 	activate := func(binding tlscert.Binding, bundle tlscert.Bundle) {
 		t.Helper()
 		if err := registry.Stage(context.Background(), binding, bundle); err != nil {
@@ -56,6 +61,8 @@ func TestPlatformWildcardTLS13Handshake(t *testing.T) {
 	}
 	activate(preview, previewBundle)
 	activate(tunnel, tunnelBundle)
+	activate(signaling, signalingBundle)
+	activate(health, healthBundle)
 
 	socketDir, err := os.MkdirTemp("/tmp", "pb19-wildcard-")
 	if err != nil {
@@ -138,6 +145,8 @@ func TestPlatformWildcardTLS13Handshake(t *testing.T) {
 
 	assertHandshake("alpha.preview.example.test", 101)
 	assertHandshake("beta.tunnels.example.test", 201)
+	assertHandshake("signal.example.test", 301)
+	assertHandshake("edge.example.test", 302)
 
 	preview.CertificateGeneration = 2
 	tunnel.CertificateGeneration = 2
@@ -215,6 +224,10 @@ func tls13HandshakeLeaf(address, host string) (*x509.Certificate, error) {
 
 func platformWildcardBinding(domainID, hostname string, certificateGeneration uint64) tlscert.Binding {
 	return tlscert.Binding{AccountID: "platform_account", DomainID: domainID, Hostname: hostname, TargetKind: tlscert.TargetPlatformWildcard, DomainGeneration: 1, CertificateGeneration: certificateGeneration, EdgeNodeID: "edge_001", EdgeProcessEpoch: "epoch_0001", AssignmentGeneration: 1}
+}
+
+func infrastructureBinding(domainID, hostname string, certificateGeneration uint64) tlscert.Binding {
+	return tlscert.Binding{AccountID: "platform_account", TunnelID: "infra_tunnel", DomainID: domainID, Hostname: hostname, TargetKind: tlscert.TargetDurableRoute, RouteID: "infra_route", DomainGeneration: 1, CertificateGeneration: certificateGeneration, EdgeNodeID: "edge_001", EdgeProcessEpoch: "epoch_0001", AssignmentGeneration: 1}
 }
 
 func wildcardBundle(t *testing.T, hostname string, now time.Time, serial int64) tlscert.Bundle {

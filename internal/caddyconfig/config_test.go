@@ -226,6 +226,79 @@ func TestGenerateUsesBrokerAsSoleManagedCertificateSource(t *testing.T) {
 	}
 }
 
+func TestGenerateIncludesInfrastructureHealthHostInBrokerMode(t *testing.T) {
+	input := validInput()
+	input.CertificateBrokerSocket = "/tmp/paperboat-certificate.sock"
+	input.InfrastructureHosts = []string{"edge.example.test"}
+	input.InfrastructureHealthUpstream = "127.0.0.1:19090"
+
+	data, err := Generate(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	automation := document["apps"].(map[string]any)["tls"].(map[string]any)["automation"].(map[string]any)
+	policies := automation["policies"].([]any)
+	if len(policies) != 3 {
+		t.Fatalf("broker policies = %v", policies)
+	}
+	infrastructure := policies[1].(map[string]any)
+	if got := infrastructure["subjects"].([]any); !reflect.DeepEqual(got, []any{"signal.example.test", "edge.example.test"}) {
+		t.Fatalf("infrastructure TLS subjects = %v", got)
+	}
+	issuers := infrastructure["issuers"].([]any)
+	if len(issuers) != 1 || issuers[0].(map[string]any)["module"] != input.IssuerModule {
+		t.Fatalf("infrastructure TLS issuer = %v", infrastructure)
+	}
+	catchAll := policies[2].(map[string]any)
+	if _, exists := catchAll["subjects"]; exists {
+		t.Fatalf("dynamic broker catch-all captured infrastructure host: %v", catchAll)
+	}
+	routes := document["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["paperboat_public"].(map[string]any)["routes"].([]any)
+	health := routes[4].(map[string]any)
+	match := health["match"].([]any)[0].(map[string]any)
+	if !reflect.DeepEqual(match["host"], []any{"edge.example.test"}) || !reflect.DeepEqual(match["path"], []any{"/healthz"}) {
+		t.Fatalf("infrastructure health match = %v", match)
+	}
+	handlers := health["handle"].([]any)
+	if handlers[0].(map[string]any)["uri"] != "/readyz" {
+		t.Fatalf("infrastructure health rewrite = %v", handlers)
+	}
+	upstreams := handlers[1].(map[string]any)["upstreams"].([]any)
+	if upstreams[0].(map[string]any)["dial"] != "127.0.0.1:19090" {
+		t.Fatalf("infrastructure health upstream = %v", upstreams)
+	}
+}
+
+func TestGenerateServesInfrastructureHealthHostFromDynamicBroker(t *testing.T) {
+	input := validInput()
+	input.IssuerModule = ""
+	input.CertificateBrokerSocket = "/tmp/paperboat-certificate.sock"
+	input.InfrastructureHosts = []string{"edge.example.test"}
+	input.InfrastructureHealthUpstream = "127.0.0.1:19090"
+
+	data, err := Generate(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	policies := document["apps"].(map[string]any)["tls"].(map[string]any)["automation"].(map[string]any)["policies"].([]any)
+	infrastructure := policies[1].(map[string]any)
+	if got := infrastructure["subjects"].([]any); !reflect.DeepEqual(got, []any{"signal.example.test", "edge.example.test"}) {
+		t.Fatalf("infrastructure TLS subjects = %v", got)
+	}
+	getCertificate := infrastructure["get_certificate"].([]any)
+	if len(getCertificate) != 1 || getCertificate[0].(map[string]any)["via"] != "paperboat" || getCertificate[0].(map[string]any)["socket"] != input.CertificateBrokerSocket {
+		t.Fatalf("infrastructure broker source = %v", infrastructure)
+	}
+}
+
 func TestGenerateAcceptsPrivateUpstream(t *testing.T) {
 	input := validInput()
 	input.PrivateUpstream = "172.20.0.1:8080"
@@ -345,6 +418,27 @@ func TestRejectsHostConfusionAndPublicAdmin(t *testing.T) {
 		func() Input {
 			i := validInput()
 			i.PublicRoutes = []PublicRoute{{Host: i.SignalingHost, Upstream: "127.0.0.1:8080"}}
+			return i
+		}(),
+		func() Input {
+			i := validInput()
+			i.InfrastructureHosts = []string{"EDGE.example.test"}
+			return i
+		}(),
+		func() Input {
+			i := validInput()
+			i.InfrastructureHosts = []string{i.PreviewBaseDomain}
+			return i
+		}(),
+		func() Input {
+			i := validInput()
+			i.InfrastructureHosts = []string{"edge.example.test", "edge.example.test"}
+			return i
+		}(),
+		func() Input {
+			i := validInput()
+			i.InfrastructureHosts = []string{"edge.example.test"}
+			i.PublicRoutes = []PublicRoute{{Host: "edge.example.test", Upstream: "127.0.0.1:8080"}}
 			return i
 		}(),
 		func() Input { i := validInput(); i.AdminAddress = "0.0.0.0:2019"; return i }(),

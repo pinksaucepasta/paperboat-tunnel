@@ -89,9 +89,6 @@ func newCarrierComponentWithTelemetry(
 		durableRegistered := false
 		syncDurable := func(now time.Time) error {
 			if durableExpected == nil || !durableExpected.HasIdentity(identity, now) {
-				if durableExpected != nil {
-					slog.Warn("carrier has no matching durable admission", "tunnel_id", identity.TunnelID, "connector_id", identity.ConnectorID, "session_id", identity.SessionID, "process_generation", identity.ProcessGeneration, "config_generation", identity.Generation, "durable_admissions", len(durableExpected.Snapshot()))
-				}
 				if durableRegistered {
 					_ = durableRoutes.Detach(server)
 					durableRegistered = false
@@ -128,12 +125,19 @@ func newCarrierComponentWithTelemetry(
 			durableRegistered = true
 			return nil
 		}
-		durableAuthorized := durableExpected != nil && durableExpected.HasIdentity(identity, time.Now().UTC())
-		if err := syncDurable(time.Now().UTC()); err != nil {
-			return err
-		}
 		previewAttached := len(previewExpected.ForIdentity(identity, time.Now().UTC())) != 0
+		durableAuthorized := durableExpected != nil && durableExpected.HasIdentity(identity, time.Now().UTC())
 		accessorAttached := accessorExpected != nil && accessorExpected.HasIdentity(identity, time.Now().UTC())
+		// Preview-only carriers do not participate in the durable route
+		// lifecycle. Accessor carriers remain eligible for in-place durable
+		// promotion because one authenticated connector may legitimately own
+		// both ephemeral preview and durable routes.
+		durableLifecycle := durableAuthorized || accessorAttached
+		if durableLifecycle {
+			if err := syncDurable(time.Now().UTC()); err != nil {
+				return err
+			}
+		}
 		if !previewAttached && !durableAuthorized && !accessorAttached {
 			return datacarrier.ErrDurableAdmissionMissing
 		}
@@ -144,7 +148,7 @@ func newCarrierComponentWithTelemetry(
 		defer cancel()
 		results := make(chan error, 3)
 		workers := 0
-		if durableExpected != nil {
+		if durableLifecycle {
 			workers++
 			go func() {
 				ticker := time.NewTicker(deployment.ControlInterval)

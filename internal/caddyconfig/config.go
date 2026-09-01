@@ -26,19 +26,25 @@ const (
 var domainPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 type Input struct {
-	PreviewBaseDomain          string
-	TunnelBaseDomain           string
-	RuntimeBaseDomain          string
-	SignalingHost              string
-	PrivateUpstream            string
-	ListenAddress              string
-	PrivateAccessListenAddress string
-	PrivateAccessToken         string
-	HTTPListenAddress          string
-	AdminAddress               string
-	TrustedProxies             []string
-	IssuerModule               string
-	StreamBrokerPath           string
+	PreviewBaseDomain string
+	TunnelBaseDomain  string
+	RuntimeBaseDomain string
+	SignalingHost     string
+	// InfrastructureHosts are explicit non-route hosts that terminate at this
+	// edge process, such as the connector advertise/health endpoint. They use
+	// the infrastructure certificate source and must not fall through to the
+	// broker-only dynamic route policy.
+	InfrastructureHosts          []string
+	InfrastructureHealthUpstream string
+	PrivateUpstream              string
+	ListenAddress                string
+	PrivateAccessListenAddress   string
+	PrivateAccessToken           string
+	HTTPListenAddress            string
+	AdminAddress                 string
+	TrustedProxies               []string
+	IssuerModule                 string
+	StreamBrokerPath             string
 	// CertificateBrokerSocket is the private runtime-to-Caddy certificate
 	// selector. When set, Caddy never falls back to disk-backed certificates.
 	CertificateBrokerSocket string
@@ -59,7 +65,7 @@ func Generate(input Input) ([]byte, error) {
 	// The platform certificate worker owns the preview, durable tunnel, and
 	// host-runtime wildcard families.
 	wildcardHosts := []string{"*." + input.PreviewBaseDomain, "*." + input.TunnelBaseDomain, "*." + input.RuntimeBaseDomain}
-	publicRoutes := make([]any, 0, len(input.PublicRoutes)+1)
+	publicRoutes := make([]any, 0, len(input.PublicRoutes)+3)
 	staticHosts := make([]string, 0, len(input.PublicRoutes))
 	seenStaticHosts := make(map[string]struct{}, len(input.PublicRoutes))
 	publicRoutes = append(publicRoutes,
@@ -87,6 +93,23 @@ func Generate(input Input) ([]byte, error) {
 			"handle": []any{map[string]any{"handler": "static_response", "status_code": 404}}, "terminal": true,
 		},
 	)
+	if len(input.InfrastructureHosts) > 0 {
+		publicRoutes = append(publicRoutes,
+			map[string]any{
+				"match": []any{map[string]any{"host": input.InfrastructureHosts, "path": []string{"/healthz"}, "method": []string{"GET"}}},
+				"handle": []any{
+					map[string]any{"handler": "rewrite", "uri": "/readyz"},
+					reverseProxy(input.InfrastructureHealthUpstream),
+				},
+				"terminal": true,
+			},
+			map[string]any{
+				"match":    []any{map[string]any{"host": input.InfrastructureHosts}},
+				"handle":   []any{map[string]any{"handler": "static_response", "status_code": 404}},
+				"terminal": true,
+			},
+		)
+	}
 	for _, route := range input.PublicRoutes {
 		match := map[string]any{"host": []string{route.Host}}
 		if route.PathPrefix != "" {
@@ -202,13 +225,14 @@ func Generate(input Input) ([]byte, error) {
 					policies = append(policies, map[string]any{"subjects": staticHosts, "get_certificate": certificateManager})
 				}
 			}
-			// Signaling is infrastructure-owned. It may use the explicit
-			// issuer when configured, but never grants that issuer to managed
-			// preview domains.
+			// Signaling and any explicitly configured infrastructure hosts are
+			// infrastructure-owned. They may use the explicit issuer when
+			// configured, but never grant that issuer to managed preview domains.
+			infrastructureHosts := certificateInfrastructureHosts(input)
 			if issuer != nil {
-				policies = append(policies, map[string]any{"subjects": []string{input.SignalingHost}, "issuers": []any{issuer}})
+				policies = append(policies, map[string]any{"subjects": infrastructureHosts, "issuers": []any{issuer}})
 			} else {
-				policies = append(policies, map[string]any{"subjects": []string{input.SignalingHost}, "get_certificate": certificateManager})
+				policies = append(policies, map[string]any{"subjects": infrastructureHosts, "get_certificate": certificateManager})
 			}
 			// Dynamic exact/apex/wildcard route assignments are not available
 			// when this static Caddy document is generated. An empty-subject
@@ -218,8 +242,8 @@ func Generate(input Input) ([]byte, error) {
 		} else if issuer != nil {
 			// Without the Paperboat broker, managed route certificates have no
 			// certificate source and must fail closed. Keep an optional issuer
-			// policy only for the explicitly separate signaling host.
-			policies = append(policies, map[string]any{"subjects": []string{input.SignalingHost}, "issuers": []any{issuer}})
+			// policy only for explicitly configured infrastructure hosts.
+			policies = append(policies, map[string]any{"subjects": certificateInfrastructureHosts(input), "issuers": []any{issuer}})
 		}
 		automation := map[string]any{"policies": policies}
 		config["apps"].(map[string]any)["tls"] = map[string]any{"automation": automation}
@@ -228,6 +252,19 @@ func Generate(input Input) ([]byte, error) {
 		}
 	}
 	return json.MarshalIndent(config, "", "  ")
+}
+
+func certificateInfrastructureHosts(input Input) []string {
+	hosts := make([]string, 0, len(input.InfrastructureHosts)+1)
+	seen := make(map[string]struct{}, len(input.InfrastructureHosts)+1)
+	for _, host := range append([]string{input.SignalingHost}, input.InfrastructureHosts...) {
+		if _, exists := seen[host]; exists {
+			continue
+		}
+		seen[host] = struct{}{}
+		hosts = append(hosts, host)
+	}
+	return hosts
 }
 
 func reverseProxy(upstream string) map[string]any {
@@ -268,6 +305,23 @@ func validate(input Input) error {
 	if overlapsManagedDomain(input.SignalingHost, []string{input.PreviewBaseDomain, input.TunnelBaseDomain, input.RuntimeBaseDomain}) {
 		return ErrInvalid
 	}
+	seenInfrastructureHosts := map[string]struct{}{input.SignalingHost: {}}
+	for _, host := range input.InfrastructureHosts {
+		if host == "" || host != strings.ToLower(host) || !domainPattern.MatchString(host) || net.ParseIP(host) != nil || overlapsManagedDomain(host, []string{input.PreviewBaseDomain, input.TunnelBaseDomain, input.RuntimeBaseDomain}) {
+			return ErrInvalid
+		}
+		if _, exists := seenInfrastructureHosts[host]; exists {
+			return ErrInvalid
+		}
+		seenInfrastructureHosts[host] = struct{}{}
+	}
+	if len(input.InfrastructureHosts) > 0 {
+		if err := validatePrivateEndpoint(input.InfrastructureHealthUpstream); err != nil {
+			return err
+		}
+	} else if input.InfrastructureHealthUpstream != "" {
+		return ErrInvalid
+	}
 	if err := validatePrivateEndpoint(input.PrivateUpstream); err != nil {
 		return err
 	}
@@ -288,7 +342,7 @@ func validate(input Input) error {
 	seenRoutes := make(map[string]struct{}, len(input.PublicRoutes))
 	for _, route := range input.PublicRoutes {
 		key := route.Host + "\x00" + route.PathPrefix
-		if route.Host != strings.ToLower(route.Host) || !domainPattern.MatchString(route.Host) || net.ParseIP(route.Host) != nil || route.Host == input.SignalingHost || overlapsManagedDomain(route.Host, []string{input.PreviewBaseDomain, input.TunnelBaseDomain, input.RuntimeBaseDomain}) || validatePrivateRouteEndpoint(route.Upstream) != nil {
+		if route.Host != strings.ToLower(route.Host) || !domainPattern.MatchString(route.Host) || net.ParseIP(route.Host) != nil || route.Host == input.SignalingHost || containsHost(input.InfrastructureHosts, route.Host) || overlapsManagedDomain(route.Host, []string{input.PreviewBaseDomain, input.TunnelBaseDomain, input.RuntimeBaseDomain}) || validatePrivateRouteEndpoint(route.Upstream) != nil {
 			return ErrInvalid
 		}
 		if _, exists := seenRoutes[key]; exists {
@@ -303,6 +357,15 @@ func validate(input Input) error {
 		return ErrInvalid
 	}
 	return nil
+}
+
+func containsHost(hosts []string, wanted string) bool {
+	for _, host := range hosts {
+		if host == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func overlappingDomains(first, second string) bool {
