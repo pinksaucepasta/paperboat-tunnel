@@ -101,9 +101,11 @@ already named by a release.
    plugin version explicitly; never request an unversioned plugin.
 3. Update the Caddy dependency in `caddymodules/paperboatquic/go.mod` and reconcile module
    sums. Review Caddy/CertMagic/QUIC API and behavior changes.
-4. Test config generation and validation, ACME/on-demand authorization, HTTP/1.1 and
-   HTTP/2 preview proxying, browser HTTP/3, native terminal QUIC, WSS fallback boundaries,
-   streaming, cancellation, certificate persistence, and graceful restart.
+4. Test config generation and validation, broker-only certificate selection and
+   central issuance/renewal/revocation, HTTP/1.1 and HTTP/2 preview proxying, browser
+   HTTP/3, native terminal QUIC, WSS fallback boundaries, streaming, cancellation,
+   in-memory certificate replacement, and graceful restart. Confirm the edge receives
+   no ACME account or DNS-provider credential and broker failure fails closed.
 5. Record the new version, builder digest, plugins, local module changes, compatibility
    findings, and rollback target in `RELEASE.md`.
 6. Run `make check`, stage the image, verify its embedded `caddy version` and modules, and

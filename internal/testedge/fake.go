@@ -129,8 +129,8 @@ func (f *Fake) SetUsageKey(keyID string, public ed25519.PublicKey) {
 func (f *Fake) LoseNextAcknowledgment() { f.mu.Lock(); defer f.mu.Unlock(); f.loseNextAck = true }
 
 func (f *Fake) RegisterNode(_ context.Context, registration control.NodeRegistration) error {
-	if registration.NodeID == "" || registration.ProcessEpoch == "" || registration.Capacity == 0 {
-		return errors.New("invalid node registration")
+	if err := registration.Validate(); err != nil {
+		return errors.Join(errors.New("invalid node registration"), err)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()

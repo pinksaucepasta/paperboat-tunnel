@@ -35,12 +35,13 @@ mount the required files under `deploy/secrets/`, then run:
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d
 ```
 
-The configured Caddy uses on-demand ACME for validated helper and preview hostnames; its
-`ask` URL must authorize only current Paperboat routes. `signaling_host` receives a static
-certificate policy and proxies only `/v1/peer-signaling`; every other path on that host is
-rejected. `signaling_capacity` bounds concurrent signaling sessions. The Cloudflare token
-must be scoped and stored in `deploy/secrets/cloudflare_api_token`, never in the image or
-deployment JSON.
+The configured Caddy uses the Paperboat certificate broker for every managed tunnel,
+preview, and dynamically assigned custom hostname. Certificates are issued, renewed, and
+revoked centrally by `paperboat-server`, distributed over authenticated edge control, and
+held only in memory at this edge. The tunnel receives no ACME account or DNS-provider
+credentials; a broker outage or revoked certificate fails closed. `signaling_host` is the
+separate infrastructure host: it proxies only `/v1/peer-signaling`, and every other path
+on that host is rejected. `signaling_capacity` bounds concurrent signaling sessions.
 
 Verify each lane independently after deployment:
 
@@ -58,7 +59,7 @@ TCP and UDP 443, connector TCP and UDP 26023, and UDP 3478 must map only to
 only for ICE address discovery; it does not expose an application listener.
 Readiness and metrics report STUN and peer signaling independently; signaling telemetry is
 limited to running state, session and attachment counts, and configured capacity.
-Validate a helper hostname with `pb doctor`; it reports the requested terminal mode,
+Validate a managed tunnel hostname with `pb doctor`; it reports the requested terminal mode,
 selected native QUIC or WSS transport, and bounded fallback category.
 Certificate, authorization, route, and protocol failures must fail without WSS fallback.
 

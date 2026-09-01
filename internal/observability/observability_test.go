@@ -10,6 +10,7 @@ import (
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/edgeerrors"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/node"
+	edgetelemetry "github.com/pinksaucepasta/paperboat-tunnel/internal/telemetry"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/usage"
 )
 
@@ -122,5 +123,51 @@ func TestDiagnosticsDistinguishDependencies(t *testing.T) {
 	healthy.Usage = Unavailable
 	if healthy.Ready() {
 		t.Fatal("undurable usage remained ready")
+	}
+}
+
+func TestPrivateHandlerProjectsTypedHealthEventsMetricsAndDrops(t *testing.T) {
+	state := node.New("edge_test")
+	if !state.MarkReady() {
+		t.Fatal("mark ready")
+	}
+	manager, _ := node.NewManager(state, 8)
+	queue, _ := usage.NewQueue(4, 4096)
+	now := time.Unix(300, 0).UTC()
+	health, err := edgetelemetry.NewHealthTracker(func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := health.Update(edgetelemetry.HealthUpdate{Dimension: edgetelemetry.DimensionRoute, Status: edgetelemetry.StatusReady, Code: "ready", Summary: "Route is ready.", RepairAction: "No action is required.", Retry: edgetelemetry.RetryNone}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := edgetelemetry.NewEventLog(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.Record(edgetelemetry.EventInput{At: now, Severity: edgetelemetry.SeverityInfo, Component: edgetelemetry.DimensionRoute, Name: "activated", Code: "activated", Outcome: edgetelemetry.OutcomeStateChange, Message: "Route generation activated.", CorrelationID: "corr_route_1", Retry: edgetelemetry.RetryNone}); err != nil {
+		t.Fatal(err)
+	}
+	typedMetrics := edgetelemetry.NewMetrics()
+	if err := typedMetrics.AddCounter(edgetelemetry.MetricRouteRequests, edgetelemetry.MetricLabels{"route_kind": "tunnel_https_wss", "outcome": "success"}, 2); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandler(Sources{Node: state.Snapshot, Manager: manager.Snapshot, Sessions: func() int { return 0 }, SessionRoutes: func() int { return 0 }, ActiveStreams: func() uint32 { return 0 }, RouteCount: func() int { return 0 }, Usage: queue.Stats, ControlErr: func() error { return nil }, RouteErr: func() error { return nil }, UsageErr: func() error { return nil }, FRPRunning: func() bool { return true }, CaddyRunning: func() bool { return true }, STUN: func() STUNStats { return STUNStats{Running: true} }, Signaling: func() SignalingStats { return SignalingStats{Running: true} }, CaddyTLS: func() (time.Time, error) { return now.Add(time.Hour), nil }, Events: NewMetrics().Snapshot, Traffic: usage.NewCounters().Snapshot, Health: health.Snapshot, Lifecycle: events.Snapshot, TypedMetrics: typedMetrics.Snapshot, TelemetryDrops: func() uint64 { return 3 }, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnostics := httptest.NewRecorder()
+	handler.ServeHTTP(diagnostics, httptest.NewRequest(http.MethodGet, "/diagnostics", nil))
+	for _, expected := range []string{`"schema":"paperboat.health/v1"`, `"name":"activated"`, `"telemetry_drops":3`} {
+		if !strings.Contains(diagnostics.Body.String(), expected) {
+			t.Fatalf("diagnostics missing %q: %s", expected, diagnostics.Body.String())
+		}
+	}
+	metrics := httptest.NewRecorder()
+	handler.ServeHTTP(metrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	for _, expected := range []string{`paperboat_edge_route_requests_total{route_kind="tunnel_https_wss",outcome="success"} 2`, `paperboat_edge_telemetry_dropped_total 3`} {
+		if !strings.Contains(metrics.Body.String(), expected) {
+			t.Fatalf("metrics missing %q: %s", expected, metrics.Body.String())
+		}
 	}
 }

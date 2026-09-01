@@ -56,7 +56,7 @@ func TestAssemblyOwnsHookAndChildProcesses(t *testing.T) {
 	if err := assembly.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := events, []string{"start:store", "start:caddy-ready", "start:control", "start:node", "start:routes", "start:usage", "stop:caddy-ready", "stop:routes", "stop:usage", "stop:node", "stop:control", "stop:store"}; !equalStrings(got, want) {
+	if got, want := events, []string{"start:store", "start:control", "start:node", "start:caddy-ready", "start:routes", "start:usage", "stop:usage", "stop:routes", "stop:caddy-ready", "stop:node", "stop:control", "stop:store"}; !equalStrings(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
 	}
 }

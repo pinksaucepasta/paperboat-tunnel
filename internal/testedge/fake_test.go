@@ -67,7 +67,11 @@ func TestFakeCredentialAssignmentAndNodeLifecycle(t *testing.T) {
 	if current, err := fake.Current(context.Background(), "env", "machine", "runtime"); err != nil || current.Generation != 3 {
 		t.Fatalf("current = %+v, %v", current, err)
 	}
-	if err := fake.RegisterNode(context.Background(), control.NodeRegistration{NodeID: "n", ProcessEpoch: "p", Capacity: 1}); err != nil {
+	trust, trustErr := control.NewProcessCarrierServerTrust("n", "p", "edge.example.test", time.Now().UTC(), time.Hour)
+	if trustErr != nil {
+		t.Fatal(trustErr)
+	}
+	if err := fake.RegisterNode(context.Background(), control.NodeRegistration{NodeID: "n", ProcessEpoch: "p", Capacity: 1, CarrierEndpoint: control.ConnectorEndpoint{Host: "edge.example.test", TCPPort: 27443, QUICPort: 27444}, CarrierServerSPKISHA256: trust.SPKISHA256, CarrierServerCertificateChainPEM: trust.CertificateChainPEM}); err != nil {
 		t.Fatal(err)
 	}
 	if err := fake.Heartbeat(context.Background(), control.NodeObservation{NodeID: "n", ProcessEpoch: "p", Ready: true, At: time.Unix(1, 0)}); err != nil {

@@ -3,9 +3,12 @@ package edgehttp
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/sha1" // #nosec G505 -- required by RFC 6455 for the WebSocket handshake.
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -16,16 +19,30 @@ import (
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/admission"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/route"
 	"github.com/realclientip/realclientip-go"
 )
 
+// RouteMatcher is the live edge route boundary. Implementations must return
+// a generation-fenced match and a lease that remains valid for the request's
+// lifetime.
+type RouteMatcher interface {
+	Match(string, string) (route.RouteMatch, error)
+	Acquire(context.Context, string, string) (*route.StreamLease, route.RouteMatch, error)
+}
+
 type Config struct {
-	PreviewBaseDomain string
-	HelperBaseDomain  string
-	TrustedProxies    []*net.IPNet
-	MaxHeaderBytes    int64
-	MaxBodyBytes      int64
-	Readiness         interface {
+	PreviewBaseDomain        string
+	TunnelBaseDomain         string
+	RuntimeBaseDomain        string
+	TrustedProxies           []*net.IPNet
+	MaxHeaderBytes           int64
+	MaxBodyBytes             int64
+	Routes                   RouteMatcher
+	PrivateAccessToken       string
+	PrivateAccessConnections *PrivateAccessConnectionRegistry
+	RequestID                func() string
+	Readiness                interface {
 		RouteState(string) (string, string, string, bool)
 	}
 	HelperAccess interface {
@@ -37,6 +54,18 @@ type Config struct {
 	RevocationCheckInterval time.Duration
 }
 
+type routeMatchContextKey struct{}
+
+// RouteMatchFromContext returns the generation-fenced match selected by the
+// edge policy, if this request passed through a configured route matcher.
+func RouteMatchFromContext(ctx context.Context) (route.RouteMatch, bool) {
+	if ctx == nil {
+		return route.RouteMatch{}, false
+	}
+	match, ok := ctx.Value(routeMatchContextKey{}).(route.RouteMatch)
+	return match, ok
+}
+
 type Policy struct {
 	config         Config
 	next           http.Handler
@@ -44,7 +73,7 @@ type Policy struct {
 }
 
 func New(config Config, next http.Handler) (*Policy, error) {
-	if next == nil || config.PreviewBaseDomain == "" || config.HelperBaseDomain == "" || config.MaxHeaderBytes < 1024 || config.MaxBodyBytes < 1 {
+	if next == nil || config.PreviewBaseDomain == "" || config.TunnelBaseDomain == "" || config.RuntimeBaseDomain == "" || config.MaxHeaderBytes < 1024 || config.MaxBodyBytes < 1 || config.PrivateAccessToken != "" && (len(config.PrivateAccessToken) < 32 || len(config.PrivateAccessToken) > 256 || strings.TrimSpace(config.PrivateAccessToken) != config.PrivateAccessToken || strings.ContainsAny(config.PrivateAccessToken, "\r\n\x00")) {
 		return nil, http.ErrNotSupported
 	}
 	trusted := make([]net.IPNet, 0, len(config.TrustedProxies))
@@ -69,6 +98,15 @@ func NewGateway(config Config, privateUpstream string) (*Policy, error) {
 }
 
 func NewGatewayWithTransport(config Config, privateUpstream string, previewTransport http.RoundTripper) (*Policy, error) {
+	return NewGatewayWithTransports(config, privateUpstream, previewTransport, nil)
+}
+
+// NewGatewayWithTransports installs the route-kind-specific forwarding
+// boundaries. Durable connector-v1 routes use canonicalTransport, while
+// preview routes use previewTransport and retained helper routes use the
+// private legacy upstream. A matched durable route is never silently sent to
+// the legacy or preview transport when its canonical transport is absent.
+func NewGatewayWithTransports(config Config, privateUpstream string, previewTransport, canonicalTransport http.RoundTripper) (*Policy, error) {
 	target, err := url.Parse("http://" + privateUpstream)
 	if err != nil {
 		return nil, err
@@ -79,10 +117,10 @@ func NewGatewayWithTransport(config Config, privateUpstream string, previewTrans
 		response.Header.Del("X-Robots-Tag")
 		return nil
 	}
-	var next http.Handler = legacy
-	if previewTransport != nil {
-		preview := &httputil.ReverseProxy{
-			Transport:     retryPreviewTransport{next: previewTransport},
+	var canonical http.Handler
+	if canonicalTransport != nil {
+		canonical = &httputil.ReverseProxy{
+			Transport:     canonicalTransport,
 			FlushInterval: -1,
 			Rewrite: func(request *httputil.ProxyRequest) {
 				request.Out.URL.Scheme = "http"
@@ -90,8 +128,39 @@ func NewGatewayWithTransport(config Config, privateUpstream string, previewTrans
 			},
 			ModifyResponse: legacy.ModifyResponse,
 		}
+	}
+	var next http.Handler = legacy
+	if previewTransport != nil || canonicalTransport != nil {
+		var preview http.Handler
+		if previewTransport != nil {
+			preview = &httputil.ReverseProxy{
+				Transport:     retryPreviewTransport{next: previewTransport},
+				FlushInterval: -1,
+				Rewrite: func(request *httputil.ProxyRequest) {
+					request.Out.URL.Scheme = "http"
+					request.Out.URL.Host = request.In.Host
+				},
+				ModifyResponse: legacy.ModifyResponse,
+			}
+		}
 		next = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-			if strings.HasSuffix(strings.ToLower(request.Host), "."+strings.ToLower(config.PreviewBaseDomain)) {
+			if match, ok := RouteMatchFromContext(request.Context()); ok {
+				switch match.Rule.Kind {
+				case route.TunnelHTTPSWSS:
+					if canonical == nil {
+						http.NotFound(writer, request)
+						return
+					}
+					canonical.ServeHTTP(writer, request)
+					return
+				case route.PreviewHTTPSWSS, route.Kind(dataCarrierPreviewPrivateRouteKind):
+					if preview != nil {
+						preview.ServeHTTP(writer, request)
+						return
+					}
+				}
+			}
+			if preview != nil && strings.HasSuffix(strings.ToLower(request.Host), "."+strings.ToLower(config.PreviewBaseDomain)) {
 				preview.ServeHTTP(writer, request)
 				return
 			}
@@ -148,6 +217,29 @@ func ParseTrustedProxies(values []string) ([]*net.IPNet, error) {
 
 func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	host, expectedKind, ok := p.allowedHost(r.Host)
+	var matched route.RouteMatch
+	var lease *route.StreamLease
+	if p.config.Routes != nil {
+		ok = false
+		candidateHost, valid := dispatchHost(r.Host)
+		if !valid {
+			http.NotFound(w, r)
+			return
+		}
+		candidateLease, acquired, acquireErr := p.config.Routes.Acquire(r.Context(), candidateHost, r.URL.Path)
+		if acquireErr != nil {
+			http.NotFound(w, r)
+			return
+		}
+		matched, lease = acquired, candidateLease
+		host, expectedKind, ok = matched.Host, string(matched.Rule.Kind), true
+		if expectedKind == string(route.TunnelHTTPSWSS) && (matched.Rule.MatchType == route.MatchManagedExact || strings.HasSuffix(host, "."+strings.ToLower(p.config.TunnelBaseDomain))) && !route.ValidManagedTunnelHostname(host, p.config.TunnelBaseDomain) {
+			http.NotFound(w, r)
+			return
+		}
+		r = r.WithContext(context.WithValue(lease.Context(), routeMatchContextKey{}, matched))
+		defer lease.Close()
+	}
 	if !ok || !normalizeRequestTarget(r, host) || headerBytes(r.Header) > p.config.MaxHeaderBytes {
 		http.NotFound(w, r)
 		return
@@ -163,17 +255,57 @@ func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("Connection", "Upgrade")
 		r.Header.Set("Upgrade", "websocket")
 	}
+	privateRoute := matched.Rule.AccessMode == "private" && (expectedKind == dataCarrierPreviewPrivateRouteKind || expectedKind == string(route.TunnelHTTPSWSS))
+	if privateRoute {
+		// Private routes are reachable only through stable hostd's authenticated
+		// client-initiated carrier stream. Public edge requests never become
+		// private access based on browser cookies, Authorization, or custom
+		// headers.
+		connectionID := r.Header.Get("X-Paperboat-Private-Connection")
+		if !p.consumePrivateCarrierToken(r.Header) {
+			stripPrivate(r.Header, expectedKind)
+			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+			return
+		}
+		r.Header.Del("X-Paperboat-Private-Connection")
+		if p.config.PrivateAccessConnections == nil {
+			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+			return
+		}
+		status, allowed := p.config.PrivateAccessConnections.Authorize(connectionID, matched)
+		if !allowed {
+			http.Error(w, http.StatusText(status), status)
+			return
+		}
+	}
 	stripPrivate(r.Header, expectedKind)
 	r.Header.Set("X-Forwarded-For", clientIP)
 	r.Header.Set("X-Forwarded-Host", host)
 	r.Header.Set("X-Forwarded-Proto", "https")
+	requestID, requestIDErr := p.trustedRequestID()
+	if requestIDErr != nil {
+		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+		return
+	}
+	r.Header.Set("Forwarded", formatForwarded(clientIP, host))
+	r.Header.Set("X-Request-ID", requestID)
+	if matched.Rule.HostOverride != "" {
+		r.Host = matched.Rule.HostOverride
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, p.config.MaxBodyBytes)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
-	if p.config.Readiness != nil {
-		kind, state, reason, found := p.config.Readiness.RouteState(host)
+	if p.config.Readiness != nil || matched.Rule.ID != "" {
+		kind, state, reason, found := "", "", "", false
+		if matched.Rule.ID != "" && matched.Rule.ObservedState != "" {
+			kind, state, reason, found = string(matched.Rule.Kind), matched.Rule.ObservedState, matched.Rule.Reason, true
+		} else if p.config.Readiness != nil {
+			kind, state, reason, found = p.config.Readiness.RouteState(host)
+		} else if matched.Rule.ID != "" {
+			kind, state, found = string(matched.Rule.Kind), "ready", true
+		}
 		if !found || kind != expectedKind {
 			http.NotFound(w, r)
 			return
@@ -183,7 +315,7 @@ func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 			return
 		}
-		if kind == "preview_public_https_wss" && state != "ready" {
+		if (kind == "preview_public_https_wss" || kind == dataCarrierPreviewPrivateRouteKind) && state != "ready" {
 			status, retry := PreviewHTTPStatus(state, reason)
 			if retry {
 				w.Header().Set("Retry-After", "5")
@@ -214,6 +346,18 @@ func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		go p.cancelWhenAccessRevoked(ctx, cancel, claims)
 	}
 	p.next.ServeHTTP(w, r)
+}
+
+func (p *Policy) consumePrivateCarrierToken(headers http.Header) bool {
+	if p == nil || headers == nil {
+		return false
+	}
+	values := headers.Values("X-Paperboat-Private-Carrier")
+	headers.Del("X-Paperboat-Private-Carrier")
+	if len(values) != 1 || len(values[0]) != len(p.config.PrivateAccessToken) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(values[0]), []byte(p.config.PrivateAccessToken)) == 1
 }
 
 func normalizeRequestTarget(r *http.Request, canonicalHost string) bool {
@@ -358,7 +502,7 @@ func (p *Policy) allowedHost(value string) (string, string, bool) {
 	}
 	for _, candidate := range []struct{ domain, kind string }{
 		{p.config.PreviewBaseDomain, "preview_public_https_wss"},
-		{p.config.HelperBaseDomain, "runtime_https_wss"},
+		{p.config.RuntimeBaseDomain, "runtime_https_wss"},
 	} {
 		suffix := "." + strings.ToLower(candidate.domain)
 		prefix, ok := strings.CutSuffix(host, suffix)
@@ -367,6 +511,22 @@ func (p *Policy) allowedHost(value string) (string, string, bool) {
 		}
 	}
 	return host, "", false
+}
+
+func dispatchHost(value string) (string, bool) {
+	host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
+	if host == "" || strings.ContainsAny(host, "\r\n\x00 /?") {
+		return "", false
+	}
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		host = parsed
+	} else if strings.Contains(host, ":") {
+		return "", false
+	}
+	if host == "" || net.ParseIP(host) != nil {
+		return "", false
+	}
+	return host, true
 }
 
 func (p *Policy) clientIP(r *http.Request) string {
@@ -382,6 +542,45 @@ func (p *Policy) clientIP(r *http.Request) string {
 		return client
 	}
 	return remote.String()
+}
+
+func (p *Policy) trustedRequestID() (string, error) {
+	if p.config.RequestID != nil {
+		if value := p.config.RequestID(); validRequestID(value) {
+			return value, nil
+		}
+	}
+	var data [16]byte
+	if _, err := rand.Read(data[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(data[:]), nil
+}
+
+func validRequestID(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || strings.ContainsRune("-_.:", character)) {
+			return false
+		}
+	}
+	return true
+}
+
+func formatForwarded(clientIP, host string) string {
+	forValue := "_"
+	if parsed := net.ParseIP(strings.TrimSpace(clientIP)); parsed != nil {
+		forValue = parsed.String()
+		if parsed.To4() == nil {
+			forValue = "\"[" + forValue + "]\""
+		}
+	}
+	if host == "" || strings.ContainsAny(host, "\r\n\x00;,") {
+		host = "_"
+	}
+	return "for=" + forValue + ";proto=https;host=" + host
 }
 
 func (p *Policy) trusted(ip net.IP) bool {
@@ -410,7 +609,7 @@ func stripHopByHop(headers http.Header) {
 			headers.Del(strings.TrimSpace(name))
 		}
 	}
-	for _, name := range []string{"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade", "Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP"} {
+	for _, name := range []string{"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade", "Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "X-Request-ID"} {
 		headers.Del(name)
 	}
 }

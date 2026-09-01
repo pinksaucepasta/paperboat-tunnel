@@ -17,6 +17,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,11 +47,12 @@ func (topologyNoRevocations) Revoked(context.Context, admission.Claims) (bool, e
 }
 
 func TestTopologyRelayProcess(t *testing.T) {
-	if os.Getenv("PAPERBOAT_TOPOLOGY_ROLE") == "" {
-		t.Skip("topology relay process mode is not configured")
+	enabled, fileRelay, upstream, err := topologyRelayOptions(os.Getenv("PAPERBOAT_TOPOLOGY_ROLE"), os.Getenv("PAPERBOAT_TOPOLOGY_FILE_RELAY"), os.Getenv("PAPERBOAT_TOPOLOGY_FILE_UPSTREAM"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if os.Getenv("PAPERBOAT_TOPOLOGY_ROLE") != "relay-edge" {
-		t.Fatal("invalid topology relay process role")
+	if !enabled {
+		t.Skip("topology relay process mode is not configured")
 	}
 	manager, err := peerrelay.NewManager(peerrelay.DevelopmentConfig(), topologyRelayRecorder{}, nil)
 	if err != nil {
@@ -71,8 +73,7 @@ func TestTopologyRelayProcess(t *testing.T) {
 	handler.Handle("/v1/peer-signaling", peersignalinghttp.Handler{Path: "/v1/peer-signaling", Service: signaling, ObserveError: func(err error) {
 		fmt.Printf("PAPERBOAT_TOPOLOGY_SIGNALING_ERROR %v\n", err)
 	}})
-	if os.Getenv("PAPERBOAT_TOPOLOGY_FILE_RELAY") == "1" {
-		upstream := os.Getenv("PAPERBOAT_TOPOLOGY_FILE_UPSTREAM")
+	if fileRelay {
 		target, parseErr := url.Parse("http://" + upstream)
 		if parseErr != nil {
 			t.Fatal(parseErr)
@@ -87,7 +88,7 @@ func TestTopologyRelayProcess(t *testing.T) {
 			http.Error(writer, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 		}
 		policy, policyErr := edgehttp.New(edgehttp.Config{
-			PreviewBaseDomain: "preview.paperboat.test", HelperBaseDomain: "paperboat.test",
+			PreviewBaseDomain: "preview.paperboat.test", TunnelBaseDomain: "tunnels.paperboat.test", RuntimeBaseDomain: "runtime.paperboat.test",
 			MaxHeaderBytes: 32 << 10, MaxBodyBytes: 8 << 20, Readiness: topologyFileReadiness{},
 			HelperAccess: authenticator.production, Revocations: topologyNoRevocations{}, RevocationCheckInterval: time.Second,
 		}, proxy)
@@ -179,6 +180,37 @@ func TestTopologyRelayProcess(t *testing.T) {
 		if err != nil && !errors.Is(err, net.ErrClosed) {
 			t.Fatal(err)
 		}
+	}
+}
+
+func topologyRelayOptions(role, fileRelay, upstream string) (bool, bool, string, error) {
+	for name, value := range map[string]string{"PAPERBOAT_TOPOLOGY_ROLE": role, "PAPERBOAT_TOPOLOGY_FILE_RELAY": fileRelay, "PAPERBOAT_TOPOLOGY_FILE_UPSTREAM": upstream} {
+		if value != "" && strings.TrimSpace(value) != value {
+			return false, false, "", fmt.Errorf("%s must not contain surrounding whitespace", name)
+		}
+	}
+	if role == "" {
+		if fileRelay != "" || upstream != "" {
+			return false, false, "", errors.New("topology relay options require PAPERBOAT_TOPOLOGY_ROLE=relay-edge")
+		}
+		return false, false, "", nil
+	}
+	if role != "relay-edge" {
+		return false, false, "", errors.New("invalid topology relay process role")
+	}
+	switch fileRelay {
+	case "", "0":
+		if upstream != "" {
+			return false, false, "", errors.New("PAPERBOAT_TOPOLOGY_FILE_UPSTREAM requires PAPERBOAT_TOPOLOGY_FILE_RELAY=1")
+		}
+		return true, false, "", nil
+	case "1":
+		if upstream == "" {
+			return false, false, "", errors.New("PAPERBOAT_TOPOLOGY_FILE_RELAY=1 requires PAPERBOAT_TOPOLOGY_FILE_UPSTREAM")
+		}
+		return true, true, upstream, nil
+	default:
+		return false, false, "", errors.New("PAPERBOAT_TOPOLOGY_FILE_RELAY must be 0 or 1")
 	}
 }
 

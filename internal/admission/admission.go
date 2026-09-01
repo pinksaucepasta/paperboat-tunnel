@@ -12,6 +12,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/edgeerrors"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/operation"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/strictjson"
+	"golang.org/x/net/idna"
 )
 
 const audience = "paperboat-edge"
@@ -171,18 +172,51 @@ func validateRoutes(routes []Route) error {
 	if len(routes) == 0 || len(routes) > 128 {
 		return invalid("route handoff is invalid")
 	}
-	seenHosts, seenIDs := map[string]bool{}, map[string]bool{}
+	seenHosts, seenIDs, seenProxies := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, route := range routes {
-		if !idPattern.MatchString(route.RouteID) || !idPattern.MatchString(route.ProxyName) || route.Revision == 0 || (route.Kind != "runtime_https_wss" && route.Kind != "preview_public_https_wss") || route.TargetPort == 0 || route.TargetHost != "127.0.0.1" && route.TargetHost != "::1" {
+		if !idPattern.MatchString(route.RouteID) || !idPattern.MatchString(route.ProxyName) || route.Revision == 0 || (route.Kind != "runtime_https_wss" && route.Kind != "preview_public_https_wss") || route.TargetPort == 0 || route.TargetHost != "127.0.0.1" && route.TargetHost != "::1" || seenIDs[route.RouteID] || seenProxies[route.ProxyName] || !validPublicHost(route.PublicHost) {
 			return invalid("route handoff is invalid")
 		}
-		host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(route.PublicHost), "."))
-		if host == "" || net.ParseIP(host) != nil || strings.ContainsAny(host, "/?@") || seenHosts[host] || seenIDs[route.RouteID] {
+		host, ok := normalizePublicHost(route.PublicHost)
+		if !ok || seenHosts[host] {
 			return invalid("route handoff is invalid")
 		}
-		seenHosts[host], seenIDs[route.RouteID] = true, true
+		seenHosts[host], seenIDs[route.RouteID], seenProxies[route.ProxyName] = true, true, true
 	}
 	return nil
+}
+
+// validPublicHost is intentionally stricter than URL parsing. Route handoffs
+// are later copied into Host headers and connector proxy identities, so
+// whitespace, control characters, userinfo delimiters, underscores, IP
+// literals, and ambiguous DNS labels must be rejected before the journal is
+// mutated. IDNA lookup normalization keeps the edge and connector on one
+// canonical ASCII hostname.
+func normalizePublicHost(value string) (string, bool) {
+	if value == "" || len(value) > 253 || strings.TrimSpace(value) != value || strings.ContainsAny(value, "/:@[]?#\r\n\x00") || strings.Contains(value, "_") {
+		return "", false
+	}
+	host := strings.ToLower(strings.TrimSuffix(value, "."))
+	ascii, err := idna.Lookup.ToASCII(host)
+	if err != nil || ascii == "" || len(ascii) > 253 || net.ParseIP(ascii) != nil || strings.Contains(ascii, "..") {
+		return "", false
+	}
+	for _, label := range strings.Split(ascii, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return "", false
+		}
+		for _, char := range label {
+			if !(char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '-') {
+				return "", false
+			}
+		}
+	}
+	return ascii, true
+}
+
+func validPublicHost(value string) bool {
+	_, ok := normalizePublicHost(value)
+	return ok
 }
 
 func invalid(message string) error {

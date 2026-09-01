@@ -1,6 +1,8 @@
 GO_VERSION := 1.26.6
+GO_ROOT := $(shell GOTOOLCHAIN=go$(GO_VERSION) go env GOROOT)
+export PATH := $(GO_ROOT)/bin:$(PATH)
 GO := GOTOOLCHAIN=local go
-GOFMT := $(shell GOTOOLCHAIN=local go env GOROOT 2>/dev/null)/bin/gofmt
+GOFMT := $(GO_ROOT)/bin/gofmt
 FRP_DIR := frp
 CADDY_MODULE_DIR := caddymodules/paperboatquic
 FRP_VERSION := v0.70.1

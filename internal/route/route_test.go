@@ -6,7 +6,7 @@ import (
 )
 
 func TestRegistryRevisionAndHostOwnership(t *testing.T) {
-	r := NewRegistry("example.test", "helper.example.test")
+	r := NewRegistry("example.test", "runtime.example.test")
 	a := Attachment{ID: "r1", Revision: 1, Environment: "e1", Node: "n1", Generation: 1, Host: "Preview.Example.Test.", Target: "127.0.0.1:3000", Kind: PreviewHTTPSWSS}
 	if _, err := r.Attach(a); err != nil {
 		t.Fatal(err)
@@ -34,14 +34,29 @@ func TestRegistryRevisionAndHostOwnership(t *testing.T) {
 }
 
 func TestRegistryRejectsRouteKindDomainMismatch(t *testing.T) {
-	registry := NewRegistry("preview.example.test", "helper.example.test")
+	registry := NewRegistry("preview.example.test", "runtime.example.test")
 	base := Attachment{ID: "route", Revision: 1, Environment: "env", Node: "edge", Generation: 1, Target: "127.0.0.1:8080"}
 	for _, attachment := range []Attachment{
 		func() Attachment { a := base; a.Kind = HelperHTTPSWSS; a.Host = "app.preview.example.test"; return a }(),
-		func() Attachment { a := base; a.Kind = PreviewHTTPSWSS; a.Host = "app.helper.example.test"; return a }(),
+		func() Attachment { a := base; a.Kind = PreviewHTTPSWSS; a.Host = "app.runtime.example.test"; return a }(),
 	} {
 		if _, err := registry.Attach(attachment); err != ErrInvalid {
 			t.Fatalf("mismatched route accepted: %+v, err=%v", attachment, err)
+		}
+	}
+}
+
+func TestManagedTunnelRoutesRequireOpaqueUUIDHostname(t *testing.T) {
+	registry := NewRegistry("preview.example.test", "runtime.example.test")
+	base := RouteRule{ID: "managed_route", Revision: 1, Kind: TunnelHTTPSWSS, MatchType: MatchManagedExact, PathPrefix: "/", Target: "carrier_01", Protocol: "http", OriginScheme: "http", AccessMode: "public", Generation: 1}
+	for _, host := range []string{
+		"demo.tunnels.example.test",
+		"123e4567-e89b-12d3-a456-426614174000.tunnels.example.test",
+	} {
+		rule := base
+		rule.Hostname = host
+		if err := registry.StageGeneration(1, []RouteRule{rule}); host != "123e4567-e89b-12d3-a456-426614174000.tunnels.example.test" && err == nil || host == "123e4567-e89b-12d3-a456-426614174000.tunnels.example.test" && err != nil {
+			t.Fatalf("managed host %q stage error=%v", host, err)
 		}
 	}
 }

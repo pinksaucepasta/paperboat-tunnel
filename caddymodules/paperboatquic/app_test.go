@@ -27,7 +27,7 @@ func TestTerminalTLSConfigPreservesDynamicCertificatesAndALPN(t *testing.T) {
 }
 
 func TestValidHostname(t *testing.T) {
-	for _, hostname := range []string{"helper.example.test", "a-b.example", "127.0.0.1"} {
+	for _, hostname := range []string{"runtime.example.test", "a-b.example", "127.0.0.1"} {
 		if !validHostname(hostname) {
 			t.Fatalf("valid hostname rejected: %q", hostname)
 		}

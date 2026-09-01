@@ -11,8 +11,21 @@ import (
 )
 
 type AssemblySpec struct {
-	Persistence    Component
-	Control        Component
+	Persistence Component
+	Control     Component
+	// Carrier owns authenticated connector-v1 carrier listeners and accepted
+	// peers. It is optional for deployments which have not supplied the
+	// server-owned endpoint/certificate/authorizer material yet.
+	Carrier Component
+	// CertificateBroker is the cross-process Caddy certificate selector. It
+	// must be started before the supervised Caddy process.
+	CertificateBroker Component
+	// Certificates is the optional live server-to-edge certificate
+	// distribution worker. It owns only in-memory edge key material.
+	Certificates Component
+	// Preview reconciles server-issued preview carrier admissions and must stop
+	// before Carrier so route detach observations can use live peer handles.
+	Preview        Component
 	Node           Component
 	Routes         Component
 	Usage          Component
@@ -66,16 +79,20 @@ func NewAssembly(spec AssemblySpec) (*Assembly, error) {
 		return nil, fmt.Errorf("assembly Caddy: %w", err)
 	}
 	dataPlane, err := NewDataPlane(DataPlaneSpec{
-		Persistence: spec.Persistence,
-		Control:     spec.Control,
-		Node:        spec.Node,
-		Routes:      spec.Routes,
-		Usage:       spec.Usage,
-		Hook:        hook,
-		Gateway:     gateway,
-		FRPS:        frps,
-		Caddy:       caddy,
-		CaddyReady:  spec.CaddyReady,
+		Persistence:       spec.Persistence,
+		Control:           spec.Control,
+		Carrier:           spec.Carrier,
+		CertificateBroker: spec.CertificateBroker,
+		Certificates:      spec.Certificates,
+		Preview:           spec.Preview,
+		Node:              spec.Node,
+		Routes:            spec.Routes,
+		Usage:             spec.Usage,
+		Hook:              hook,
+		Gateway:           gateway,
+		FRPS:              frps,
+		Caddy:             caddy,
+		CaddyReady:        spec.CaddyReady,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("assembly lifecycle: %w", err)

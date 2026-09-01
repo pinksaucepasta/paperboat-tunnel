@@ -57,10 +57,17 @@ func TestControlStormParticipant(t *testing.T) {
 		go func(index int) {
 			defer wg.Done()
 			nodeID := config.Prefix + strconv.Itoa(index)
+			trust, trustErr := NewProcessCarrierServerTrust(nodeID, "tunnel_client_epoch", "edge.example.test", time.Now().UTC(), time.Hour)
+			if trustErr != nil {
+				errors <- trustErr
+				return
+			}
 			registration := NodeRegistration{
-				NodeID: nodeID, EdgePool: "default", Artifact: "paperboat-control-storm",
+				NodeID: nodeID, EdgePool: "default", RelayID: "storm-relay-" + strconv.Itoa(index), RelayRegion: "storm", RelayName: "Control Storm", Artifact: "paperboat-control-storm",
 				Protocol: "1.0", ProcessEpoch: "tunnel_client_epoch", Capacity: 128,
-				Endpoint:      ConnectorEndpoint{Host: "127.0.0.1", TCPPort: uint16(20000 + index), QUICPort: uint16(30000 + index)},
+				Endpoint:                ConnectorEndpoint{Host: "127.0.0.1", TCPPort: uint16(20000 + index), QUICPort: uint16(30000 + index)},
+				CarrierEndpoint:         ConnectorEndpoint{Host: "edge.example.test", TCPPort: uint16(40000 + index), QUICPort: uint16(50000 + index)},
+				CarrierServerSPKISHA256: trust.SPKISHA256, CarrierServerCertificateChainPEM: trust.CertificateChainPEM,
 				SignalingHost: "signal.example.test", STUNEndpoint: UDPEndpoint{Host: "127.0.0.1", Port: 3478},
 			}
 			started := time.Now()

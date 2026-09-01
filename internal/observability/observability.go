@@ -12,6 +12,7 @@ import (
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/edgeerrors"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/node"
+	edgetelemetry "github.com/pinksaucepasta/paperboat-tunnel/internal/telemetry"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/usage"
 )
 
@@ -77,6 +78,7 @@ type MetricDescriptor struct {
 
 func MetricDescriptors() []MetricDescriptor {
 	return []MetricDescriptor{
+		{Name: "paperboat_edge_telemetry_dropped_total", Kind: "counter"},
 		{Name: "paperboat_tunnel_active_streams", Kind: "gauge"},
 		{Name: "paperboat_tunnel_attached_routes", Kind: "gauge"},
 		{Name: "paperboat_tunnel_certificate_expiry_timestamp_seconds", Kind: "gauge"},
@@ -169,24 +171,28 @@ func (d Diagnostics) Ready() bool {
 }
 
 type Sources struct {
-	Node          func() node.Snapshot
-	Manager       func() node.ManagerSnapshot
-	Sessions      func() int
-	SessionRoutes func() int
-	ActiveStreams func() uint32
-	RouteCount    func() int
-	Usage         func() usage.QueueStats
-	ControlErr    func() error
-	RouteErr      func() error
-	UsageErr      func() error
-	FRPRunning    func() bool
-	CaddyRunning  func() bool
-	STUN          func() STUNStats
-	Signaling     func() SignalingStats
-	CaddyTLS      func() (time.Time, error)
-	Events        func() map[MetricKey]uint64
-	Traffic       func() []usage.CounterRecord
-	Now           func() time.Time
+	Node           func() node.Snapshot
+	Manager        func() node.ManagerSnapshot
+	Sessions       func() int
+	SessionRoutes  func() int
+	ActiveStreams  func() uint32
+	RouteCount     func() int
+	Usage          func() usage.QueueStats
+	ControlErr     func() error
+	RouteErr       func() error
+	UsageErr       func() error
+	FRPRunning     func() bool
+	CaddyRunning   func() bool
+	STUN           func() STUNStats
+	Signaling      func() SignalingStats
+	CaddyTLS       func() (time.Time, error)
+	Events         func() map[MetricKey]uint64
+	Traffic        func() []usage.CounterRecord
+	Health         func() edgetelemetry.HealthSnapshot
+	Lifecycle      func() []edgetelemetry.Event
+	TypedMetrics   func() []edgetelemetry.MetricSample
+	TelemetryDrops func() uint64
+	Now            func() time.Time
 }
 
 type STUNStats struct {
@@ -204,34 +210,38 @@ type SignalingStats struct {
 }
 
 type Snapshot struct {
-	At                    time.Time            `json:"at"`
-	Node                  node.Snapshot        `json:"node"`
-	Control               Status               `json:"control"`
-	Routes                Status               `json:"routes"`
-	Usage                 Status               `json:"usage"`
-	FRP                   Status               `json:"frp"`
-	Caddy                 Status               `json:"caddy"`
-	STUN                  Status               `json:"stun"`
-	Signaling             Status               `json:"signaling"`
-	SignalingSessions     int                  `json:"signaling_sessions"`
-	SignalingAttachments  int                  `json:"signaling_attachments"`
-	SignalingCapacity     int                  `json:"signaling_capacity"`
-	STUNRequests          uint64               `json:"stun_requests"`
-	STUNRejected          uint64               `json:"stun_rejected"`
-	STUNErrors            uint64               `json:"stun_errors"`
-	CertificateExpiresAt  time.Time            `json:"certificate_expires_at,omitempty"`
-	Connectors            int                  `json:"connectors"`
-	ActiveStreams         uint32               `json:"active_streams"`
-	AttachedRoutes        int                  `json:"attached_routes"`
-	RouteDrift            bool                 `json:"route_drift"`
-	UsagePendingReports   int                  `json:"usage_pending_reports"`
-	UsagePendingBytes     int                  `json:"usage_pending_bytes"`
-	UsageOldestAgeSeconds int64                `json:"usage_oldest_age_seconds"`
-	Capacity              uint32               `json:"connector_capacity"`
-	FailureCodes          []string             `json:"failure_codes,omitempty"`
-	Events                map[MetricKey]uint64 `json:"-"`
-	TrafficIngressBytes   uint64               `json:"traffic_ingress_bytes"`
-	TrafficEgressBytes    uint64               `json:"traffic_egress_bytes"`
+	At                    time.Time                     `json:"at"`
+	Node                  node.Snapshot                 `json:"node"`
+	Control               Status                        `json:"control"`
+	Routes                Status                        `json:"routes"`
+	Usage                 Status                        `json:"usage"`
+	FRP                   Status                        `json:"frp"`
+	Caddy                 Status                        `json:"caddy"`
+	STUN                  Status                        `json:"stun"`
+	Signaling             Status                        `json:"signaling"`
+	SignalingSessions     int                           `json:"signaling_sessions"`
+	SignalingAttachments  int                           `json:"signaling_attachments"`
+	SignalingCapacity     int                           `json:"signaling_capacity"`
+	STUNRequests          uint64                        `json:"stun_requests"`
+	STUNRejected          uint64                        `json:"stun_rejected"`
+	STUNErrors            uint64                        `json:"stun_errors"`
+	CertificateExpiresAt  time.Time                     `json:"certificate_expires_at,omitempty"`
+	Connectors            int                           `json:"connectors"`
+	ActiveStreams         uint32                        `json:"active_streams"`
+	AttachedRoutes        int                           `json:"attached_routes"`
+	RouteDrift            bool                          `json:"route_drift"`
+	UsagePendingReports   int                           `json:"usage_pending_reports"`
+	UsagePendingBytes     int                           `json:"usage_pending_bytes"`
+	UsageOldestAgeSeconds int64                         `json:"usage_oldest_age_seconds"`
+	Capacity              uint32                        `json:"connector_capacity"`
+	FailureCodes          []string                      `json:"failure_codes,omitempty"`
+	Events                map[MetricKey]uint64          `json:"-"`
+	TrafficIngressBytes   uint64                        `json:"traffic_ingress_bytes"`
+	TrafficEgressBytes    uint64                        `json:"traffic_egress_bytes"`
+	Health                *edgetelemetry.HealthSnapshot `json:"health,omitempty"`
+	LifecycleEvents       []edgetelemetry.Event         `json:"lifecycle_events,omitempty"`
+	TelemetryDrops        uint64                        `json:"telemetry_drops"`
+	TypedMetrics          []edgetelemetry.MetricSample  `json:"-"`
 }
 
 func NewHandler(s Sources) (http.Handler, error) {
@@ -256,6 +266,19 @@ func snapshot(s Sources) Snapshot {
 	signaling := s.Signaling()
 	routeErr := s.RouteErr()
 	result := Snapshot{At: now, Node: s.Node(), Control: statusFor(s.ControlErr()), Routes: statusFor(routeErr), Usage: statusFor(s.UsageErr()), FRP: runningStatus(s.FRPRunning()), Caddy: runningStatus(s.CaddyRunning()), STUN: runningStatus(stun.Running), Signaling: runningStatus(signaling.Running), STUNRequests: stun.Accepted, STUNRejected: stun.Rejected, STUNErrors: stun.Errors, SignalingSessions: signaling.Sessions, SignalingAttachments: signaling.Attachments, SignalingCapacity: signaling.Capacity, Connectors: s.Sessions(), ActiveStreams: s.ActiveStreams(), AttachedRoutes: s.RouteCount(), UsagePendingReports: pending.Reports, UsagePendingBytes: pending.Bytes, Capacity: manager.Capacity, Events: s.Events()}
+	if s.Health != nil {
+		health := s.Health()
+		result.Health = &health
+	}
+	if s.Lifecycle != nil {
+		result.LifecycleEvents = s.Lifecycle()
+	}
+	if s.TypedMetrics != nil {
+		result.TypedMetrics = s.TypedMetrics()
+	}
+	if s.TelemetryDrops != nil {
+		result.TelemetryDrops = s.TelemetryDrops()
+	}
 	// Desired routes may legitimately outnumber active session routes while an
 	// admitted connector is offline. Active routes must, however, always remain
 	// a subset of the authoritative registry. A larger active set proves that a
@@ -376,6 +399,18 @@ func writeMetrics(w http.ResponseWriter, s Snapshot) {
 	for _, key := range keys {
 		lines = append(lines, `paperboat_tunnel_events_total{kind="`+string(key.Kind)+`",result="`+string(key.Result)+`",route_kind="`+key.RouteKind+`",direction="`+key.Direction+`"} `+strconv.FormatUint(s.Events[key], 10))
 	}
+	for _, sample := range s.TypedMetrics {
+		labels := make([]string, len(sample.Labels))
+		for index, label := range sample.Labels {
+			labels[index] = label.Name + `="` + label.Value + `"`
+		}
+		suffix := ""
+		if len(labels) > 0 {
+			suffix = "{" + strings.Join(labels, ",") + "}"
+		}
+		lines = append(lines, sample.Name+suffix+" "+strconv.FormatUint(sample.Value, 10))
+	}
+	lines = append(lines, "paperboat_edge_telemetry_dropped_total "+strconv.FormatUint(s.TelemetryDrops, 10))
 	_, _ = w.Write([]byte(strings.Join(lines, "\n") + "\n"))
 }
 

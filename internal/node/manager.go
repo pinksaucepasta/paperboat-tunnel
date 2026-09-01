@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -208,6 +209,9 @@ func (m *Manager) Observation(nodeID, processEpoch string, at time.Time) control
 func (m *Manager) RegisterAndHeartbeat(ctx context.Context, sink control.NodeSink, registration control.NodeRegistration, at time.Time) error {
 	if sink == nil {
 		return ErrUnknown
+	}
+	if err := registration.Validate(); err != nil {
+		return fmt.Errorf("node registration: %w", err)
 	}
 	if err := sink.RegisterNode(ctx, registration); err != nil {
 		return err

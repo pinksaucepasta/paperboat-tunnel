@@ -22,45 +22,53 @@ const maxDeploymentBytes = 1 << 20
 var routeBaseDomainPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 type Deployment struct {
-	ControlURL                   string        `json:"control_url"`
-	CredentialIssuer             string        `json:"credential_issuer"`
-	ControlCredentialFile        string        `json:"control_credential_file"`
-	ControlCAFile                string        `json:"control_ca_file"`
-	JWKSFile                     string        `json:"jwks_file"`
-	RevocationsFile              string        `json:"revocations_file"`
-	UsageSigningKeyFile          string        `json:"usage_signing_key_file"`
-	FRPSBinary                   string        `json:"frps_binary"`
-	FRPSSHA256                   string        `json:"frps_sha256"`
-	FRPSLogLevel                 string        `json:"frps_log_level,omitempty"`
-	CaddyBinary                  string        `json:"caddy_binary"`
-	CaddySHA256                  string        `json:"caddy_sha256"`
-	RuntimeDirectory             string        `json:"runtime_directory"`
-	HookAddress                  string        `json:"hook_address"`
-	HookPath                     string        `json:"hook_path"`
-	ConnectorBindAddress         string        `json:"connector_bind_address"`
-	ConnectorAdvertiseHost       string        `json:"connector_advertise_host"`
-	ConnectorTCPPort             int           `json:"connector_tcp_port"`
-	ConnectorQUICPort            int           `json:"connector_quic_port"`
-	STUNListenAddress            string        `json:"stun_listen_address"`
-	ConnectorTCPMux              *bool         `json:"connector_tcp_mux,omitempty"`
-	PrivateVhostAddress          string        `json:"private_vhost_address"`
-	EdgeGatewayAddress           string        `json:"edge_gateway_address"`
-	CaddyListenAddress           string        `json:"caddy_listen_address"`
-	CaddyHTTPListenAddress       string        `json:"caddy_http_listen_address"`
-	CaddyAdminAddress            string        `json:"caddy_admin_address"`
-	PreviewBaseDomain            string        `json:"preview_base_domain"`
-	HelperBaseDomain             string        `json:"helper_base_domain"`
-	SignalingHost                string        `json:"signaling_host"`
-	SignalingCapacity            uint32        `json:"signaling_capacity"`
-	TrustedProxyCIDRs            []string      `json:"trusted_proxy_cidrs"`
-	CertificateIssuer            string        `json:"certificate_issuer"`
-	CertificateDNSProvider       string        `json:"certificate_dns_provider,omitempty"`
-	CertificateDNSCredentialFile string        `json:"certificate_dns_credential_file,omitempty"`
-	PublicRoutes                 []PublicRoute `json:"public_routes,omitempty"`
-	NodeCapacity                 uint32        `json:"node_capacity"`
-	ControlInterval              time.Duration `json:"control_interval"`
-	UsageInterval                time.Duration `json:"usage_interval"`
-	ControlTimeout               time.Duration `json:"control_timeout"`
+	ControlURL             string `json:"control_url"`
+	CredentialIssuer       string `json:"credential_issuer"`
+	ControlCredentialFile  string `json:"control_credential_file"`
+	ControlCAFile          string `json:"control_ca_file"`
+	JWKSFile               string `json:"jwks_file"`
+	RevocationsFile        string `json:"revocations_file"`
+	UsageSigningKeyFile    string `json:"usage_signing_key_file"`
+	FRPSBinary             string `json:"frps_binary"`
+	FRPSSHA256             string `json:"frps_sha256"`
+	FRPSLogLevel           string `json:"frps_log_level,omitempty"`
+	CaddyBinary            string `json:"caddy_binary"`
+	CaddySHA256            string `json:"caddy_sha256"`
+	RuntimeDirectory       string `json:"runtime_directory"`
+	HookAddress            string `json:"hook_address"`
+	HookPath               string `json:"hook_path"`
+	ConnectorBindAddress   string `json:"connector_bind_address"`
+	ConnectorAdvertiseHost string `json:"connector_advertise_host"`
+	ConnectorTCPPort       int    `json:"connector_tcp_port"`
+	ConnectorQUICPort      int    `json:"connector_quic_port"`
+	// Carrier listeners are dedicated connector-v1 data-plane endpoints. They
+	// are separate from the legacy FRP ports and require mutual TLS plus the
+	// server's admission-backed peer binding.
+	CarrierTCPListenAddress         string        `json:"carrier_tcp_listen_address,omitempty"`
+	CarrierQUICListenAddress        string        `json:"carrier_quic_listen_address,omitempty"`
+	STUNListenAddress               string        `json:"stun_listen_address"`
+	ConnectorTCPMux                 *bool         `json:"connector_tcp_mux,omitempty"`
+	PrivateVhostAddress             string        `json:"private_vhost_address"`
+	EdgeGatewayAddress              string        `json:"edge_gateway_address"`
+	CaddyListenAddress              string        `json:"caddy_listen_address"`
+	CaddyPrivateAccessListenAddress string        `json:"caddy_private_access_listen_address"`
+	CaddyHTTPListenAddress          string        `json:"caddy_http_listen_address"`
+	CaddyAdminAddress               string        `json:"caddy_admin_address"`
+	PreviewBaseDomain               string        `json:"preview_base_domain"`
+	TunnelBaseDomain                string        `json:"tunnel_base_domain"`
+	// RuntimeBaseDomain is retained only for the host-runtime control route.
+	// Managed durable tunnel endpoints use TunnelBaseDomain and never this
+	// legacy runtime namespace.
+	RuntimeBaseDomain               string        `json:"runtime_base_domain"`
+	SignalingHost                   string        `json:"signaling_host"`
+	SignalingCapacity               uint32        `json:"signaling_capacity"`
+	TrustedProxyCIDRs               []string      `json:"trusted_proxy_cidrs"`
+	CertificateIssuer               string        `json:"certificate_issuer"`
+	PublicRoutes                    []PublicRoute `json:"public_routes,omitempty"`
+	NodeCapacity                    uint32        `json:"node_capacity"`
+	ControlInterval                 time.Duration `json:"control_interval"`
+	UsageInterval                   time.Duration `json:"usage_interval"`
+	ControlTimeout                  time.Duration `json:"control_timeout"`
 }
 
 type PublicRoute struct {
@@ -117,8 +125,20 @@ func (d Deployment) validate() error {
 	if d.ControlCAFile != "" && (!filepath.IsAbs(d.ControlCAFile) || len(d.ControlCAFile) > 4096) {
 		return errors.New("control_ca_file must be a bounded absolute path")
 	}
-	if d.CertificateDNSCredentialFile != "" && (!filepath.IsAbs(d.CertificateDNSCredentialFile) || len(d.CertificateDNSCredentialFile) > 4096) {
-		return errors.New("certificate_dns_credential_file must be a bounded absolute path")
+	// Canonical preview traffic always has both dedicated carrier transports.
+	// There is no safe legacy-only deployment: buildService cannot construct a
+	// server-admitted carrier or advertise a complete endpoint without them.
+	if d.CarrierTCPListenAddress == "" || d.CarrierQUICListenAddress == "" {
+		return errors.New("canonical preview carrier requires both TCP and QUIC addresses")
+	}
+	if err := carrierEndpoint(d.CarrierTCPListenAddress); err != nil {
+		return err
+	}
+	if err := carrierEndpoint(d.CarrierQUICListenAddress); err != nil {
+		return err
+	}
+	if endpointPort(d.CarrierTCPListenAddress) == endpointPort(d.CarrierQUICListenAddress) {
+		return errors.New("carrier TCP and QUIC listeners must use distinct ports")
 	}
 	for _, digest := range []string{d.FRPSSHA256, d.CaddySHA256} {
 		if digest == "" {
@@ -161,18 +181,21 @@ func (d Deployment) validate() error {
 	if _, _, err := net.SplitHostPort(d.CaddyListenAddress); err != nil {
 		return errors.New("Caddy listener is invalid")
 	}
+	if err := privateLoopbackEndpoint(d.CaddyPrivateAccessListenAddress); err != nil || d.CaddyPrivateAccessListenAddress == d.CaddyListenAddress || d.CaddyPrivateAccessListenAddress == d.CaddyHTTPListenAddress || d.CaddyPrivateAccessListenAddress == d.EdgeGatewayAddress {
+		return errors.New("Caddy private access listener is invalid")
+	}
 	if _, _, err := net.SplitHostPort(d.CaddyHTTPListenAddress); err != nil || d.CaddyHTTPListenAddress == d.CaddyListenAddress {
 		return errors.New("Caddy HTTP listener is invalid")
 	}
-	for _, domain := range []string{d.PreviewBaseDomain, d.HelperBaseDomain} {
+	for _, domain := range []string{d.PreviewBaseDomain, d.TunnelBaseDomain, d.RuntimeBaseDomain} {
 		if !routeBaseDomainPattern.MatchString(domain) || net.ParseIP(domain) != nil {
 			return errors.New("route base domain is invalid")
 		}
 	}
-	if d.PreviewBaseDomain == d.HelperBaseDomain || strings.HasSuffix(d.PreviewBaseDomain, "."+d.HelperBaseDomain) || strings.HasSuffix(d.HelperBaseDomain, "."+d.PreviewBaseDomain) {
+	if overlappingDomains(d.PreviewBaseDomain, d.TunnelBaseDomain) || overlappingDomains(d.PreviewBaseDomain, d.RuntimeBaseDomain) || overlappingDomains(d.TunnelBaseDomain, d.RuntimeBaseDomain) {
 		return errors.New("route base domains must not overlap")
 	}
-	if !routeBaseDomainPattern.MatchString(d.SignalingHost) || net.ParseIP(d.SignalingHost) != nil || d.SignalingHost != strings.ToLower(d.SignalingHost) || d.SignalingHost == d.PreviewBaseDomain || d.SignalingHost == d.HelperBaseDomain || strings.HasSuffix(d.SignalingHost, "."+d.PreviewBaseDomain) || strings.HasSuffix(d.SignalingHost, "."+d.HelperBaseDomain) || strings.HasSuffix(d.PreviewBaseDomain, "."+d.SignalingHost) || strings.HasSuffix(d.HelperBaseDomain, "."+d.SignalingHost) {
+	if !routeBaseDomainPattern.MatchString(d.SignalingHost) || net.ParseIP(d.SignalingHost) != nil || d.SignalingHost != strings.ToLower(d.SignalingHost) || overlapsManagedDomain(d.SignalingHost, []string{d.PreviewBaseDomain, d.TunnelBaseDomain, d.RuntimeBaseDomain}) {
 		return errors.New("signaling host is invalid or overlaps managed routes")
 	}
 	for _, cidr := range d.TrustedProxyCIDRs {
@@ -182,7 +205,7 @@ func (d Deployment) validate() error {
 	}
 	seenPublicHosts := make(map[string]struct{}, len(d.PublicRoutes))
 	for _, route := range d.PublicRoutes {
-		if route.Host != strings.ToLower(route.Host) || !routeBaseDomainPattern.MatchString(route.Host) || net.ParseIP(route.Host) != nil || route.Host == d.SignalingHost || strings.HasSuffix(route.Host, "."+d.PreviewBaseDomain) || strings.HasSuffix(route.Host, "."+d.HelperBaseDomain) {
+		if route.Host != strings.ToLower(route.Host) || !routeBaseDomainPattern.MatchString(route.Host) || net.ParseIP(route.Host) != nil || route.Host == d.SignalingHost || overlapsManagedDomain(route.Host, []string{d.PreviewBaseDomain, d.TunnelBaseDomain, d.RuntimeBaseDomain}) {
 			return errors.New("public route host is invalid or overlaps managed routes")
 		}
 		key := route.Host + "\x00" + route.PathPrefix
@@ -200,8 +223,30 @@ func (d Deployment) validate() error {
 			return errors.New("public route cannot strip an empty prefix")
 		}
 	}
-	if d.CertificateIssuer == "" || (d.CertificateDNSProvider != "" && (d.CertificateIssuer != "acme" || d.CertificateDNSCredentialFile == "")) || d.NodeCapacity == 0 || d.NodeCapacity > 10000 || d.SignalingCapacity == 0 || d.SignalingCapacity > 10000 || d.ControlInterval <= 0 || d.ControlInterval > time.Minute || d.UsageInterval <= 0 || d.UsageInterval > time.Minute || d.ControlTimeout <= 0 || d.ControlTimeout > 30*time.Second {
+	if d.CertificateIssuer == "" || d.NodeCapacity == 0 || d.NodeCapacity > 10000 || d.SignalingCapacity == 0 || d.SignalingCapacity > 10000 || d.ControlInterval <= 0 || d.ControlInterval > time.Minute || d.UsageInterval <= 0 || d.UsageInterval > time.Minute || d.ControlTimeout <= 0 || d.ControlTimeout > 30*time.Second {
 		return errors.New("deployment bounds are invalid")
+	}
+	return nil
+}
+
+func overlappingDomains(first, second string) bool {
+	return first == second || strings.HasSuffix(first, "."+second) || strings.HasSuffix(second, "."+first)
+}
+
+func overlapsManagedDomain(host string, domains []string) bool {
+	for _, domain := range domains {
+		if host == domain || strings.HasSuffix(host, "."+domain) || strings.HasSuffix(domain, "."+host) {
+			return true
+		}
+	}
+	return false
+}
+
+func privateLoopbackEndpoint(endpoint string) error {
+	host, port, err := net.SplitHostPort(endpoint)
+	ip := net.ParseIP(host)
+	if err != nil || ip == nil || !ip.IsLoopback() || port == "" || port == "0" {
+		return errors.New("private endpoint must use a literal loopback address and explicit port")
 	}
 	return nil
 }
@@ -230,6 +275,15 @@ func privateEndpoint(address string) error {
 	ip := net.ParseIP(host)
 	if err != nil || ip == nil || (!ip.IsLoopback() && !ip.IsPrivate()) || port == "" || port == "0" {
 		return errors.New("private endpoint must use a fixed loopback or private address")
+	}
+	return nil
+}
+
+func carrierEndpoint(address string) error {
+	host, port, err := net.SplitHostPort(address)
+	value, portErr := strconv.Atoi(port)
+	if err != nil || net.ParseIP(host) == nil || portErr != nil || value < 1 || value > 65535 {
+		return errors.New("carrier listener must use an explicit IP and fixed nonzero port")
 	}
 	return nil
 }

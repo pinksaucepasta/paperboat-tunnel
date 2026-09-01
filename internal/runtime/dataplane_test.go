@@ -45,7 +45,7 @@ func TestDataPlaneOrdersStartupAndAccountingSafeShutdown(t *testing.T) {
 	if err := dataPlane.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"start:store", "start:hook", "start:gateway", "start:frps", "start:caddy", "start:caddy-ready", "start:control", "start:node", "start:routes", "start:usage", "stop:caddy", "stop:caddy-ready", "stop:frps", "stop:gateway", "stop:routes", "stop:usage", "stop:node", "stop:hook", "stop:control", "stop:store"}
+	want := []string{"start:store", "start:hook", "start:gateway", "start:frps", "start:caddy", "start:control", "start:node", "start:caddy-ready", "start:routes", "start:usage", "stop:usage", "stop:routes", "stop:caddy-ready", "stop:caddy", "stop:node", "stop:control", "stop:frps", "stop:gateway", "stop:hook", "stop:store"}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v", events)
 	}
@@ -65,4 +65,38 @@ func TestDataPlaneCleansPartialStartupInReverse(t *testing.T) {
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v", events)
 	}
+}
+
+func TestDataPlaneInstallsPreviewBeforeCarrierAndDetachesBeforeClose(t *testing.T) {
+	var mu sync.Mutex
+	var events []string
+	component := func(name string) Component { return orderedComponent{name: name, events: &events, mu: &mu} }
+	dataPlane, err := NewDataPlane(DataPlaneSpec{
+		Persistence: component("store"), Control: component("control"), Carrier: component("carrier"), Preview: component("preview"),
+		Node: component("node"), Routes: component("routes"), Hook: component("hook"), Gateway: component("gateway"),
+		FRPS: component("frps"), Caddy: component("caddy"), CaddyReady: component("caddy-ready"), Usage: component("usage"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dataPlane.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := dataPlane.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	previewStart, carrierStart := indexOf(events, "start:preview"), indexOf(events, "start:carrier")
+	previewStop, carrierStop := indexOf(events, "stop:preview"), indexOf(events, "stop:carrier")
+	if previewStart < 0 || carrierStart < 0 || previewStart > carrierStart || previewStop < 0 || carrierStop < 0 || previewStop > carrierStop {
+		t.Fatalf("preview/carrier lifecycle order = %v", events)
+	}
+}
+
+func indexOf(values []string, want string) int {
+	for index, value := range values {
+		if value == want {
+			return index
+		}
+	}
+	return -1
 }

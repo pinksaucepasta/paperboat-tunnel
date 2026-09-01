@@ -1,6 +1,17 @@
-# Reviewed 2026-08-06 after the primary peer transport and relay cutover.
-# Updating a size requires package/dependency attribution in the reviewing change.
-paperboat-tunnel	linux	amd64	8425634
-paperboat-tunnel	linux	arm64	7798946
+# Reviewed 2026-09-01 for TRK-38 against the 2026-08-06 baseline. Exact Go 1.26.6
+# Make binary-size builds changed paperboat-tunnel linux/amd64 8425634 ->
+# 11591842 (+3166208, +37.58%) and linux/arm64 7798946 -> 10682530
+# (+2883584, +36.97%); frps is unchanged at 20095138/17957026 bytes.
+# Reproducible `go tool nm -size` attribution against the checkpoint source
+# identifies non-TLS growth in quic-go (+270848), edgehttp (+119235),
+# datacarrier (+99029), runtime (+88032), x/text/unicode/norm (+77019),
+# control (+66673), telemetry (+51501), route (+47199), connectorprotocol
+# (+13418), caddyconfig (+4440), and certbroker (+3173) bytes. Active TLS,
+# certificate, and runtime certificate packages are measured but excluded
+# from this non-TLS ownership attribution per TRK-38 scope. The remaining
+# measured growth includes Go runtime/linker/static data and newly reachable
+# feature code. Updating a size requires this attribution.
+paperboat-tunnel	linux	amd64	11591842
+paperboat-tunnel	linux	arm64	10682530
 frps	linux	amd64	20095138
 frps	linux	arm64	17957026

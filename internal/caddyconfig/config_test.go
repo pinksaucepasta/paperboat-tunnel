@@ -3,6 +3,7 @@ package caddyconfig
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,7 +12,7 @@ import (
 )
 
 func validInput() Input {
-	return Input{PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", SignalingHost: "signal.example.test", PrivateUpstream: "127.0.0.1:8080", ListenAddress: ":443", HTTPListenAddress: ":80", AdminAddress: "127.0.0.1:2019", TrustedProxies: []string{"10.0.0.0/8", "fd00::/8"}, IssuerModule: "internal", CertificateAskURL: "http://127.0.0.1:8080/private/certificate-ask", StreamBrokerPath: "/run/paperboat/frps-stream.sock"}
+	return Input{PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test", SignalingHost: "signal.example.test", PrivateUpstream: "127.0.0.1:8080", ListenAddress: ":443", PrivateAccessListenAddress: "127.0.0.1:9443", PrivateAccessToken: "private-access-token-0123456789abcdef", HTTPListenAddress: ":80", AdminAddress: "127.0.0.1:2019", TrustedProxies: []string{"10.0.0.0/8", "fd00::/8"}, IssuerModule: "internal", StreamBrokerPath: "/run/paperboat/frps-stream.sock"}
 }
 
 func TestGenerateCaddyPolicy(t *testing.T) {
@@ -22,6 +23,9 @@ func TestGenerateCaddyPolicy(t *testing.T) {
 	var document map[string]any
 	if err := json.Unmarshal(data, &document); err != nil {
 		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "/v1/public-preview-relay") {
+		t.Fatalf("obsolete public preview relay route remains: %s", data)
 	}
 	if strings.Contains(string(data), "0.0.0.0:2019") || strings.Contains(string(data), "X-Forwarded-For\"") && !strings.Contains(string(data), "delete") {
 		t.Fatalf("unsafe policy: %s", data)
@@ -36,13 +40,11 @@ func TestGenerateCaddyPolicy(t *testing.T) {
 	}
 	policies := apps["tls"].(map[string]any)["automation"].(map[string]any)["policies"].([]any)
 	automation := apps["tls"].(map[string]any)["automation"].(map[string]any)
-	permission := automation["on_demand"].(map[string]any)["permission"].(map[string]any)
-	if permission["module"] != "http" || permission["endpoint"] != "http://127.0.0.1:8080/private/certificate-ask" || policies[0].(map[string]any)["on_demand"] != true {
-		t.Fatalf("on-demand certificate authorization = %v %v", permission, policies[0])
+	if _, exists := automation["on_demand"]; exists {
+		t.Fatalf("unconfigured edge on-demand certificate authorization = %v", automation["on_demand"])
 	}
-	subjects := policies[0].(map[string]any)["subjects"].([]any)
-	if len(subjects) != 2 || subjects[0] != "*.preview.example.test" || subjects[1] != "*.helper.example.test" {
-		t.Fatalf("TLS subjects = %v", subjects)
+	if len(policies) != 1 || policies[0].(map[string]any)["subjects"].([]any)[0] != "signal.example.test" {
+		t.Fatalf("TLS signaling policy = %v", policies)
 	}
 	logging := document["logging"].(map[string]any)["logs"].(map[string]any)["default"].(map[string]any)
 	if logging["level"] != "PANIC" {
@@ -120,6 +122,89 @@ func TestGenerateCaddyPolicy(t *testing.T) {
 			t.Fatal("trusted proxy chain is deleted before Caddy can forward it")
 		}
 	}
+	privateServer := servers["paperboat_private_access"].(map[string]any)
+	if privateServer["listen"].([]any)[0] != "127.0.0.1:9443" {
+		t.Fatalf("private access listener = %v", privateServer["listen"])
+	}
+	privateProxy := privateServer["routes"].([]any)[0].(map[string]any)["handle"].([]any)[0].(map[string]any)
+	privateHeaders := privateProxy["headers"].(map[string]any)["request"].(map[string]any)
+	privateToken := privateHeaders["set"].(map[string]any)["X-Paperboat-Private-Carrier"].([]any)
+	if len(privateToken) != 1 || privateToken[0] != "private-access-token-0123456789abcdef" {
+		t.Fatalf("private carrier token = %v", privateToken)
+	}
+	publicDeleted := requestHeaders["delete"].([]any)
+	privateMarkerDeleted := false
+	for _, value := range publicDeleted {
+		if value == "X-Paperboat-Private-Carrier" {
+			privateMarkerDeleted = true
+		}
+	}
+	if !privateMarkerDeleted {
+		t.Fatal("public listener does not strip spoofed private carrier marker")
+	}
+}
+
+func TestGenerateUsesBrokerAsSoleManagedCertificateSource(t *testing.T) {
+	input := validInput()
+	input.CertificateBrokerSocket = "/tmp/paperboat-certificate.sock"
+	input.PublicRoutes = []PublicRoute{{Host: "api.example.test", Upstream: "127.0.0.1:8081"}}
+	data, err := Generate(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	automation := document["apps"].(map[string]any)["tls"].(map[string]any)["automation"].(map[string]any)
+	if _, exists := automation["on_demand"]; exists {
+		t.Fatal("broker mode retained on-demand certificate permission")
+	}
+	policies := automation["policies"].([]any)
+	if len(policies) != 4 {
+		t.Fatalf("broker policies = %v", policies)
+	}
+	for _, raw := range policies {
+		policy := raw.(map[string]any)
+		subjects, hasSubjects := policy["subjects"].([]any)
+		if !hasSubjects {
+			if _, exists := policy["issuers"]; exists {
+				t.Fatalf("dynamic catch-all retained issuer fallback: %v", policy)
+			}
+			if _, exists := policy["on_demand"]; exists {
+				t.Fatalf("dynamic catch-all retained on-demand fallback: %v", policy)
+			}
+			getCertificate := policy["get_certificate"].([]any)
+			if len(getCertificate) != 1 || getCertificate[0].(map[string]any)["via"] != "paperboat" {
+				t.Fatalf("dynamic catch-all broker = %v", policy)
+			}
+			continue
+		}
+		if len(subjects) > 0 && subjects[0] == "api.example.test" {
+			issuers := policy["issuers"].([]any)
+			if len(issuers) != 1 || issuers[0].(map[string]any)["module"] != input.IssuerModule {
+				t.Fatalf("infrastructure route issuer = %v", policy)
+			}
+			if _, exists := policy["get_certificate"]; exists {
+				t.Fatalf("infrastructure route incorrectly depends on managed broker: %v", policy)
+			}
+			continue
+		}
+		managed := len(subjects) > 0 && (subjects[0] == "*.preview.example.test" || subjects[0] == "*.tunnels.example.test")
+		if !managed {
+			continue
+		}
+		if _, exists := policy["issuers"]; exists {
+			t.Fatalf("managed policy retained issuer fallback: %v", policy)
+		}
+		if _, exists := policy["on_demand"]; exists {
+			t.Fatalf("managed policy retained on-demand fallback: %v", policy)
+		}
+		getCertificate := policy["get_certificate"].([]any)
+		if len(getCertificate) != 1 || getCertificate[0].(map[string]any)["via"] != "paperboat" || getCertificate[0].(map[string]any)["socket"] != input.CertificateBrokerSocket {
+			t.Fatalf("managed policy broker = %v", policy)
+		}
+	}
 }
 
 func TestGenerateAcceptsPrivateUpstream(t *testing.T) {
@@ -130,21 +215,21 @@ func TestGenerateAcceptsPrivateUpstream(t *testing.T) {
 	}
 }
 
-func TestGenerateCloudflareDNSChallenge(t *testing.T) {
+func TestGenerateNeverEmitsEdgeDNSCredentialsOrOnDemandFallback(t *testing.T) {
 	input := validInput()
 	input.IssuerModule = "acme"
-	input.DNSProvider = "cloudflare"
 	data, err := Generate(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"name": "cloudflare"`) || !strings.Contains(string(data), `"api_token": "{env.CLOUDFLARE_API_TOKEN}"`) {
-		t.Fatalf("Cloudflare DNS challenge missing: %s", data)
+	if strings.Contains(string(data), "CLOUDFLARE_API_TOKEN") || strings.Contains(string(data), "certificate-ask") || strings.Contains(string(data), "on_demand") {
+		t.Fatalf("edge certificate fallback or DNS credential remained: %s", data)
 	}
 }
 
 func TestGenerateExactHostPublicRoutesBeforeManagedWildcards(t *testing.T) {
 	input := validInput()
+	input.CertificateBrokerSocket = "/tmp/paperboat-certificate.sock"
 	input.PublicRoutes = []PublicRoute{
 		{Host: "api.example.test", PathPrefix: "/helper-releases", StripPrefix: true, Upstream: "127.0.0.1:8081"},
 		{Host: "api.example.test", Upstream: "127.0.0.1:8082"},
@@ -162,7 +247,7 @@ func TestGenerateExactHostPublicRoutesBeforeManagedWildcards(t *testing.T) {
 	if len(routes) != 9 {
 		t.Fatalf("routes = %v", routes)
 	}
-	first := routes[5].(map[string]any)
+	first := routes[4].(map[string]any)
 	match := first["match"].([]any)[0].(map[string]any)
 	paths := match["path"].([]any)
 	if match["host"].([]any)[0] != "api.example.test" || len(paths) != 2 || paths[0] != "/helper-releases" || paths[1] != "/helper-releases/*" {
@@ -172,13 +257,16 @@ func TestGenerateExactHostPublicRoutesBeforeManagedWildcards(t *testing.T) {
 	if handlers[0].(map[string]any)["strip_path_prefix"] != "/helper-releases" || handlers[1].(map[string]any)["handler"] != "reverse_proxy" {
 		t.Fatalf("first route handlers = %v", handlers)
 	}
-	reject := routes[7].(map[string]any)
+	reject := routes[6].(map[string]any)
 	if reject["handle"].([]any)[0].(map[string]any)["status_code"].(float64) != 404 {
 		t.Fatalf("static-host fallback = %v", reject)
 	}
 	policies := apps["tls"].(map[string]any)["automation"].(map[string]any)["policies"].([]any)
-	if len(policies) != 3 || policies[1].(map[string]any)["subjects"].([]any)[0] != "signal.example.test" || policies[2].(map[string]any)["subjects"].([]any)[0] != "api.example.test" {
+	if len(policies) != 4 || policies[1].(map[string]any)["subjects"].([]any)[0] != "api.example.test" || policies[2].(map[string]any)["subjects"].([]any)[0] != "signal.example.test" {
 		t.Fatalf("exact-host TLS policy = %v", policies)
+	}
+	if _, exists := policies[3].(map[string]any)["subjects"]; exists {
+		t.Fatalf("dynamic TLS catch-all unexpectedly constrained to static subjects: %v", policies[3])
 	}
 	if _, exists := policies[2].(map[string]any)["on_demand"]; exists {
 		t.Fatal("exact-host certificates unexpectedly depend on dynamic route authorization")
@@ -203,14 +291,18 @@ func TestGenerateIsolatesPeerSignalingHost(t *testing.T) {
 	if probeMatch["path"].([]any)[0] != "/network-check/v1" || probeMatch["method"].([]any)[0] != "GET" {
 		t.Fatalf("network-check route = %v", probe)
 	}
-	exact := routes[3].(map[string]any)
+	exact := routes[2].(map[string]any)
 	match := exact["match"].([]any)[0].(map[string]any)
 	if match["host"].([]any)[0] != "signal.example.test" || match["path"].([]any)[0] != "/v1/peer-signaling" || exact["handle"].([]any)[1].(map[string]any)["handler"] != "reverse_proxy" {
 		t.Fatalf("signaling route = %v", exact)
 	}
-	catchAll := routes[4].(map[string]any)
+	catchAll := routes[3].(map[string]any)
 	if catchAll["match"].([]any)[0].(map[string]any)["host"].([]any)[0] != "signal.example.test" || catchAll["handle"].([]any)[0].(map[string]any)["status_code"].(float64) != 404 {
 		t.Fatalf("signaling catch-all = %v", catchAll)
+	}
+	dynamic := routes[5].(map[string]any)
+	if _, exists := dynamic["match"]; exists || !dynamic["terminal"].(bool) || dynamic["handle"].([]any)[0].(map[string]any)["handler"] != "reverse_proxy" {
+		t.Fatalf("dynamic host catch-all = %v", dynamic)
 	}
 }
 
@@ -225,10 +317,10 @@ func TestGenerateAcceptsPrivateServiceRouteUpstream(t *testing.T) {
 func TestRejectsHostConfusionAndPublicAdmin(t *testing.T) {
 	tests := []Input{
 		func() Input { i := validInput(); i.PreviewBaseDomain = "*.preview.example.test"; return i }(),
-		func() Input { i := validInput(); i.HelperBaseDomain = "127.0.0.1"; return i }(),
+		func() Input { i := validInput(); i.TunnelBaseDomain = "127.0.0.1"; return i }(),
 		func() Input { i := validInput(); i.PreviewBaseDomain = "Preview.example.test"; return i }(),
-		func() Input { i := validInput(); i.HelperBaseDomain = i.PreviewBaseDomain; return i }(),
-		func() Input { i := validInput(); i.HelperBaseDomain = "internal." + i.PreviewBaseDomain; return i }(),
+		func() Input { i := validInput(); i.TunnelBaseDomain = i.PreviewBaseDomain; return i }(),
+		func() Input { i := validInput(); i.TunnelBaseDomain = "internal." + i.PreviewBaseDomain; return i }(),
 		func() Input { i := validInput(); i.SignalingHost = "SIGNAL.example.test"; return i }(),
 		func() Input { i := validInput(); i.SignalingHost = "x." + i.PreviewBaseDomain; return i }(),
 		func() Input {
@@ -263,14 +355,19 @@ func TestRejectsHostConfusionAndPublicAdmin(t *testing.T) {
 }
 
 func TestGeneratedConfigPassesNativeCaddy(t *testing.T) {
-	binary := os.Getenv("CADDY_BIN")
-	image := os.Getenv("CADDY_IMAGE")
-	if binary == "" && image == "" {
+	target, err := caddyValidationTarget(os.Getenv("CADDY_BIN"), os.Getenv("CADDY_IMAGE"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.binary == "" && target.image == "" {
 		t.Skip("CADDY_BIN or CADDY_IMAGE not set")
 	}
-	cloudflare := validInput()
-	cloudflare.IssuerModule, cloudflare.DNSProvider = "acme", "cloudflare"
-	for _, input := range []Input{validInput(), cloudflare} {
+	if target.image != "" {
+		if _, err := exec.LookPath("docker"); err != nil {
+			t.Fatalf("CADDY_IMAGE is enabled but docker is unavailable: %v", err)
+		}
+	}
+	for _, input := range []Input{validInput()} {
 		data, err := Generate(input)
 		if err != nil {
 			t.Fatal(err)
@@ -280,14 +377,54 @@ func TestGeneratedConfigPassesNativeCaddy(t *testing.T) {
 			t.Fatal(err)
 		}
 		var command *exec.Cmd
-		if image != "" {
-			command = exec.Command("docker", "run", "--rm", "--entrypoint", "/usr/local/bin/caddy", "-e", "CLOUDFLARE_API_TOKEN=0123456789abcdef0123456789abcdef01234567", "-v", filepath.Dir(path)+":/test-config:ro", image, "validate", "--config", "/test-config/caddy.json")
+		if target.image != "" {
+			command = exec.Command("docker", "run", "--rm", "--entrypoint", "/usr/local/bin/caddy", "-v", filepath.Dir(path)+":/test-config:ro", target.image, "validate", "--config", "/test-config/caddy.json")
 		} else {
-			command = exec.Command(binary, "validate", "--config", path)
-			command.Env = append(os.Environ(), "XDG_DATA_HOME="+filepath.Join(t.TempDir(), "data"), "XDG_CONFIG_HOME="+filepath.Join(t.TempDir(), "config"), "CLOUDFLARE_API_TOKEN=0123456789abcdef0123456789abcdef01234567")
+			command = exec.Command(target.binary, "validate", "--config", path)
+			command.Env = append(os.Environ(), "XDG_DATA_HOME="+filepath.Join(t.TempDir(), "data"), "XDG_CONFIG_HOME="+filepath.Join(t.TempDir(), "config"))
 		}
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("caddy rejected generated config: %v\n%s", err, output)
 		}
 	}
+}
+
+type caddyValidationSelection struct {
+	binary string
+	image  string
+}
+
+// caddyValidationTarget keeps the optional native-Caddy gate explicit. An
+// ambiguous or malformed opt-in must fail the test rather than silently
+// selecting one value or falling back to the ordinary unit suite.
+func caddyValidationTarget(binary, image string) (caddyValidationSelection, error) {
+	if binary != "" && strings.TrimSpace(binary) != binary || image != "" && strings.TrimSpace(image) != image {
+		return caddyValidationSelection{}, errors.New("CADDY_BIN and CADDY_IMAGE must not contain surrounding whitespace")
+	}
+	if binary != "" && image != "" {
+		return caddyValidationSelection{}, errors.New("set exactly one of CADDY_BIN or CADDY_IMAGE")
+	}
+	if binary == "" && image == "" {
+		return caddyValidationSelection{}, nil
+	}
+	value := binary
+	name := "CADDY_BIN"
+	if image != "" {
+		value = image
+		name = "CADDY_IMAGE"
+	}
+	if len(value) > 512 || strings.ContainsAny(value, "\r\n\x00") || strings.IndexFunc(value, func(r rune) bool { return r == ' ' || r == '\t' }) >= 0 {
+		return caddyValidationSelection{}, fmt.Errorf("%s is malformed", name)
+	}
+	if binary != "" {
+		info, err := os.Stat(binary)
+		if err != nil {
+			return caddyValidationSelection{}, fmt.Errorf("CADDY_BIN is unavailable: %w", err)
+		}
+		if info.IsDir() || info.Mode().Perm()&0o111 == 0 {
+			return caddyValidationSelection{}, errors.New("CADDY_BIN must name an executable file")
+		}
+		return caddyValidationSelection{binary: binary}, nil
+	}
+	return caddyValidationSelection{image: image}, nil
 }

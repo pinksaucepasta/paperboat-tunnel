@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -27,19 +26,23 @@ const (
 var domainPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 type Input struct {
-	PreviewBaseDomain string
-	HelperBaseDomain  string
-	SignalingHost     string
-	PrivateUpstream   string
-	ListenAddress     string
-	HTTPListenAddress string
-	AdminAddress      string
-	TrustedProxies    []string
-	IssuerModule      string
-	DNSProvider       string
-	CertificateAskURL string
-	StreamBrokerPath  string
-	PublicRoutes      []PublicRoute
+	PreviewBaseDomain          string
+	TunnelBaseDomain           string
+	RuntimeBaseDomain          string
+	SignalingHost              string
+	PrivateUpstream            string
+	ListenAddress              string
+	PrivateAccessListenAddress string
+	PrivateAccessToken         string
+	HTTPListenAddress          string
+	AdminAddress               string
+	TrustedProxies             []string
+	IssuerModule               string
+	StreamBrokerPath           string
+	// CertificateBrokerSocket is the private runtime-to-Caddy certificate
+	// selector. When set, Caddy never falls back to disk-backed certificates.
+	CertificateBrokerSocket string
+	PublicRoutes            []PublicRoute
 }
 
 type PublicRoute struct {
@@ -53,7 +56,10 @@ func Generate(input Input) ([]byte, error) {
 	if err := validate(input); err != nil {
 		return nil, err
 	}
-	wildcardHosts := []string{"*." + input.PreviewBaseDomain, "*." + input.HelperBaseDomain}
+	// The platform certificate worker owns exactly these two wildcard
+	// families. Runtime control hosts are legacy infrastructure and are not a
+	// managed durable-tunnel endpoint namespace.
+	wildcardHosts := []string{"*." + input.PreviewBaseDomain, "*." + input.TunnelBaseDomain}
 	publicRoutes := make([]any, 0, len(input.PublicRoutes)+1)
 	staticHosts := make([]string, 0, len(input.PublicRoutes))
 	seenStaticHosts := make(map[string]struct{}, len(input.PublicRoutes))
@@ -65,13 +71,6 @@ func Generate(input Input) ([]byte, error) {
 		},
 		map[string]any{
 			"match": []any{map[string]any{"host": []string{input.SignalingHost}, "path": []string{"/v1/peer-relay"}}},
-			"handle": []any{map[string]any{"handler": "headers", "request": map[string]any{"set": map[string][]string{"X-Paperboat-Relay-Carrier": {"{http.request.proto}"}}}, "response": map[string]any{"set": map[string][]string{
-				"X-Content-Type-Options": {"nosniff"}, "Referrer-Policy": {"no-referrer"}, "X-Frame-Options": {"DENY"},
-			}}}, relayReverseProxy(input.PrivateUpstream)},
-			"terminal": true,
-		},
-		map[string]any{
-			"match": []any{map[string]any{"host": []string{input.SignalingHost}, "path": []string{"/v1/public-preview-relay"}, "method": []string{"POST"}}},
 			"handle": []any{map[string]any{"handler": "headers", "request": map[string]any{"set": map[string][]string{"X-Paperboat-Relay-Carrier": {"{http.request.proto}"}}}, "response": map[string]any{"set": map[string][]string{
 				"X-Content-Type-Options": {"nosniff"}, "Referrer-Policy": {"no-referrer"}, "X-Frame-Options": {"DENY"},
 			}}}, relayReverseProxy(input.PrivateUpstream)},
@@ -125,6 +124,16 @@ func Generate(input Input) ([]byte, error) {
 		},
 		"terminal": true,
 	})
+	// Dynamic custom domains arrive through the authenticated route-assignment
+	// feed after this process starts, so they cannot be enumerated in the
+	// generated host list. Leave the final route host-agnostic and let the
+	// authoritative edge gateway perform the route/ownership check. Unknown
+	// hosts therefore receive its generic rejection while a known dynamic host
+	// can still reach the same streaming path.
+	publicRoutes = append(publicRoutes, map[string]any{
+		"handle":   []any{reverseProxy(input.PrivateUpstream)},
+		"terminal": true,
+	})
 	config := map[string]any{
 		"admin":   map[string]any{"listen": input.AdminAddress},
 		"logging": map[string]any{"logs": map[string]any{"default": map[string]any{"level": "PANIC"}}},
@@ -150,23 +159,71 @@ func Generate(input Input) ([]byte, error) {
 						"client_ip_headers":      []string{"X-Forwarded-For"},
 						"routes":                 publicRoutes,
 					},
+					"paperboat_private_access": map[string]any{
+						"listen":                  []string{input.PrivateAccessListenAddress},
+						"protocols":               []string{"h1", "h2"},
+						"allow_0rtt":              false,
+						"automatic_https":         map[string]any{"disable_redirects": true},
+						"tls_connection_policies": []any{map[string]any{}},
+						"routes": []any{map[string]any{
+							"handle":   []any{privateAccessReverseProxy(input.PrivateUpstream, input.PrivateAccessToken)},
+							"terminal": true,
+						}},
+					},
 				},
 			},
 		},
 	}
-	if input.IssuerModule != "" {
-		issuer := map[string]any{"module": input.IssuerModule}
-		if input.DNSProvider != "" {
-			issuer["challenges"] = map[string]any{"dns": map[string]any{"provider": map[string]any{"name": input.DNSProvider, "api_token": "{env.CLOUDFLARE_API_TOKEN}"}}}
+	if input.IssuerModule != "" || input.CertificateBrokerSocket != "" {
+		issuer := map[string]any(nil)
+		if input.IssuerModule != "" {
+			issuer = map[string]any{"module": input.IssuerModule}
 		}
-		policies := []any{map[string]any{"subjects": wildcardHosts, "issuers": []any{issuer}, "on_demand": true}, map[string]any{"subjects": []string{input.SignalingHost}, "issuers": []any{issuer}}}
-		if len(staticHosts) > 0 {
-			policies = append(policies, map[string]any{"subjects": staticHosts, "issuers": []any{issuer}})
+		certificateManager := []any(nil)
+		if input.CertificateBrokerSocket != "" {
+			certificateManager = []any{map[string]any{"via": "paperboat", "socket": input.CertificateBrokerSocket}}
 		}
-		config["apps"].(map[string]any)["tls"] = map[string]any{"automation": map[string]any{
-			"on_demand": map[string]any{"permission": map[string]any{"module": "http", "endpoint": input.CertificateAskURL}},
-			"policies":  policies,
-		}}
+		policies := make([]any, 0, 3)
+		if certificateManager != nil {
+			// User-managed wildcard and exact route certificates are served only
+			// from the authenticated in-memory broker. In particular, do not
+			// leave Caddy issuers, on-demand permission, or disk storage as a
+			// fallback after a revoke or broker outage.
+			wildcardPolicy := map[string]any{"subjects": wildcardHosts, "get_certificate": certificateManager}
+			policies = append(policies, wildcardPolicy)
+			if len(staticHosts) > 0 {
+				// Deployment PublicRoutes are infrastructure endpoints such as the
+				// control API and release service. They must remain reachable before
+				// the server-managed route certificate broker has delivered any
+				// preview certificate. User preview/tunnel/custom names below remain
+				// broker-only and never inherit this issuer.
+				if issuer != nil {
+					policies = append(policies, map[string]any{"subjects": staticHosts, "issuers": []any{issuer}})
+				} else {
+					policies = append(policies, map[string]any{"subjects": staticHosts, "get_certificate": certificateManager})
+				}
+			}
+			// Signaling is infrastructure-owned. It may use the explicit
+			// issuer when configured, but never grants that issuer to managed
+			// preview domains.
+			if issuer != nil {
+				policies = append(policies, map[string]any{"subjects": []string{input.SignalingHost}, "issuers": []any{issuer}})
+			} else {
+				policies = append(policies, map[string]any{"subjects": []string{input.SignalingHost}, "get_certificate": certificateManager})
+			}
+			// Dynamic exact/apex/wildcard route assignments are not available
+			// when this static Caddy document is generated. An empty-subject
+			// broker-only policy is the deliberate catch-all for those names;
+			// it has no issuer, on-demand permission, or storage fallback.
+			policies = append(policies, map[string]any{"get_certificate": certificateManager})
+		} else if issuer != nil {
+			// Without the Paperboat broker, managed route certificates have no
+			// certificate source and must fail closed. Keep an optional issuer
+			// policy only for the explicitly separate signaling host.
+			policies = append(policies, map[string]any{"subjects": []string{input.SignalingHost}, "issuers": []any{issuer}})
+		}
+		automation := map[string]any{"policies": policies}
+		config["apps"].(map[string]any)["tls"] = map[string]any{"automation": automation}
 		if input.IssuerModule == "internal" {
 			config["apps"].(map[string]any)["pki"] = map[string]any{"certificate_authorities": map[string]any{"local": map[string]any{"install_trust": false}}}
 		}
@@ -175,7 +232,23 @@ func Generate(input Input) ([]byte, error) {
 }
 
 func reverseProxy(upstream string) map[string]any {
-	return map[string]any{"handler": "reverse_proxy", "upstreams": []any{map[string]any{"dial": upstream}}, "headers": map[string]any{"request": map[string]any{"delete": []string{"Forwarded", "X-Forwarded-Host", "X-Real-IP", "X-Paperboat-Environment", "X-Paperboat-Route"}, "set": map[string][]string{"X-Forwarded-Proto": {"https"}, "X-Real-IP": {"{http.request.client_ip}"}}}}}
+	return map[string]any{"handler": "reverse_proxy", "upstreams": []any{map[string]any{"dial": upstream}}, "headers": map[string]any{"request": map[string]any{"delete": []string{"Forwarded", "X-Forwarded-Host", "X-Real-IP", "X-Paperboat-Environment", "X-Paperboat-Route", "X-Paperboat-Private-Carrier", "X-Paperboat-Private-Connection"}, "set": map[string][]string{"X-Forwarded-Proto": {"https"}, "X-Real-IP": {"{http.request.client_ip}"}}}}}
+}
+
+func privateAccessReverseProxy(upstream, token string) map[string]any {
+	proxy := reverseProxy(upstream)
+	request := proxy["headers"].(map[string]any)["request"].(map[string]any)
+	deletions := request["delete"].([]string)
+	filtered := deletions[:0]
+	for _, header := range deletions {
+		if header != "X-Paperboat-Private-Carrier" && header != "X-Paperboat-Private-Connection" {
+			filtered = append(filtered, header)
+		}
+	}
+	request["delete"] = filtered
+	request["set"].(map[string][]string)["X-Paperboat-Private-Carrier"] = []string{token}
+	request["set"].(map[string][]string)["X-Paperboat-Private-Connection"] = []string{"{http.request.remote}"}
+	return proxy
 }
 
 func relayReverseProxy(upstream string) map[string]any {
@@ -185,25 +258,24 @@ func relayReverseProxy(upstream string) map[string]any {
 }
 
 func validate(input Input) error {
-	for _, baseHost := range []string{input.PreviewBaseDomain, input.HelperBaseDomain, input.SignalingHost} {
+	for _, baseHost := range []string{input.PreviewBaseDomain, input.TunnelBaseDomain, input.RuntimeBaseDomain, input.SignalingHost} {
 		if baseHost != strings.ToLower(baseHost) || !domainPattern.MatchString(baseHost) || net.ParseIP(baseHost) != nil {
 			return ErrInvalid
 		}
 	}
-	if input.PreviewBaseDomain == input.HelperBaseDomain || strings.HasSuffix(input.PreviewBaseDomain, "."+input.HelperBaseDomain) || strings.HasSuffix(input.HelperBaseDomain, "."+input.PreviewBaseDomain) {
+	if overlappingDomains(input.PreviewBaseDomain, input.TunnelBaseDomain) || input.RuntimeBaseDomain != "" && (overlappingDomains(input.PreviewBaseDomain, input.RuntimeBaseDomain) || overlappingDomains(input.TunnelBaseDomain, input.RuntimeBaseDomain)) {
 		return ErrInvalid
 	}
-	if input.SignalingHost == input.PreviewBaseDomain || input.SignalingHost == input.HelperBaseDomain || strings.HasSuffix(input.SignalingHost, "."+input.PreviewBaseDomain) || strings.HasSuffix(input.SignalingHost, "."+input.HelperBaseDomain) || strings.HasSuffix(input.PreviewBaseDomain, "."+input.SignalingHost) || strings.HasSuffix(input.HelperBaseDomain, "."+input.SignalingHost) {
+	if overlapsManagedDomain(input.SignalingHost, []string{input.PreviewBaseDomain, input.TunnelBaseDomain, input.RuntimeBaseDomain}) {
 		return ErrInvalid
 	}
 	if err := validatePrivateEndpoint(input.PrivateUpstream); err != nil {
 		return err
 	}
-	if input.ListenAddress == "" || input.HTTPListenAddress == "" || input.ListenAddress == input.HTTPListenAddress || input.AdminAddress == "" || !filepath.IsAbs(input.StreamBrokerPath) || len(input.StreamBrokerPath) > 100 {
+	if input.ListenAddress == "" || input.PrivateAccessListenAddress == "" || input.HTTPListenAddress == "" || input.ListenAddress == input.HTTPListenAddress || input.ListenAddress == input.PrivateAccessListenAddress || input.HTTPListenAddress == input.PrivateAccessListenAddress || input.AdminAddress == "" || !filepath.IsAbs(input.StreamBrokerPath) || len(input.StreamBrokerPath) > 100 {
 		return ErrInvalid
 	}
-	ask, err := url.Parse(input.CertificateAskURL)
-	if err != nil || ask.Scheme != "http" || ask.Path != "/private/certificate-ask" || ask.RawQuery != "" || ask.Fragment != "" || validateLoopbackEndpoint(ask.Host) != nil {
+	if validateLoopbackEndpoint(input.PrivateAccessListenAddress) != nil || len(input.PrivateAccessToken) < 32 || len(input.PrivateAccessToken) > 256 || strings.TrimSpace(input.PrivateAccessToken) != input.PrivateAccessToken || strings.ContainsAny(input.PrivateAccessToken, "\r\n\x00") {
 		return ErrInvalid
 	}
 	if err := validateLoopbackEndpoint(input.AdminAddress); err != nil {
@@ -217,7 +289,7 @@ func validate(input Input) error {
 	seenRoutes := make(map[string]struct{}, len(input.PublicRoutes))
 	for _, route := range input.PublicRoutes {
 		key := route.Host + "\x00" + route.PathPrefix
-		if route.Host != strings.ToLower(route.Host) || !domainPattern.MatchString(route.Host) || net.ParseIP(route.Host) != nil || route.Host == input.SignalingHost || strings.HasSuffix(route.Host, "."+input.PreviewBaseDomain) || strings.HasSuffix(route.Host, "."+input.HelperBaseDomain) || validatePrivateRouteEndpoint(route.Upstream) != nil {
+		if route.Host != strings.ToLower(route.Host) || !domainPattern.MatchString(route.Host) || net.ParseIP(route.Host) != nil || route.Host == input.SignalingHost || overlapsManagedDomain(route.Host, []string{input.PreviewBaseDomain, input.TunnelBaseDomain, input.RuntimeBaseDomain}) || validatePrivateRouteEndpoint(route.Upstream) != nil {
 			return ErrInvalid
 		}
 		if _, exists := seenRoutes[key]; exists {
@@ -228,10 +300,23 @@ func validate(input Input) error {
 			return ErrInvalid
 		}
 	}
-	if input.DNSProvider != "" && input.DNSProvider != "cloudflare" {
+	if input.CertificateBrokerSocket != "" && (!filepath.IsAbs(input.CertificateBrokerSocket) || len(input.CertificateBrokerSocket) > 100 || input.CertificateBrokerSocket == string(filepath.Separator) || strings.ContainsAny(input.CertificateBrokerSocket, "\x00\r\n")) {
 		return ErrInvalid
 	}
 	return nil
+}
+
+func overlappingDomains(first, second string) bool {
+	return first == second || strings.HasSuffix(first, "."+second) || strings.HasSuffix(second, "."+first)
+}
+
+func overlapsManagedDomain(host string, domains []string) bool {
+	for _, domain := range domains {
+		if domain != "" && (host == domain || strings.HasSuffix(host, "."+domain) || strings.HasSuffix(domain, "."+host)) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateLoopbackEndpoint(endpoint string) error {

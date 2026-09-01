@@ -20,6 +20,15 @@ func (f routeSourceFunc) DesiredRoutes(ctx context.Context, nodeID string) ([]co
 	return f(ctx, nodeID)
 }
 
+func testNodeRegistration(t *testing.T, nodeID, epoch string, capacity uint32) control.NodeRegistration {
+	t.Helper()
+	trust, err := control.NewProcessCarrierServerTrust(nodeID, epoch, "edge.example.test", time.Now().UTC(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return control.NodeRegistration{NodeID: nodeID, ProcessEpoch: epoch, Capacity: capacity, CarrierEndpoint: control.ConnectorEndpoint{Host: "edge.example.test", TCPPort: 27443, QUICPort: 27444}, CarrierServerSPKISHA256: trust.SPKISHA256, CarrierServerCertificateChainPEM: trust.CertificateChainPEM}
+}
+
 type routeObserver struct {
 	observations []control.RouteObservation
 	nodeID       string
@@ -143,7 +152,7 @@ func TestNodeWorkerReportsReadyAndDrain(t *testing.T) {
 	fake := testedge.New()
 	pulse := make(chan time.Time, 1)
 	now := time.Unix(10, 0)
-	worker := &NodeWorker{Manager: manager, Sink: fake, Registration: control.NodeRegistration{NodeID: "edge", ProcessEpoch: "process", Capacity: 2}, Pulse: pulse, Now: func() time.Time { return now }}
+	worker := &NodeWorker{Manager: manager, Sink: fake, Registration: testNodeRegistration(t, "edge", "process", 2), Pulse: pulse, Now: func() time.Time { return now }}
 	if err := worker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +187,7 @@ func TestWorkersStopWhenPulseCloses(t *testing.T) {
 	manager, _ := node.NewManager(state, 1)
 	nodePulse := make(chan time.Time)
 	fake := testedge.New()
-	nodeWorker := &NodeWorker{Manager: manager, Sink: fake, Registration: control.NodeRegistration{NodeID: "edge", ProcessEpoch: "p", Capacity: 1}, Pulse: nodePulse}
+	nodeWorker := &NodeWorker{Manager: manager, Sink: fake, Registration: testNodeRegistration(t, "edge", "p", 1), Pulse: nodePulse}
 	if err := nodeWorker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}

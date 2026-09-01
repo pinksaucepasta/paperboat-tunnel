@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/admission"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/connectorprotocol"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/route"
 )
 
 type readinessFunc func(string) (string, string, bool)
@@ -46,7 +48,7 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
 
 func previewConfig() Config {
-	return Config{PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", MaxHeaderBytes: 4096, MaxBodyBytes: 1024}
+	return Config{PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test", MaxHeaderBytes: 4096, MaxBodyBytes: 1024}
 }
 
 func TestRouteKindMustMatchTypedDomain(t *testing.T) {
@@ -54,7 +56,7 @@ func TestRouteKindMustMatchTypedDomain(t *testing.T) {
 		host, kind string
 	}{
 		{host: "terminal.preview.example.test", kind: "runtime_https_wss"},
-		{host: "web.helper.example.test", kind: "preview_public_https_wss"},
+		{host: "web.runtime.example.test", kind: "preview_public_https_wss"},
 	} {
 		called := false
 		config := previewConfig()
@@ -73,6 +75,104 @@ func TestRouteKindMustMatchTypedDomain(t *testing.T) {
 	}
 }
 
+func TestPrivateDurableRouteRejectsPublicBrowserProof(t *testing.T) {
+	routes := route.NewRegistry("preview.example.test", "runtime.example.test")
+	rule := route.RouteRule{
+		ID: "route_private_01", Revision: 1, Generation: 1,
+		RouteID: "route_private_01", RouteGeneration: 1,
+		AssignmentGeneration: 5, ResourceKind: "preview", SessionGeneration: 4, AccountID: "account_1", HostID: "machine_1", TunnelID: "preview_1", ConnectorSessionID: "session_1", ConnectorProcessGeneration: 2, ConfigGeneration: 3, Node: "edge_1", EdgeProcessEpoch: "epoch_1",
+		Kind: route.TunnelHTTPSWSS, Hostname: "tunnel.example.test", Target: "carrier://tunnel_01/route_private_01",
+		Protocol: "http", AccessMode: "private", DesiredState: "active", ObservedState: "ready",
+	}
+	if err := routes.StageGeneration(1, []route.RouteRule{rule}); err != nil {
+		t.Fatal(err)
+	}
+	if err := routes.MarkGenerationReady(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := routes.ActivateGeneration(context.Background(), 1, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	policy, err := New(Config{
+		PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test",
+		MaxHeaderBytes: 4096, MaxBodyBytes: 1024, Routes: routes,
+	}, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://tunnel.example.test/", nil)
+	request.Host = "tunnel.example.test"
+	request.Header.Set("X-Paperboat-Access-Authorization", "Bearer proof")
+	request.Header.Set("X-Paperboat-Access-Device-ID", "device_accessor_01")
+	response := httptest.NewRecorder()
+	policy.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	if called {
+		t.Fatal("public browser proof reached the private route handler")
+	}
+}
+
+func TestPrivateDurableRouteAcceptsOnlyInternalCarrierToken(t *testing.T) {
+	routes := route.NewRegistry("preview.example.test", "runtime.example.test")
+	rule := route.RouteRule{
+		ID: "route_private_01", Revision: 1, RouteID: "route_private_01", RouteGeneration: 1, Generation: 1,
+		AssignmentGeneration: 5, ResourceKind: "preview", SessionGeneration: 4, AccountID: "account_1", HostID: "machine_1", TunnelID: "preview_1", ConnectorSessionID: "session_1", ConnectorProcessGeneration: 2, ConfigGeneration: 3, Node: "edge_1", EdgeProcessEpoch: "epoch_1",
+		Kind: route.TunnelHTTPSWSS, Hostname: "tunnel.example.test", Target: "carrier://tunnel_01/route_private_01",
+		Protocol: "http", AccessMode: "private", DesiredState: "active", ObservedState: "ready",
+	}
+	if err := routes.StageGeneration(1, []route.RouteRule{rule}); err != nil {
+		t.Fatal(err)
+	}
+	if err := routes.MarkGenerationReady(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := routes.ActivateGeneration(context.Background(), 1, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	const token = "private-access-token-0123456789abcdef"
+	connections, _ := NewPrivateAccessConnectionRegistry(8)
+	expires := time.Now().Add(time.Minute)
+	accessRequest := connectorprotocol.PrivateAccessRequest{AccountID: "account_1", ResourceKind: "preview", ResourceID: "preview_1", RouteID: "route_private_01", Audience: "paperboat-preview-http", DeviceID: "machine_1", SessionID: "installation_4", InstallationGeneration: 4, ExpiresAt: expires, Nonce: "nonce_1", OperationID: "operation_1", CarrierSessionID: "session_1", RouteGeneration: 1, ProcessGeneration: 2, ConfigGeneration: 3, SessionGeneration: 4, AssignmentGeneration: 5, EdgeNodeID: "edge_1", EdgeProcessEpoch: "epoch_1", Protocol: "http", Method: http.MethodConnect, Host: "tunnel.example.test", Path: "/", IdempotencyKey: "access_1", RequestID: "request_1", CorrelationID: "correlation_1"}
+	_, err := connections.Register("127.0.0.1:41001", accessRequest, expires)
+	if err != nil {
+		t.Fatal(err)
+	}
+	match, matchErr := routes.Match("tunnel.example.test", "/")
+	if matchErr != nil {
+		t.Fatal(matchErr)
+	}
+	if status, ok := connections.Authorize("127.0.0.1:41001", match); !ok {
+		t.Fatalf("connection authorization status=%d match=%+v", status, match.Rule)
+	}
+	called := false
+	policy, err := New(Config{
+		PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test",
+		MaxHeaderBytes: 4096, MaxBodyBytes: 1024, Routes: routes, PrivateAccessToken: token, PrivateAccessConnections: connections,
+	}, http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		called = true
+		if request.Header.Get("X-Paperboat-Private-Carrier") != "" {
+			t.Fatal("internal carrier token reached the route handler")
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://tunnel.example.test/", nil)
+	request.Host = "tunnel.example.test"
+	request.Header.Set("X-Paperboat-Private-Carrier", token)
+	request.Header.Set("X-Paperboat-Private-Connection", "127.0.0.1:41001")
+	response := httptest.NewRecorder()
+	policy.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !called {
+		t.Fatalf("status=%d called=%v", response.Code, called)
+	}
+}
+
 func TestHelperRequiresRegisteredConnectorReadiness(t *testing.T) {
 	called := false
 	config := previewConfig()
@@ -85,7 +185,7 @@ func TestHelperRequiresRegisteredConnectorReadiness(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
-	request.Host = "terminal.helper.example.test"
+	request.Host = "terminal.runtime.example.test"
 	policy.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != "5" || called {
 		t.Fatalf("status=%d retry=%q called=%v", recorder.Code, recorder.Header().Get("Retry-After"), called)
@@ -93,7 +193,7 @@ func TestHelperRequiresRegisteredConnectorReadiness(t *testing.T) {
 }
 
 func TestRetryableWebSocketUpgradesThenClosesWith1013(t *testing.T) {
-	policy, err := New(Config{PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", MaxHeaderBytes: 4096, MaxBodyBytes: 1024, Readiness: readinessFunc(func(string) (string, string, bool) { return "offline", "", true })}, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("offline preview reached proxy") }))
+	policy, err := New(Config{PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test", MaxHeaderBytes: 4096, MaxBodyBytes: 1024, Readiness: readinessFunc(func(string) (string, string, bool) { return "offline", "", true })}, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("offline preview reached proxy") }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +224,7 @@ func TestRetryableWebSocketUpgradesThenClosesWith1013(t *testing.T) {
 
 func TestUnknownPreviewDoesNotReachPrivateUpstream(t *testing.T) {
 	nextCalled := false
-	policy, err := New(Config{PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", MaxHeaderBytes: 4096, MaxBodyBytes: 1024, Readiness: readinessFunc(func(string) (string, string, bool) { return "", "", false })}, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { nextCalled = true }))
+	policy, err := New(Config{PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test", MaxHeaderBytes: 4096, MaxBodyBytes: 1024, Readiness: readinessFunc(func(string) (string, string, bool) { return "", "", false })}, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { nextCalled = true }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +247,7 @@ func TestGatewayForwardsReadyPreviewToPrivateUpstream(t *testing.T) {
 		_, _ = io.WriteString(w, "data: ready\n\n")
 	}))
 	defer upstream.Close()
-	gateway, err := NewGateway(Config{PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", MaxHeaderBytes: 4096, MaxBodyBytes: 1024, Readiness: readinessFunc(func(string) (string, string, bool) { return "ready", "", true })}, strings.TrimPrefix(upstream.URL, "http://"))
+	gateway, err := NewGateway(Config{PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test", MaxHeaderBytes: 4096, MaxBodyBytes: 1024, Readiness: readinessFunc(func(string) (string, string, bool) { return "ready", "", true })}, strings.TrimPrefix(upstream.URL, "http://"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +329,7 @@ func policyFor(t *testing.T, next http.Handler) *Policy {
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy, err := New(Config{PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", TrustedProxies: trusted, MaxHeaderBytes: 4096, MaxBodyBytes: 1024, HelperAccess: helperAccessFunc(func(context.Context, string) (admission.Claims, error) {
+	policy, err := New(Config{PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test", TrustedProxies: trusted, MaxHeaderBytes: 4096, MaxBodyBytes: 1024, HelperAccess: helperAccessFunc(func(context.Context, string) (admission.Claims, error) {
 		return admission.Claims{JTI: "jti_test", EnvironmentID: "env_test", CredentialClass: "terminal_operation", ExpiresAt: time.Now().Add(time.Minute)}, nil
 	}), Revocations: revocationFunc(func(context.Context, admission.Claims) (bool, error) { return false, nil }), RevocationCheckInterval: time.Millisecond}, next)
 	if err != nil {
@@ -263,10 +363,10 @@ func TestPreservesRequestAndSanitizesHeaders(t *testing.T) {
 	if seen.Method != http.MethodPatch || seen.URL.EscapedPath() != "/a/b" || seen.URL.RawQuery != "q=one%20two" || body != "payload" {
 		t.Fatalf("request changed: %+v, body=%q", seen, body)
 	}
-	if seen.Header.Get("X-Forwarded-For") != "198.51.100.4" || seen.Header.Get("X-Forwarded-Proto") != "https" || seen.Header.Get("X-Forwarded-Host") != "app.preview.example.test" {
+	if seen.Header.Get("X-Forwarded-For") != "198.51.100.4" || seen.Header.Get("X-Forwarded-Proto") != "https" || seen.Header.Get("X-Forwarded-Host") != "app.preview.example.test" || seen.Header.Get("Forwarded") != "for=198.51.100.4;proto=https;host=app.preview.example.test" || seen.Header.Get("X-Request-ID") == "" {
 		t.Fatalf("forwarded headers = %v", seen.Header)
 	}
-	for _, name := range []string{"Forwarded", "X-Paperboat-Environment", "X-Remove", "Connection"} {
+	for _, name := range []string{"X-Paperboat-Environment", "X-Remove", "Connection"} {
 		if seen.Header.Get(name) != "" {
 			t.Fatalf("header %s retained", name)
 		}
@@ -283,7 +383,7 @@ func TestRetiredUploadRouteIsRejectedBeforeUpstream(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 	}))
 	request := httptest.NewRequest(http.MethodPost, "/v1/uploads", strings.NewReader("payload"))
-	request.Host = "environment.helper.example.test"
+	request.Host = "environment.runtime.example.test"
 	recorder := httptest.NewRecorder()
 	policy.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusNotFound || seen {
@@ -310,7 +410,7 @@ func TestFileTransferRoutesRequireAccessAndPreserveResumeHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodPatch, "/v1/file-transfers/ft_1/content", strings.NewReader("chunk"))
-	request.Host = "environment.helper.example.test"
+	request.Host = "environment.runtime.example.test"
 	request.Header.Set("Authorization", "Bearer signed-test-credential")
 	request.Header.Set("Content-Type", "application/offset+octet-stream")
 	request.Header.Set("Upload-Offset", "17")
@@ -352,17 +452,17 @@ func TestHTTP3AbsoluteHTTPSRequestTargetIsNormalized(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "https://environment.helper.example.test/v1/file-transfers", nil)
-	request.Host = "environment.helper.example.test:443"
+	request := httptest.NewRequest(http.MethodPost, "https://environment.runtime.example.test/v1/file-transfers", nil)
+	request.Host = "environment.runtime.example.test:443"
 	request.Header.Set("Authorization", "Bearer token")
 	recorder := httptest.NewRecorder()
 	policy.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusNoContent || seen == nil || seen.URL.IsAbs() || seen.URL.Path != "/v1/file-transfers" {
 		t.Fatalf("status=%d request=%v", recorder.Code, seen)
 	}
-	for _, target := range []string{"http://environment.helper.example.test/v1/file-transfers", "https://other.helper.example.test/v1/file-transfers"} {
+	for _, target := range []string{"http://environment.runtime.example.test/v1/file-transfers", "https://other.runtime.example.test/v1/file-transfers"} {
 		request = httptest.NewRequest(http.MethodPost, target, nil)
-		request.Host = "environment.helper.example.test"
+		request.Host = "environment.runtime.example.test"
 		recorder = httptest.NewRecorder()
 		policy.ServeHTTP(recorder, request)
 		if recorder.Code != http.StatusNotFound {
@@ -412,14 +512,14 @@ func TestHelperAccessRequiresCredentialAndCancelsWhenRevoked(t *testing.T) {
 		t.Fatal(err)
 	}
 	missing := httptest.NewRequest(http.MethodGet, "/v1/runtime", nil)
-	missing.Host = "environment.helper.example.test"
+	missing.Host = "environment.runtime.example.test"
 	missingRecorder := httptest.NewRecorder()
 	policy.ServeHTTP(missingRecorder, missing)
 	if missingRecorder.Code != http.StatusUnauthorized {
 		t.Fatalf("missing credential status=%d", missingRecorder.Code)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/v1/runtime", nil)
-	request.Host = "environment.helper.example.test"
+	request.Host = "environment.runtime.example.test"
 	request.Header.Set("Authorization", "Bearer signed-test-credential")
 	done := make(chan struct{})
 	go func() {
@@ -433,6 +533,175 @@ func TestHelperAccessRequiresCredentialAndCancelsWhenRevoked(t *testing.T) {
 		t.Fatal("revoked helper stream was not cancelled")
 	}
 	<-done
+}
+
+func policyRouteRule(id, host, matchType, pathPrefix string, priority int) route.RouteRule {
+	rule := route.RouteRule{ID: id, Kind: route.PreviewHTTPSWSS, MatchType: matchType, Hostname: host, PathPrefix: pathPrefix, Priority: priority, Target: "127.0.0.1:8080", OriginScheme: "http", ObservedState: "ready"}
+	if matchType == route.MatchOneLabelWildcard {
+		rule.Hostname = ""
+		rule.WildcardSuffix = host
+	}
+	return rule
+}
+
+func TestPolicyUsesGenerationMatcherAndReplacesUntrustedForwarding(t *testing.T) {
+	routes := route.NewRegistry("preview.example.test", "runtime.example.test")
+	rules := []route.RouteRule{
+		policyRouteRule("wild", "example.test", route.MatchOneLabelWildcard, "/", 100),
+		policyRouteRule("exact", "app.example.test", route.MatchExact, "/", 100),
+		policyRouteRule("api", "app.example.test", route.MatchExact, "/api", 100),
+	}
+	if err := routes.ApplyGeneration(context.Background(), 1, rules, func(_ context.Context, got []route.RouteRule) error {
+		if len(got) != len(rules) || got[0].ID != "api" || got[0].PathPrefix != "/api" {
+			return errors.New("candidate was not normalized")
+		}
+		return nil
+	}, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	var seen *http.Request
+	policy, err := New(Config{PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test", MaxHeaderBytes: 4096, MaxBodyBytes: 1024, Routes: routes, RequestID: func() string { return "request_fixed" }}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Clone(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://APP.EXAMPLE.TEST/api/v1", nil)
+	request.Host = "APP.EXAMPLE.TEST"
+	request.RemoteAddr = "192.0.2.1:1234"
+	request.Header.Set("Forwarded", "for=attacker")
+	request.Header.Set("X-Forwarded-For", "198.51.100.9")
+	request.Header.Set("X-Request-ID", "attacker-request")
+	recorder := httptest.NewRecorder()
+	policy.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent || seen == nil {
+		t.Fatalf("status=%d seen=%v", recorder.Code, seen)
+	}
+	match, ok := RouteMatchFromContext(seen.Context())
+	if !ok || match.Rule.ID != "api" || match.Generation != 1 || match.Host != "app.example.test" {
+		t.Fatalf("route match = %+v, present=%v", match, ok)
+	}
+	if seen.Host != "APP.EXAMPLE.TEST" {
+		t.Fatalf("public Host was rewritten: %q", seen.Host)
+	}
+	if seen.Header.Get("Forwarded") != "for=192.0.2.1;proto=https;host=app.example.test" || seen.Header.Get("X-Forwarded-For") != "192.0.2.1" || seen.Header.Get("X-Forwarded-Host") != "app.example.test" || seen.Header.Get("X-Request-ID") != "request_fixed" {
+		t.Fatalf("trusted forwarding = %v", seen.Header)
+	}
+
+	called := false
+	policy, err = New(Config{PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test", MaxHeaderBytes: 4096, MaxBodyBytes: 1024, Routes: routes}, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := httptest.NewRequest(http.MethodGet, "https://unknown.preview.example.test/", nil)
+	unknown.Host = "unknown.preview.example.test"
+	recorder = httptest.NewRecorder()
+	policy.ServeHTTP(recorder, unknown)
+	if recorder.Code != http.StatusNotFound || called {
+		t.Fatalf("unowned route status=%d called=%t", recorder.Code, called)
+	}
+}
+
+func TestPolicyAppliesExplicitHostOverrideOnly(t *testing.T) {
+	routes := route.NewRegistry("preview.example.test", "runtime.example.test")
+	rule := policyRouteRule("override", "public.example.test", route.MatchExact, "/", 1)
+	rule.HostOverride = "origin.internal:8443"
+	activate := func() {
+		if err := routes.ApplyGeneration(context.Background(), 1, []route.RouteRule{rule}, func(context.Context, []route.RouteRule) error { return nil }, time.Second); err != nil {
+			t.Fatal(err)
+		}
+	}
+	activate()
+	var seen *http.Request
+	policy, err := New(Config{PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test", MaxHeaderBytes: 4096, MaxBodyBytes: 1024, Routes: routes}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Clone(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://public.example.test/", nil)
+	request.Host = "public.example.test"
+	recorder := httptest.NewRecorder()
+	policy.ServeHTTP(recorder, request)
+	match, ok := RouteMatchFromContext(seen.Context())
+	if recorder.Code != http.StatusNoContent || seen == nil || !ok || match.Host != "public.example.test" || seen.Host != "origin.internal:8443" {
+		t.Fatalf("status=%d seen=%v match=%+v present=%v", recorder.Code, seen, match, ok)
+	}
+}
+
+func TestPolicyGenerationHandoffDrainsActiveRequest(t *testing.T) {
+	routes := route.NewRegistry("preview.example.test", "runtime.example.test")
+	oldRule := policyRouteRule("old", "app.example.test", route.MatchExact, "/", 1)
+	if err := routes.ApplyGeneration(context.Background(), 1, []route.RouteRule{oldRule}, func(context.Context, []route.RouteRule) error { return nil }, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	oldFinished := make(chan struct{})
+	var calls atomic.Int32
+	policy, err := New(Config{PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test", MaxHeaderBytes: 4096, MaxBodyBytes: 1024, Routes: routes}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		match, _ := RouteMatchFromContext(r.Context())
+		if match.Rule.ID == "old" {
+			close(entered)
+			<-r.Context().Done()
+			close(oldFinished)
+			return
+		}
+		calls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldContext, cancelOld := context.WithCancel(context.Background())
+	defer cancelOld()
+	oldRequest := httptest.NewRequest(http.MethodGet, "https://app.example.test/", nil).WithContext(oldContext)
+	oldRequest.Host = "app.example.test"
+	go policy.ServeHTTP(httptest.NewRecorder(), oldRequest)
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("old request did not enter handler")
+	}
+	newRule := policyRouteRule("new", "app.example.test", route.MatchExact, "/", 1)
+	activation := make(chan error, 1)
+	go func() {
+		activation <- routes.ApplyGeneration(context.Background(), 2, []route.RouteRule{newRule}, func(context.Context, []route.RouteRule) error { return nil }, time.Second)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for routes.Generation() != 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("new generation was not promoted")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	newRequest := httptest.NewRequest(http.MethodGet, "https://app.example.test/", nil)
+	newRequest.Host = "app.example.test"
+	newRecorder := httptest.NewRecorder()
+	policy.ServeHTTP(newRecorder, newRequest)
+	if newRecorder.Code != http.StatusNoContent || calls.Load() != 1 {
+		t.Fatalf("new request status=%d calls=%d", newRecorder.Code, calls.Load())
+	}
+	select {
+	case err := <-activation:
+		t.Fatalf("handoff completed before old cancellation: %v", err)
+	default:
+	}
+	cancelOld()
+	select {
+	case <-oldFinished:
+	case <-time.After(time.Second):
+		t.Fatal("old request did not stop")
+	}
+	select {
+	case err := <-activation:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handoff did not finish after old request stopped")
+	}
 }
 
 func TestEstablishedHelperAccessSurvivesCredentialExpiry(t *testing.T) {
@@ -452,7 +721,7 @@ func TestEstablishedHelperAccessSurvivesCredentialExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/v1/runtime", nil)
-	request.Host = "environment.helper.example.test"
+	request.Host = "environment.runtime.example.test"
 	request.Header.Set("Authorization", "Bearer signed-test-credential")
 	done := make(chan struct{})
 	go func() {
@@ -518,7 +787,7 @@ func TestGatewayClosesUpgradedHelperConnectionWhenRevoked(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer connection.Close()
-	_, _ = io.WriteString(connection, "GET /v1/runtime HTTP/1.1\r\nHost: environment.helper.example.test\r\nAuthorization: Bearer signed-test-credential\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+	_, _ = io.WriteString(connection, "GET /v1/runtime HTTP/1.1\r\nHost: environment.runtime.example.test\r\nAuthorization: Bearer signed-test-credential\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
 	reader := bufio.NewReader(connection)
 	response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
 	if err != nil {
@@ -658,7 +927,7 @@ func TestPreviewReadinessResponses(t *testing.T) {
 		{"removed", "", http.StatusNotFound, false},
 	} {
 		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Fatal("readiness failure reached proxy") })
-		policy, err := New(Config{PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", MaxHeaderBytes: 4096, MaxBodyBytes: 1024, Readiness: readinessFunc(func(string) (string, string, bool) { return tc.state, tc.reason, true })}, next)
+		policy, err := New(Config{PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test", MaxHeaderBytes: 4096, MaxBodyBytes: 1024, Readiness: readinessFunc(func(string) (string, string, bool) { return tc.state, tc.reason, true })}, next)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -696,5 +965,21 @@ func TestChunkedBodyLimitAndUntrustedForwarding(t *testing.T) {
 	policy.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d", recorder.Code)
+	}
+}
+
+func TestFormatForwardedUsesSafeAddressForms(t *testing.T) {
+	tests := []struct {
+		clientIP, host, want string
+	}{
+		{"198.51.100.1", "app.example.test", "for=198.51.100.1;proto=https;host=app.example.test"},
+		{"2001:db8::1", "app.example.test", "for=\"[2001:db8::1]\";proto=https;host=app.example.test"},
+		{"attacker;proto=http", "app.example.test", "for=_;proto=https;host=app.example.test"},
+		{"198.51.100.1", "bad;host", "for=198.51.100.1;proto=https;host=_"},
+	}
+	for _, test := range tests {
+		if got := formatForwarded(test.clientIP, test.host); got != test.want {
+			t.Fatalf("formatForwarded(%q,%q) = %q, want %q", test.clientIP, test.host, got, test.want)
+		}
 	}
 }

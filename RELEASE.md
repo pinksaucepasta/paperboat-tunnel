@@ -87,11 +87,10 @@ hashes above are navigation aids. When an upstream release replaces any behavior
 - The public HTTP server enables HTTP/3 alongside HTTP/2 for resumable file-transfer
   streaming; edge policy authorizes the complete `/v1/file-transfers` resource tree and
   preserves Range, ETag, PATCH, offset, cancellation, and operation headers without buffering.
-- Public preview connectors attach through an authenticated full-duplex HTTP/3 carrier on
-  `/v1/public-preview-relay`, with typed network-only fallback to HTTP/2. The carrier uses
-  yamux only for edge-to-host preview request multiplexing; route ownership and connector
-  generation are verified before publication, and authentication or protocol failures never
-  trigger fallback.
+- Public preview connectors attach through the authenticated connector-v1 carrier listeners
+  advertised in node registration. The carrier uses yamux only for edge-to-host preview
+  request multiplexing; route ownership and connector generation are verified before
+  publication, and authentication or protocol failures never trigger a transport fallback.
 - The module is source-built into Caddy with xcaddy; there is no separate Caddy fork.
 
 ### Compatibility And Rollback

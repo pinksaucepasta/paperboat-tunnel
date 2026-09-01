@@ -74,7 +74,7 @@ func run(ctx context.Context, path string, output io.Writer) error {
 	if err != nil {
 		return errInvalid
 	}
-	registration := control.NodeRegistration{NodeID: value.NodeID, EdgePool: value.EdgePool, Artifact: "paperboat-control-conformance", Protocol: "1.0", ProcessEpoch: value.ProcessEpoch, Capacity: 8, Endpoint: control.ConnectorEndpoint{Host: "edge.example.test", TCPPort: 17000, QUICPort: 17001}}
+	registration := control.NodeRegistration{NodeID: value.NodeID, EdgePool: value.EdgePool, Artifact: "paperboat-control-conformance", Protocol: "1.0", ProcessEpoch: value.ProcessEpoch, Capacity: 8, Endpoint: control.ConnectorEndpoint{Host: "edge.example.test", TCPPort: 17000, QUICPort: 17001}, CarrierEndpoint: control.ConnectorEndpoint{Host: "edge.example.test", TCPPort: 17443, QUICPort: 17444}}
 	if err := client.RegisterNode(ctx, registration); err != nil {
 		return fmt.Errorf("register node: %w", err)
 	}

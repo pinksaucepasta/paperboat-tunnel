@@ -23,7 +23,7 @@ func bundleSpec(t *testing.T) BundleSpec {
 	checksum := hex.EncodeToString(digest[:])
 	return BundleSpec{Directory: filepath.Join(directory, "config"), FRPSBinary: binary, CaddyBinary: binary, FRPSSHA256: checksum, CaddySHA256: checksum, MaxOutputBytes: 1024,
 		FRPS:  frpconfig.Input{BindAddr: "127.0.0.1", BindPort: 7000, QUICBindPort: 7001, PrivateProxyAddr: "127.0.0.1", VhostHTTPPort: 8080, HookAddr: "127.0.0.1:19000", HookPath: "/paperboat/hook/0123456789abcdef", StreamBrokerPath: "/tmp/paperboat-frps-test.sock", InternalAuthToken: "internal-token-012345678901234567890123456789"},
-		Caddy: caddyconfig.Input{PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", SignalingHost: "signal.example.test", PrivateUpstream: "127.0.0.1:8080", ListenAddress: ":443", HTTPListenAddress: ":80", AdminAddress: "127.0.0.1:2019", TrustedProxies: []string{"10.0.0.0/8"}, IssuerModule: "internal", CertificateAskURL: "http://127.0.0.1:8080/private/certificate-ask", StreamBrokerPath: "/tmp/paperboat-frps-test.sock"}}
+		Caddy: caddyconfig.Input{PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test", SignalingHost: "signal.example.test", PrivateUpstream: "127.0.0.1:8080", ListenAddress: ":443", PrivateAccessListenAddress: "127.0.0.1:9443", PrivateAccessToken: "private-access-token-0123456789abcdef", HTTPListenAddress: ":80", AdminAddress: "127.0.0.1:2019", TrustedProxies: []string{"10.0.0.0/8"}, IssuerModule: "internal", StreamBrokerPath: "/tmp/paperboat-frps-test.sock"}}
 }
 
 func TestPrepareBundleRejectsChecksumMismatch(t *testing.T) {

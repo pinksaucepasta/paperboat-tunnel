@@ -7,6 +7,7 @@ require (
 	github.com/hashicorp/yamux v0.1.1
 	github.com/pion/ice/v4 v4.4.0
 	github.com/pion/stun/v3 v3.1.6
+	github.com/quic-go/quic-go v0.61.0
 	github.com/realclientip/realclientip-go v1.0.0
 )
 
@@ -22,5 +23,6 @@ require (
 	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 )
