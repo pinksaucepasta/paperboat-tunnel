@@ -483,13 +483,16 @@ func buildServiceWithCarrier(cfg config.Config, deployment config.Deployment, ca
 		Sessions:      func() int { return adapter.Stats().Sessions },
 		SessionRoutes: func() int { return adapter.Stats().Routes },
 		ActiveStreams: func() uint32 { return adapter.Stats().ActiveStreams },
-		RouteCount:    func() int { return len(routes.Snapshot()) },
-		Usage:         queue.Stats,
-		ControlErr:    nodeWorker.LastError,
-		RouteErr:      routeWorker.LastError,
-		UsageErr:      usageWorker.LastError,
-		FRPRunning:    assembly.FRPS.Running,
-		CaddyRunning:  assembly.Caddy.Running,
+		RouteCount: func() int {
+			_, canonical, _ := canonicalRoutes.CanonicalSnapshot()
+			return len(routes.Snapshot()) + len(canonical)
+		},
+		Usage:        queue.Stats,
+		ControlErr:   nodeWorker.LastError,
+		RouteErr:     routeWorker.LastError,
+		UsageErr:     usageWorker.LastError,
+		FRPRunning:   assembly.FRPS.Running,
+		CaddyRunning: assembly.Caddy.Running,
 		STUN: func() observability.STUNStats {
 			stats := stunService.Stats()
 			return observability.STUNStats{Running: stats.Running, Accepted: stats.Accepted, Rejected: stats.Rejected, Errors: stats.Errors}
