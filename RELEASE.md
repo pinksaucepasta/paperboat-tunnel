@@ -30,13 +30,13 @@ calendar tag, publication, and deployment by immutable image digest.
 
 | Component | Exact pin |
 | --- | --- |
-| Go builder | `golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36` |
+| Go builder | `golang:1.27.1-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b` |
 | frp upstream base | `v0.70.1` (`fa3bcca2ed54bcf80a5d98c8c76f40f72c6b5291`) |
 | frp fork branch | `paperboat/v0.70.1-edge` |
 | frp fork commit | `fba6ff3284044b7c3030c6f23c4ec109d5d5417d` |
 | frp build tags | `frps,noweb` |
 | Caddy | `v2.11.4` |
-| Caddy builder | `golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36` |
+| Caddy builder | `golang:1.27.1-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b` |
 | xcaddy | `v0.4.5` |
 | Caddy DNS plugin | `github.com/caddy-dns/cloudflare@v0.2.4` |
 | Paperboat Caddy module | `github.com/pinksaucepasta/paperboat-tunnel/caddymodules/paperboatquic` at the tunnel release commit |
