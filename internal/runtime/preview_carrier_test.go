@@ -17,14 +17,16 @@ import (
 )
 
 type previewCarrierSourceFake struct {
-	mu           sync.Mutex
-	snapshots    [][]control.PreviewCarrierAdmission
-	index        int
-	ackError     error
-	ackCalls     int
-	detachCalls  int
-	detachments  []control.PreviewCarrierDetachment
-	observations []control.PreviewCarrierObservation
+	mu                  sync.Mutex
+	snapshots           [][]control.PreviewCarrierAdmission
+	index               int
+	ackError            error
+	ackCalls            int
+	detachCalls         int
+	detachments         []control.PreviewCarrierDetachment
+	observations        []control.PreviewCarrierObservation
+	observationFailures map[string]int
+	observationAttempts map[string][]time.Time
 }
 
 type previewCarrierSnapshotSourceFake struct {
@@ -89,6 +91,17 @@ func (f *previewCarrierSourceFake) AcknowledgePreviewCarrierAdmissions(_ context
 func (f *previewCarrierSourceFake) ObservePreviewCarriers(_ context.Context, _, _ string, observations []control.PreviewCarrierObservation) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.observationAttempts == nil {
+		f.observationAttempts = make(map[string][]time.Time)
+	}
+	for _, observation := range observations {
+		key := observation.Binding.RouteID + "\x00" + observation.State
+		f.observationAttempts[key] = append(f.observationAttempts[key], time.Now())
+		if remaining := f.observationFailures[key]; remaining > 0 {
+			f.observationFailures[key] = remaining - 1
+			return errors.New("preview carrier observation rejected")
+		}
+	}
 	f.observations = append(f.observations, observations...)
 	return nil
 }
@@ -266,6 +279,273 @@ func TestPreviewCarrierDetachmentPreservesPreviewOwnerSession(t *testing.T) {
 	if observation.Binding.OwnerSessionID == route.Identity.SessionID {
 		t.Fatal("preview owner session was replaced by the stable carrier session")
 	}
+}
+
+func TestPreviewCarrierHandlerRebindsAdmissionAfterRouteEnds(t *testing.T) {
+	now := time.Now().UTC()
+	firstWire := testPreviewCarrierAdmission("preview_first", "operation_first", "route_first", "first.preview.example.test", now.Add(time.Hour))
+	secondWire := testPreviewCarrierAdmission("preview_second", "operation_second", "route_second", "second.preview.example.test", now.Add(time.Hour))
+	first := admittedPreviewCarrierTestAdmission(t, firstWire, now)
+	second := admittedPreviewCarrierTestAdmission(t, secondWire, now)
+	expected, err := datacarrier.NewExpectedAdmissionRegistry(datacarrier.ExpectedAdmissionRegistryConfig{NodeID: "edge_1", ProcessEpoch: "edge_epoch_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := expected.Replace([]datacarrier.ExpectedAdmission{first}, now); err != nil {
+		t.Fatal(err)
+	}
+	routes, err := edgehttp.NewDataCarrierPreviewRegistry(edgehttp.DataCarrierPreviewRegistryConfig{BaseDomain: "preview.example.test", ProcessEpoch: "edge_epoch_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = routes.Close() })
+	source := &previewCarrierSourceFake{observationFailures: map[string]int{second.RouteID + "\x00edge_ready": 1}}
+	handler, err := NewPreviewCarrierHandler(PreviewCarrierHandlerConfig{
+		Source: source, Expected: expected, Registry: routes, NodeID: "edge_1", ProcessEpoch: "edge_epoch_1",
+		WaitTimeout: time.Second, Clock: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newPreviewCarrierTestServer(t, first.Identity)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- handler.Handle(ctx, server) }()
+
+	waitForPreviewCarrierObservation(t, source, first.RouteID, "edge_ready")
+	if _, ok := routes.Lookup(first.Hostname); !ok {
+		t.Fatalf("first route was not attached")
+	}
+
+	if err := expected.Replace(nil, now); err != nil {
+		t.Fatal(err)
+	}
+	waitForPreviewCarrierObservation(t, source, first.RouteID, "detached")
+	if _, ok := routes.Lookup(first.Hostname); ok {
+		t.Fatalf("first route remained attached after its admission ended")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("handler exited after first route ended: %v", err)
+	default:
+	}
+
+	if err := expected.Replace([]datacarrier.ExpectedAdmission{second}, now); err != nil {
+		t.Fatal(err)
+	}
+	waitForPreviewCarrierObservation(t, source, second.RouteID, "edge_ready")
+	if _, ok := routes.Lookup(second.Hostname); !ok {
+		t.Fatalf("second route was not attached to the reused carrier")
+	}
+	source.mu.Lock()
+	attempts := append([]time.Time(nil), source.observationAttempts[second.RouteID+"\x00edge_ready"]...)
+	source.mu.Unlock()
+	if len(attempts) < 2 || attempts[1].Sub(attempts[0]) < 900*time.Millisecond {
+		t.Fatalf("readiness retry attempts = %v, want at least 900ms apart", attempts)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("handler cancellation error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handler did not stop after cancellation")
+	}
+	if _, ok := routes.Lookup(second.Hostname); ok {
+		t.Fatalf("second route remained attached after handler cancellation")
+	}
+}
+
+func TestPreviewCarrierHandlerAttachesSimultaneousSiblingAdmissions(t *testing.T) {
+	now := time.Now().UTC()
+	firstWire := testPreviewCarrierAdmission("preview_first", "operation_first", "route_first", "first.preview.example.test", now.Add(time.Hour))
+	secondWire := testPreviewCarrierAdmission("preview_second", "operation_second", "route_second", "second.preview.example.test", now.Add(time.Hour))
+	first := admittedPreviewCarrierTestAdmission(t, firstWire, now)
+	second := admittedPreviewCarrierTestAdmission(t, secondWire, now)
+	expected, err := datacarrier.NewExpectedAdmissionRegistry(datacarrier.ExpectedAdmissionRegistryConfig{NodeID: "edge_1", ProcessEpoch: "edge_epoch_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := expected.Replace([]datacarrier.ExpectedAdmission{first, second}, now); err != nil {
+		t.Fatal(err)
+	}
+	routes, err := edgehttp.NewDataCarrierPreviewRegistry(edgehttp.DataCarrierPreviewRegistryConfig{BaseDomain: "preview.example.test", ProcessEpoch: "edge_epoch_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = routes.Close() })
+	source := &previewCarrierSourceFake{}
+	handler, err := NewPreviewCarrierHandler(PreviewCarrierHandlerConfig{
+		Source: source, Expected: expected, Registry: routes, NodeID: "edge_1", ProcessEpoch: "edge_epoch_1",
+		WaitTimeout: time.Second, Clock: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newPreviewCarrierTestServer(t, first.Identity)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- handler.Handle(ctx, server) }()
+	waitForPreviewCarrierObservation(t, source, first.RouteID, "edge_ready")
+	waitForPreviewCarrierObservation(t, source, second.RouteID, "edge_ready")
+	if _, ok := routes.Lookup(first.Hostname); !ok {
+		t.Fatalf("first sibling route was not attached")
+	}
+	if _, ok := routes.Lookup(second.Hostname); !ok {
+		t.Fatalf("second sibling route was not attached")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("handler cancellation error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handler did not stop after cancellation")
+	}
+}
+
+func TestPreviewCarrierHandlerIgnoresRemovedRouteObservationFailureForSibling(t *testing.T) {
+	now := time.Now().UTC()
+	firstWire := testPreviewCarrierAdmission("preview_first", "operation_first", "route_first", "first.preview.example.test", now.Add(time.Hour))
+	secondWire := testPreviewCarrierAdmission("preview_second", "operation_second", "route_second", "second.preview.example.test", now.Add(time.Hour))
+	first := admittedPreviewCarrierTestAdmission(t, firstWire, now)
+	second := admittedPreviewCarrierTestAdmission(t, secondWire, now)
+	expected, err := datacarrier.NewExpectedAdmissionRegistry(datacarrier.ExpectedAdmissionRegistryConfig{NodeID: "edge_1", ProcessEpoch: "edge_epoch_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := expected.Replace([]datacarrier.ExpectedAdmission{first, second}, now); err != nil {
+		t.Fatal(err)
+	}
+	routes, err := edgehttp.NewDataCarrierPreviewRegistry(edgehttp.DataCarrierPreviewRegistryConfig{BaseDomain: "preview.example.test", ProcessEpoch: "edge_epoch_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = routes.Close() })
+	source := &previewCarrierSourceFake{observationFailures: map[string]int{first.RouteID + "\x00detached": 1}}
+	handler, err := NewPreviewCarrierHandler(PreviewCarrierHandlerConfig{
+		Source: source, Expected: expected, Registry: routes, NodeID: "edge_1", ProcessEpoch: "edge_epoch_1",
+		WaitTimeout: time.Second, Clock: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newPreviewCarrierTestServer(t, first.Identity)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- handler.Handle(ctx, server) }()
+	waitForPreviewCarrierObservation(t, source, first.RouteID, "edge_ready")
+	waitForPreviewCarrierObservation(t, source, second.RouteID, "edge_ready")
+
+	if err := expected.Replace([]datacarrier.ExpectedAdmission{second}, now); err != nil {
+		t.Fatal(err)
+	}
+	waitForPreviewCarrierRouteAbsent(t, routes, first.Hostname)
+	if _, ok := routes.Lookup(second.Hostname); !ok {
+		t.Fatal("active sibling route was removed with the rejected detached observation")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("handler exited after rejected removed-route observation: %v", err)
+	default:
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("handler cancellation error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handler did not stop after cancellation")
+	}
+}
+
+func TestPreviewCarrierHandlerCancellationWhileWaitingIsBounded(t *testing.T) {
+	now := time.Now().UTC()
+	expected, err := datacarrier.NewExpectedAdmissionRegistry(datacarrier.ExpectedAdmissionRegistryConfig{NodeID: "edge_1", ProcessEpoch: "edge_epoch_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes, err := edgehttp.NewDataCarrierPreviewRegistry(edgehttp.DataCarrierPreviewRegistryConfig{BaseDomain: "preview.example.test", ProcessEpoch: "edge_epoch_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = routes.Close() })
+	handler, err := NewPreviewCarrierHandler(PreviewCarrierHandlerConfig{
+		Source: &previewCarrierSourceFake{}, Expected: expected, Registry: routes, NodeID: "edge_1", ProcessEpoch: "edge_epoch_1",
+		WaitTimeout: time.Second, Clock: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newPreviewCarrierTestServer(t, datacarrier.Identity{AccountID: "account_1", HostID: "host_1", TunnelID: "tunnel_1", ConnectorID: "connector_1", SessionID: "session_1", ProcessGeneration: 1, Generation: 1})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- handler.Handle(ctx, server) }()
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil || !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiting cancellation error = %v, want context canceled", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("handler did not stop promptly while waiting for admission")
+	}
+}
+
+func admittedPreviewCarrierTestAdmission(t *testing.T, admission control.PreviewCarrierAdmission, now time.Time) datacarrier.ExpectedAdmission {
+	t.Helper()
+	expected, err := admission.Expected("edge_1", now)
+	if err != nil {
+		t.Fatalf("expected admission: %v", err)
+	}
+	expected.Admitted = true
+	return expected
+}
+
+func newPreviewCarrierTestServer(t *testing.T, identity datacarrier.Identity) *datacarrier.Server {
+	t.Helper()
+	config := datacarrier.DefaultConfig()
+	config.Identity = identity
+	config.Authorize = datacarrier.AuthorizerFunc(func(context.Context, datacarrier.Identity, datacarrier.StreamOpen) error { return nil })
+	server, err := datacarrier.NewServerWithSession(context.Background(), newTestCarrierSession(), config)
+	if err != nil {
+		t.Fatalf("new preview carrier server: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	return server
+}
+
+func waitForPreviewCarrierObservation(t *testing.T, source *previewCarrierSourceFake, routeID, state string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		source.mu.Lock()
+		for _, observation := range source.observations {
+			if observation.Binding.RouteID == routeID && observation.State == state {
+				source.mu.Unlock()
+				return
+			}
+		}
+		source.mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s observation for %s", state, routeID)
+}
+
+func waitForPreviewCarrierRouteAbsent(t *testing.T, routes *edgehttp.DataCarrierPreviewRegistry, hostname string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := routes.Lookup(hostname); !ok {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for route %s to detach", hostname)
 }
 
 func assertPreviewAdmissionState(t *testing.T, admissions []datacarrier.ExpectedAdmission, want map[string]bool) {

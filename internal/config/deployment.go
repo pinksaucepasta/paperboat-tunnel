@@ -44,31 +44,31 @@ type Deployment struct {
 	// Carrier listeners are dedicated connector-v1 data-plane endpoints. They
 	// are separate from the legacy FRP ports and require mutual TLS plus the
 	// server's admission-backed peer binding.
-	CarrierTCPListenAddress         string        `json:"carrier_tcp_listen_address,omitempty"`
-	CarrierQUICListenAddress        string        `json:"carrier_quic_listen_address,omitempty"`
-	STUNListenAddress               string        `json:"stun_listen_address"`
-	ConnectorTCPMux                 *bool         `json:"connector_tcp_mux,omitempty"`
-	PrivateVhostAddress             string        `json:"private_vhost_address"`
-	EdgeGatewayAddress              string        `json:"edge_gateway_address"`
-	CaddyListenAddress              string        `json:"caddy_listen_address"`
-	CaddyPrivateAccessListenAddress string        `json:"caddy_private_access_listen_address"`
-	CaddyHTTPListenAddress          string        `json:"caddy_http_listen_address"`
-	CaddyAdminAddress               string        `json:"caddy_admin_address"`
-	PreviewBaseDomain               string        `json:"preview_base_domain"`
-	TunnelBaseDomain                string        `json:"tunnel_base_domain"`
+	CarrierTCPListenAddress         string `json:"carrier_tcp_listen_address,omitempty"`
+	CarrierQUICListenAddress        string `json:"carrier_quic_listen_address,omitempty"`
+	STUNListenAddress               string `json:"stun_listen_address"`
+	ConnectorTCPMux                 *bool  `json:"connector_tcp_mux,omitempty"`
+	PrivateVhostAddress             string `json:"private_vhost_address"`
+	EdgeGatewayAddress              string `json:"edge_gateway_address"`
+	CaddyListenAddress              string `json:"caddy_listen_address"`
+	CaddyPrivateAccessListenAddress string `json:"caddy_private_access_listen_address"`
+	CaddyHTTPListenAddress          string `json:"caddy_http_listen_address"`
+	CaddyAdminAddress               string `json:"caddy_admin_address"`
+	PreviewBaseDomain               string `json:"preview_base_domain"`
+	TunnelBaseDomain                string `json:"tunnel_base_domain"`
 	// RuntimeBaseDomain is retained only for the host-runtime control route.
 	// Managed durable tunnel endpoints use TunnelBaseDomain and never this
 	// legacy runtime namespace.
-	RuntimeBaseDomain               string        `json:"runtime_base_domain"`
-	SignalingHost                   string        `json:"signaling_host"`
-	SignalingCapacity               uint32        `json:"signaling_capacity"`
-	TrustedProxyCIDRs               []string      `json:"trusted_proxy_cidrs"`
-	CertificateIssuer               string        `json:"certificate_issuer"`
-	PublicRoutes                    []PublicRoute `json:"public_routes,omitempty"`
-	NodeCapacity                    uint32        `json:"node_capacity"`
-	ControlInterval                 time.Duration `json:"control_interval"`
-	UsageInterval                   time.Duration `json:"usage_interval"`
-	ControlTimeout                  time.Duration `json:"control_timeout"`
+	RuntimeBaseDomain string        `json:"runtime_base_domain"`
+	SignalingHost     string        `json:"signaling_host"`
+	SignalingCapacity uint32        `json:"signaling_capacity"`
+	TrustedProxyCIDRs []string      `json:"trusted_proxy_cidrs"`
+	CertificateIssuer string        `json:"certificate_issuer"`
+	PublicRoutes      []PublicRoute `json:"public_routes,omitempty"`
+	NodeCapacity      uint32        `json:"node_capacity"`
+	ControlInterval   time.Duration `json:"control_interval"`
+	UsageInterval     time.Duration `json:"usage_interval"`
+	ControlTimeout    time.Duration `json:"control_timeout"`
 }
 
 type PublicRoute struct {

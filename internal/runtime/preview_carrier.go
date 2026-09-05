@@ -23,6 +23,8 @@ const (
 	defaultPreviewCarrierPollInterval = 15 * time.Second
 	defaultPreviewCarrierWaitTimeout  = 30 * time.Second
 	maxPreviewCarrierPollInterval     = 5 * time.Minute
+	previewCarrierReconcileInterval   = 100 * time.Millisecond
+	previewCarrierReadyRetryInterval  = time.Second
 )
 
 // PreviewCarrierWorker reconciles the node-scoped, server-issued admission
@@ -409,6 +411,11 @@ type PreviewCarrierHandlerConfig struct {
 	Clock        func() time.Time
 }
 
+type previewCarrierPendingReady struct {
+	admission datacarrier.ExpectedAdmission
+	retryAt   time.Time
+}
+
 func NewPreviewCarrierHandler(config PreviewCarrierHandlerConfig) (*PreviewCarrierHandler, error) {
 	if config.Source == nil || config.Expected == nil || config.Registry == nil || connectorprotocol.ValidateIdentifier(config.NodeID) != nil || connectorprotocol.ValidateOpaqueEpoch(config.ProcessEpoch) != nil || config.Expected.NodeID() != config.NodeID || config.Expected.ProcessEpoch() != config.ProcessEpoch {
 		return nil, ErrPreviewCarrierRuntimeInvalid
@@ -431,58 +438,154 @@ func (h *PreviewCarrierHandler) Handle(ctx context.Context, server *datacarrier.
 	}
 	identity := server.Identity()
 	waitContext, cancel := context.WithTimeout(ctx, h.waitTimeout)
-	admissions, err := h.expected.WaitForIdentity(waitContext, identity, func() time.Time { return h.now().UTC() })
+	_, err := h.expected.WaitForIdentity(waitContext, identity, func() time.Time { return h.now().UTC() })
 	cancel()
 	if err != nil {
 		return fmt.Errorf("wait for preview admission: %w", err)
 	}
-	sort.Slice(admissions, func(i, j int) bool {
-		return admissions[i].OperationID+"\x00"+admissions[i].RouteID < admissions[j].OperationID+"\x00"+admissions[j].RouteID
-	})
-	attached := make([]datacarrier.ExpectedAdmission, 0, len(admissions))
-	for _, admission := range admissions {
-		if err := h.registry.AttachAdmission(admission, server); err != nil {
-			h.detachLocal(attached)
-			return fmt.Errorf("attach preview route %s: %w", admission.RouteID, err)
+	attached := make(map[string]datacarrier.ExpectedAdmission)
+	pendingReady := make(map[string]previewCarrierPendingReady)
+	if err := h.reconcile(ctx, server, identity, attached, pendingReady); err != nil {
+		_ = h.closeAttached(ctx, attached, "handler_error")
+		return err
+	}
+	ticker := time.NewTicker(previewCarrierReconcileInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-server.Done():
+			return h.closeAttached(ctx, attached, "carrier_closed")
+		case <-ctx.Done():
+			return h.closeAttached(ctx, attached, "carrier_closed")
+		case <-ticker.C:
+			if err := h.reconcile(ctx, server, identity, attached, pendingReady); err != nil {
+				_ = h.closeAttached(ctx, attached, "handler_error")
+				return err
+			}
 		}
-		attached = append(attached, admission)
 	}
-	observations := make([]control.PreviewCarrierObservation, 0, len(attached))
-	for _, admission := range attached {
-		observations = append(observations, observationFromAdmission(admission, "edge_ready", "", h.now().UTC()))
-	}
-	if err := h.source.ObservePreviewCarriers(ctx, h.nodeID, h.processEpoch, observations); err != nil {
-		h.detachLocal(attached)
-		return fmt.Errorf("observe preview carrier edge readiness: %w", err)
-	}
-	select {
-	case <-server.Done():
-	case <-ctx.Done():
-	}
-	reason := "carrier_closed"
-	if h.now().UTC().After(attached[0].ExpiresAt) {
-		reason = "lease_expired"
-	}
-	h.detachLocal(attached)
-	closeObservations := make([]control.PreviewCarrierObservation, 0, len(attached))
-	now := h.now().UTC()
-	for _, admission := range attached {
-		state := "detached"
-		if reason == "lease_expired" {
-			state = "expired"
-		}
-		closeObservations = append(closeObservations, observationFromAdmission(admission, state, reason, now))
-	}
-	if err := h.source.ObservePreviewCarriers(ctx, h.nodeID, h.processEpoch, closeObservations); err != nil && ctx.Err() == nil {
-		return fmt.Errorf("observe preview carrier detach: %w", err)
-	}
-	return nil
 }
 
 func (h *PreviewCarrierHandler) detachLocal(admissions []datacarrier.ExpectedAdmission) {
 	for _, admission := range admissions {
 		_ = h.registry.DetachAdmission(admission)
 	}
+}
+
+func (h *PreviewCarrierHandler) reconcile(ctx context.Context, server *datacarrier.Server, identity datacarrier.Identity, attached map[string]datacarrier.ExpectedAdmission, pendingReady map[string]previewCarrierPendingReady) error {
+	desired := h.expected.ForIdentity(identity, h.now().UTC())
+	sort.Slice(desired, func(i, j int) bool {
+		return previewCarrierAdmissionKey(desired[i]) < previewCarrierAdmissionKey(desired[j])
+	})
+	desiredByKey := make(map[string]datacarrier.ExpectedAdmission, len(desired))
+	for _, admission := range desired {
+		desiredByKey[previewCarrierAdmissionKey(admission)] = admission
+	}
+
+	detached := make([]datacarrier.ExpectedAdmission, 0)
+	for key, admission := range attached {
+		next, exists := desiredByKey[key]
+		if exists && previewCarrierAdmissionEqual(admission, next) {
+			continue
+		}
+		_ = h.registry.DetachAdmission(admission)
+		delete(attached, key)
+		detached = append(detached, admission)
+	}
+	for key, admission := range pendingReady {
+		if next, exists := desiredByKey[key]; !exists || !previewCarrierAdmissionEqual(admission.admission, next) {
+			delete(pendingReady, key)
+		}
+	}
+
+	// Detach is informational after the local generation-fenced route removal.
+	// The server may have already finalized the row, so a 404/stale response is
+	// not allowed to close unrelated active sibling routes.
+	for _, admission := range detached {
+		now := h.now().UTC()
+		state, reason := previewCarrierDetachState(admission, now, "admission_removed")
+		_ = h.observe(ctx, []control.PreviewCarrierObservation{observationFromAdmission(admission, state, reason, now)})
+	}
+
+	for _, admission := range desired {
+		key := previewCarrierAdmissionKey(admission)
+		if _, exists := attached[key]; exists {
+			continue
+		}
+		if pending, exists := pendingReady[key]; exists {
+			if !previewCarrierAdmissionEqual(pending.admission, admission) {
+				delete(pendingReady, key)
+			} else if time.Now().Before(pending.retryAt) {
+				continue
+			}
+		}
+		if err := h.registry.AttachAdmission(admission, server); err != nil {
+			pendingReady[key] = previewCarrierPendingReady{admission: admission, retryAt: time.Now().Add(previewCarrierReadyRetryInterval)}
+			continue
+		}
+		now := h.now().UTC()
+		if err := h.observe(ctx, []control.PreviewCarrierObservation{observationFromAdmission(admission, "edge_ready", "", now)}); err != nil {
+			_ = h.registry.DetachAdmission(admission)
+			pendingReady[key] = previewCarrierPendingReady{admission: admission, retryAt: time.Now().Add(previewCarrierReadyRetryInterval)}
+			continue
+		}
+		attached[key] = admission
+		delete(pendingReady, key)
+	}
+	return nil
+}
+
+func (h *PreviewCarrierHandler) closeAttached(ctx context.Context, attached map[string]datacarrier.ExpectedAdmission, reason string) error {
+	if len(attached) == 0 {
+		return nil
+	}
+	admissions := make([]datacarrier.ExpectedAdmission, 0, len(attached))
+	for _, admission := range attached {
+		admissions = append(admissions, admission)
+	}
+	sort.Slice(admissions, func(i, j int) bool {
+		return previewCarrierAdmissionKey(admissions[i]) < previewCarrierAdmissionKey(admissions[j])
+	})
+	h.detachLocal(admissions)
+	now := h.now().UTC()
+	observations := make([]control.PreviewCarrierObservation, 0, len(admissions))
+	for _, admission := range admissions {
+		state, observationReason := previewCarrierDetachState(admission, now, reason)
+		observations = append(observations, observationFromAdmission(admission, state, observationReason, now))
+	}
+	if err := h.observe(ctx, observations); err != nil && ctx.Err() == nil {
+		return fmt.Errorf("observe preview carrier detach: %w", err)
+	}
+	return nil
+}
+
+func (h *PreviewCarrierHandler) observe(ctx context.Context, observations []control.PreviewCarrierObservation) error {
+	if len(observations) == 0 {
+		return nil
+	}
+	observeContext, cancel := context.WithTimeout(ctx, h.waitTimeout)
+	defer cancel()
+	return h.source.ObservePreviewCarriers(observeContext, h.nodeID, h.processEpoch, observations)
+}
+
+func previewCarrierAdmissionKey(admission datacarrier.ExpectedAdmission) string {
+	return admission.OperationID + "\x00" + admission.RouteID
+}
+
+func previewCarrierAdmissionEqual(left, right datacarrier.ExpectedAdmission) bool {
+	expiresEqual := left.ExpiresAt.Equal(right.ExpiresAt)
+	left.ExpiresAt = time.Time{}
+	right.ExpiresAt = time.Time{}
+	left.Admitted = false
+	right.Admitted = false
+	return expiresEqual && left == right
+}
+
+func previewCarrierDetachState(admission datacarrier.ExpectedAdmission, now time.Time, reason string) (string, string) {
+	if !admission.ExpiresAt.After(now) {
+		return "expired", "lease_expired"
+	}
+	return "detached", reason
 }
 
 func observationFromAdmission(admission datacarrier.ExpectedAdmission, state, reason string, observedAt time.Time) control.PreviewCarrierObservation {
