@@ -8,8 +8,8 @@ module, or downstream-patch change. `MAINTENANCE.md` defines the procedure.
 
 | Field | Value |
 | --- | --- |
-| Release tag | `2026.08.26.0` |
-| Tunnel commit | `2c32f183e6e6d87f0cec76bcab6c4a2a2b8c767c` |
+| Release tag | `2026.09.05.0` |
+| Tunnel commit | `74f19f3d18db5fbe472f29c8cc90e47ba11653cd` |
 | frp upstream release | `v0.70.1` |
 | frp fork commit | `fba6ff3284044b7c3030c6f23c4ec109d5d5417d` |
 | Caddy | `v2.11.4` |
@@ -17,6 +17,7 @@ module, or downstream-patch change. `MAINTENANCE.md` defines the procedure.
 | Caddy plugins | `github.com/caddy-dns/cloudflare@v0.2.4` |
 | Runtime image | `debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818` |
 | Rollback release | `2026.08.17.3`; deploy `ghcr.io/pinksaucepasta/paperboat-tunnel@sha256:9f6c4d9270919aee8415326c9922f34db254fd1f3fb0a9d7abea7be205a488cd` |
+| Deployment status | Target `2026.09.05.0` is not yet deployed. Prior running image was `paperboat-tunnel:2026.09.03.9`, local image ID `sha256:591b5598d1e93e944b306eac4bc15b177a18a500128bcff62f51f99e5cfd8ef5`; this is not a registry digest. |
 
 The production tag includes the local `paperboat_quic` Caddy module and immutable base
 image pins. Those properties must not be reintroduced as candidate-only behavior.
@@ -32,7 +33,7 @@ calendar tag, publication, and deployment by immutable image digest.
 | Go builder | `golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36` |
 | frp upstream base | `v0.70.1` (`fa3bcca2ed54bcf80a5d98c8c76f40f72c6b5291`) |
 | frp fork branch | `paperboat/v0.70.1-edge` |
-| frp fork commit | `028f085af3c787d7c0c77cd58f133ca8aed7ee75` |
+| frp fork commit | `fba6ff3284044b7c3030c6f23c4ec109d5d5417d` |
 | frp build tags | `frps,noweb` |
 | Caddy | `v2.11.4` |
 | Caddy builder | `golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36` |
