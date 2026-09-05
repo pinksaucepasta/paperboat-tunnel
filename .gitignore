@@ -2,3 +2,7 @@
 /dist/
 /.codex-build/
 /coverage.out
+/paperboat-tunnel
+/deploy/.env
+/deploy/deployment.json
+/deploy/secrets/

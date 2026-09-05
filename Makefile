@@ -11,10 +11,7 @@ FRP_TAGS := noweb
 BUILD_FLAGS := -trimpath -buildvcs=false
 OWNED_GO_FILES := $(shell find . -path ./frp -prune -o -name '*.go' -print)
 
-.PHONY: binary-size-check build caddy-module-test check clean contracts dependencies fmt fmt-check generate license-check maintenance-check metrics-check metrics-generate race release-check reproducible-builds source-policy static-analysis submodule-check test tidy verification verify-toolchain vet vulnerability-check
-
-contracts:
-	@./testdata/contracts/validate.sh
+.PHONY: binary-size-check build caddy-module-test check clean dependencies fmt fmt-check generate license-check maintenance-check metrics-check metrics-generate race release-check reproducible-builds source-policy static-analysis submodule-check test tidy verification verify-toolchain vet vulnerability-check
 
 dependencies: submodule-check
 	@./tools/verify-dependencies.sh
@@ -92,7 +89,7 @@ verification: check race static-analysis vulnerability-check license-check
 tidy:
 	$(GO) mod tidy
 
-check: maintenance-check verify-toolchain contracts dependencies source-policy metrics-check fmt-check vet test caddy-module-test build
+check: maintenance-check verify-toolchain dependencies source-policy metrics-check fmt-check vet test caddy-module-test build
 
 clean:
 	rm -rf bin dist coverage.out

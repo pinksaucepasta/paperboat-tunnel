@@ -60,10 +60,10 @@ infrastructure names appear only in restricted operator diagnostics.
 3. Reconcile absolute counters by node/epoch/route; never synthesize deltas from a reset.
 4. If ownership is ambiguous, stop new admission and restore the last approved control pair.
 
-### Fixture drift and contract rollback
+### Fixture changes
 
-1. Run the workspace validator and identify the exact canonical/copy/provenance mismatch.
-2. Do not edit a released fixture in place. Restore the complete last approved artifact set
-   and every consumer copy by immutable commit and digest.
-3. Run all four local validators and conformance suites before reopening rollout.
-4. Record the cause, affected consumers, restored digest, and follow-up decision.
+1. Keep JSON, NDJSON, and schema fixtures owned by this repository beside the tests that
+   consume them.
+2. Run the affected repository-local Go tests, including
+   `go test ./internal/connectorprotocol ./internal/contracttest` for connector changes.
+3. Preserve the protocol and security behavior tests.

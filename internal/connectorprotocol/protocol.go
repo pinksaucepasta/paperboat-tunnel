@@ -2,8 +2,8 @@
 // protocol. It contains only control messages and session state. Byte transport,
 // route forwarding, and origin proxying belong to their owning packages.
 //
-// This directory is the canonical Go implementation for the connector-v1
-// family. Run contracts/connector-v1/sync-consumers.sh --check before release.
+// This directory contains the repository-local Go implementation for the
+// connector-v1 family. Run the repository-local connector protocol tests before release.
 package connectorprotocol
 
 import (

@@ -14,10 +14,15 @@ frp tests, and both binaries are verified consistently:
 
 ```sh
 git clone --recurse-submodules https://github.com/pinksaucepasta/paperboat-tunnel.git
+cd paperboat-tunnel
+git -C frp switch -C "$(git config -f .gitmodules --get submodule.frp.branch)" HEAD
 make check
 ```
 
-See [AGENTS.md](AGENTS.md) for repository ownership and engineering requirements.
+For this fresh clone, the submodule branch starts at the exact commit selected by this
+repository, not the latest fork branch tip. Install Go and `ripgrep` before running the
+checks; the Makefile selects the pinned Go toolchain automatically.
+
 Dependency and branch maintenance is defined in [MAINTENANCE.md](MAINTENANCE.md). Exact
 production and `main` candidate provenance is recorded in [RELEASE.md](RELEASE.md).
 Deployment monitoring and incident recovery are defined in

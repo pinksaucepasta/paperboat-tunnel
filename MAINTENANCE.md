@@ -1,7 +1,7 @@
 # Paperboat Tunnel Maintenance
 
 This is the operating procedure for agents maintaining `paperboat-tunnel`, its Caddy
-build, and the Paperboat frp fork. Read it with `AGENTS.md` and `RELEASE.md` before making
+build, and the Paperboat frp fork. Read it with `RELEASE.md` before making
 dependency, data-plane, container, or release changes.
 
 ## Invariants
@@ -86,7 +86,7 @@ a reviewed repository commit before the tunnel gitlink is updated.
 5. Run frp unit, race, compatibility, reconnect, half-close, generation fencing, admission,
    usage, and real helper/tunnel tests. Compare behavior with the currently released pin.
 6. Push the new fork branch without force, then update the tunnel gitlink, `FRP_VERSION`,
-   `FRP_COMMIT`, contract metadata, and `RELEASE.md` in one change.
+   `FRP_COMMIT`, affected tests, and `RELEASE.md` in one change.
 7. Run `make check`, build the container by digest, stage it, exercise rollback, and merge
    only with the evidence attached to the change.
 
@@ -121,7 +121,7 @@ Every downstream frp commit listed in `RELEASE.md` needs a one-line purpose and 
 
 Local Caddy behavior is recorded by module path and tunnel commit. If a change modifies a
 wire contract, credential boundary, routing semantics, usage accounting, or deployment
-topology, update the workspace contracts and operational documentation in the same work.
+topology, update the affected tests and operational documentation in the same work.
 
 ## Release And Production
 
