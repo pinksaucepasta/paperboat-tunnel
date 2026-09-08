@@ -2,8 +2,22 @@
 
 This family is the single language-neutral source for preview and tunnel resource
 names, lifecycle state, health, errors, and events. The authoritative product behavior
-is `PREVIEW_TUNNEL_OVERHAUL.md`. Consumers copy these artifacts into repository-local
+is the workspace `plans/paperboat-product-and-transport-plan.md`. Consumers copy these artifacts into repository-local
 testdata and must not read the workspace copy at runtime.
+
+## Declaration status and cutover
+
+The **Edge migration decisions** section is the frozen replacement v1 declaration
+from Task 3b (2026-09-05), not a claim that browser access, lazy activation, or capture
+exists. Earlier wire schemas/fixtures and the remaining current-runtime sections
+below describe the preserved installation. In particular, current `access_mode`
+accepts public/private and private uses device-assisted access; these are not the
+replacement audience/method semantics. Tasks 24–32 replace their owning schemas,
+producers, consumers, OpenAPI, and positive/negative vectors together at the gates
+listed below. Do not teach the old runtime to accept unsupported fields, add a v2,
+or retain compatibility readers after cutover. This document in paperboat-server
+owns product policy; identical copies in paperboat, paperboat-tunnel, and
+paperboat-web give each consumer the same declaration.
 
 ## Fixed vocabulary
 
@@ -370,3 +384,317 @@ The public family is `paperboat.preview-tunnel` version `1.0.0`:
 
 There is no compatibility implementation for the superseded unreleased preview/serve
 model and no v2 surface.
+## Edge migration decisions
+
+### Authority and identity
+
+`audience` is exactly `public | private | team`; `connection_method` is exactly
+`edge | native`. These are independent fields, not spellings of one access mode.
+Public is the explicit-create default and requires authenticated publication.
+Private authorizes the resource owner; team additionally permits current members
+with an explicit resource grant. Membership alone, account discovery, email suffix,
+URL knowledge, a ready carrier, and the application's own login grant nothing.
+`native` supports private/team and uses Task 2's common pair/resource authority;
+public/native is invalid. Native is end-to-end encrypted. Edge is browser HTTP
+with TLS termination at paperboat-tunnel, including private/team; it never claims
+end-to-end encryption. Neither method silently falls back to the other. HTTP/3 to
+HTTP/2 connector fallback stays within edge and does not change audience.
+
+The server owns these declarations; identifiers are opaque nonempty strings,
+generations are positive monotonically increasing uint64 values (never wrap),
+times are UTC instants, and all fields below are required unless marked optional:
+
+| Declaration | Fields and invariant | Producer → consumer |
+| --- | --- | --- |
+| Resource binding | `account_id`, `resource_kind` (preview_lease/tunnel), `resource_id`, `resource_generation`, `route_id`, `route_generation`, `target_id`, `target_generation`, `audience`, `connection_method`; exact normalized hostname, path match and protocol | Server desired state → edge and daemon |
+| Target binding | Above binding plus `owner_device_id`, `installation_generation`, `boot_id`, `owner_session_id`, `service_instance_id`, exact scheme/address and origin TLS policy; durable tunnels use their explicitly configured connector/target ownership, not a synthetic preview session | Server-approved daemon registration → server projection → edge/daemon |
+| Subject grant | `grant_id`, `grant_generation`, principal user or scoped machine identity, exact resource/route/target selector, actions subset of view/inspect/replay, `expires_at`; team grants also bind `team_id` and `membership_generation` | Server membership/resource authorization → edge/daemon |
+| Edge decision | Exact resolved binding, principal, granted action, `policy_generation`, optional membership/grant generations when applicable, `issued_at`, `expires_at`, `decision_id`; additionally connector session/process, config/assignment generations and edge node/process epoch | Server authorization → authenticated edge → exact daemon stream |
+| Lazy policy | `policy_id`, `policy_generation`, owner/environment identity, audience private/team, exact allowed targets, ownership mode session/persistent_port, reservation identity, expiry, and limits below | Owner mutation at server → daemon activation and edge lookup |
+
+No caller can supply identity as authority. Server resolves selectors against
+current state and returns the exact binding, not an account-wide forwarding grant.
+A preview has one target; each durable route has an explicit target binding. Origin
+address, TLS trust/SNI, ownership, audience, grants, or route match changes fence the
+relevant generation before reuse. Heartbeat-only lease extension does not replace
+the target identity. Native pair generation remains owned by the p2p-v1 contract;
+these resource generations cannot mint or replace pair authority.
+
+The edge authenticates and authorizes the exact selected route before requesting
+activation, probing the origin, or opening forwarding. The daemon independently
+checks the server-approved binding against its current target and ownership before
+dialing. Connector membership is not permission to dial another target. Reject
+ambiguous Host/:authority, encoded-path normalization disagreement, stale aliases,
+and sibling-route substitution. Bind each HTTP request or multiplexed stream, not
+just the TCP connection or TLS hostname. All public forwarding still requires an
+unexpired publication binding; anonymous traffic cannot create or refresh it.
+
+Before origin forwarding, strip all inbound case-insensitive `X-Paperboat-*`,
+`Paperboat-*`, proxy authorization, and Paperboat cookie names; discard client
+Forwarded/X-Forwarded-* identity and rebuild only configured proxy metadata. Strip
+reserved response headers and attempts to set Paperboat cookie names too. Application
+Authorization and non-Paperboat cookies retain their application meaning. Scoped
+edge API authentication uses a reserved Paperboat header, consumed at the edge,
+so it does not steal the application's Authorization header. Provenance is typed
+connector metadata, never client-supplied headers or reusable browser credentials.
+
+### Browser origin and session isolation
+
+Keep the existing managed URL shapes: random explicit preview labels and stable
+opaque tunnel labels; lazy labels are `p<port>-<server-issued-environment-id>` under
+`preview.pprbt.dev`. Display names are not DNS identity. No managed label is ever
+reassigned to another resource/account, including after deletion.
+
+The chosen deployment prerequisite is Public Suffix List PRIVATE entries for
+`pprbt.dev`, `preview.pprbt.dev`, and `tunnels.pprbt.dev`. Together they prevent
+application cookies scoped to either the hosting suffix or its parent and make
+individual managed hosts separate browser sites. No untrusted content is served
+at these suffix apexes or at trusted API/login/dashboard origins. Reserve internal
+hostnames in server configuration. DNS/TLS readiness alone does not satisfy this
+gate: Task 3c records DNS/PSL submission authority, and Task 26 must demonstrate
+browser cookie/site behavior in the supported browser matrix after distribution.
+This is a selected prerequisite, not an assertion of PSL acceptance or deployment.
+Do not enable replacement browser access before the isolation gate passes.
+The PSL's current submission guidelines say small/beta services are likely to be
+declined; Paperboat is unreleased. Acceptance/distribution is therefore an unresolved
+rollout dependency, not a routine DNS step. Task 3c must retain that blocker unless
+there is acceptance evidence or an explicit revision of this hostname strategy;
+there is no automatic weaker-isolation fallback.
+
+Trusted login uses the server-configured exact HTTPS authentication origin (the
+existing Paperboat browser identity service), never an origin inferred from Host
+or an application return parameter. Dashboard remains local-only under workspace
+policy. Login session and CSRF cookies become `__Host-pb-session` and
+`__Host-pb-csrf`: Secure, Path=/, no Domain, SameSite=Lax; session is HttpOnly.
+Trusted state-changing endpoints require the session-bound CSRF token and exact
+allowed Origin, not a same-site suffix test. Dev login on a Tailscale IP remains a
+separate development configuration, never production isolation evidence.
+
+For an unauthenticated top-level GET/HEAD navigation, the edge creates a 120-second
+transaction with a random nonce, exact resource/hostname and server-stored relative
+return path (maximum 2048 bytes, no scheme/authority, credentials, control bytes,
+backslashes, or scheme-relative redirect). Trusted login rechecks authority and
+issues a single-use opaque handoff valid for 30 seconds, bound to that transaction,
+principal, exact HTTPS callback origin and resource generation. Redeem atomically
+at the server; concurrent redemption has one winner. Deliver via a form POST to
+reserved `/.paperboat/access/callback`, verify exact login Origin and transaction
+state against a transient `__Host-pb-handoff` Secure/HttpOnly/Path=/,
+SameSite=None cookie, then delete it. No bearer in URL, referrer, application body,
+logs or browser storage. Callback/login responses use no-store and no-referrer,
+restrict form-action/frame-ancestors, and are never forwarded to the application.
+
+Issue an opaque `__Host-pb-edge` Secure/HttpOnly/Path=/, no-Domain, SameSite=Lax
+cookie bound to the exact hostname and resource, with a 12-hour absolute and
+30-minute inactivity expiry, capped by the trusted session/resource/grant expiry.
+It identifies a session, not cached permission for 12 hours: each request and active
+stream follows the decision freshness limit below. Rotate on authentication or
+privilege change; reject duplicate reserved cookies. One hostname has one resource
+owner/authentication boundary; path routes are within that resource and still need
+separate route grants. Do not cohost independent tenants on sibling paths.
+Paperboat access endpoints accept no application service-worker-controlled identity;
+a compromised application can act only within its own already-authorized origin.
+Never issue a trusted login credential to an application origin.
+
+Custom domains at Task 29 retain exact-host cookies and must not overlap trusted
+Paperboat origins or another account's ancestor/descendant binding. Domain ownership
+covers the registrable domain for cookie-trust purposes; show that sibling content
+under a customer-controlled site shares that customer's browser trust boundary.
+Do not claim managed-host isolation for arbitrary customer sibling applications.
+Every alias requires a separate handoff/session, and revocation fences all aliases.
+
+Non-navigation requests, WebSockets, APIs, and webhook POSTs never redirect or buffer
+and resend bodies for login: unauthenticated is 401, authenticated unauthorized or
+nonexistent resource is the same non-enumerating 404. Authorized origin failure is
+503 with a typed safe reason. Scoped machine credentials are resource/action-bound,
+valid at most 5 minutes and subject to the same revocation limit. Cross-origin
+cookie-authenticated unsafe methods and WebSocket handshakes require exact origin;
+configured application CORS does not widen Paperboat authority. An unauthenticated
+navigation may begin login without disclosing existence; post-login denial is the
+same 404. Public webhook publication is explicit; the application verifies provider
+signatures. No restricted-to-public recovery or automatic POST replay.
+
+### Revocation and loss of authority
+
+Replacement edge authorization freshness is at most **10 seconds**, including
+cache propagation and clock uncertainty, from the server's authoritative read.
+This replaces the current privateaccess 45-second default/2-minute maximum only at
+Task 26. The server publishes ordered policy/resource/membership invalidations;
+a gap or reconnect requires an authoritative snapshot before extending decisions.
+Every cache key includes principal, action, full binding and policy/grant generations.
+A cache hit never resets issued_at; renewal rechecks authoritative state.
+
+Refresh active decisions by 5 seconds. Stop new requests and close both directions
+of active HTTP bodies, WebSockets, SSE, gRPC and TCP streams by **15 seconds after
+committed revocation**, including up to 5 seconds for bounded cancellation/close.
+Explicit lease/grant expiry or locally observed owner termination is a hard deadline:
+stop new work and cancel streams at that deadline, without an additional grace grant.
+Do not drain privileged traffic after revoked authority or retry broken requests.
+If authorization cannot refresh, expire it; a long-lived browser cookie, healthy
+origin or stale edge snapshot cannot extend access. Use monotonic local deadlines
+capped by server lifetime, subtract bounded clock uncertainty, and fail closed if
+the uncertainty cannot fit the 10-second freshness budget. Task 3c must carry these
+bounds into regional placement/partition scenarios; they are requirements, not SLO
+measurements from Task 3a. Graceful operational drain applies only while authority
+remains valid and cannot extend any security deadline.
+
+### Lazy ownership and lifecycle
+
+Reserve a stable environment/port identity independently of forwarding. The server
+resolves only an owner-approved exact loopback HTTP/HTTPS/h2c target; a port in a URL
+cannot choose scheme, IP, SNI, path, another interface, Unix socket or arbitrary TCP.
+Other target types require explicit creation/configuration. A reservation is retained
+until owner deletion, which tombstones its label permanently; it carries no access
+right and consumes no connector/origin resources while dormant.
+
+Session ownership is the default: bind installation generation, fresh boot ID,
+owner-session nonce and daemon-registered service-instance identity. PID or a port
+number alone is insufficient. Verify the same registered listener/service instance
+before every connection; an unprovable or changed identity fails closed as
+`owner_replaced`, even if a new application listens on the same port. The owning
+process/session ending invalidates its lease. A platform unable to prove this
+binding cannot offer session-mode lazy activation until its gate is implemented;
+it may offer an explicitly approved persistent-port policy instead.
+
+`persistent_port` is explicit permission for any replacement listener at that exact
+port within the approved environment. The UI says so when granting it. It persists
+as policy across service restarts, not as a preview lease across reboot. A fresh,
+authenticated owner registration for the current installation and boot is required
+before a post-reboot request can create a new lease. Machine re-enrollment or transfer
+requires owner reapproval; an old reservation or still-valid team membership cannot
+adopt a new machine. It never starts apps, scans, wakes devices, or restores a
+forwarder during boot. Durable tunnel reboot reconciliation remains Task 28.
+
+| Lazy policy budget | Fixed v1 value and exhaustion behavior |
+| --- | --- |
+| Target allowlist | At most 32 exact targets per environment policy; no port ranges |
+| Activation key | Full resource/target/owner/boot/policy-generation binding; one in-flight activation across edge nodes via server ownership |
+| Activation deadline | 10 s total, including queue/control/connector; exact origin connect at most 3 s within it |
+| Concurrency | 4 activations/environment, 16/account; at most 32 waiting requests per activation, reject excess with 429 and Retry-After: 1 |
+| Request buffering | No application body read while activating; request cancellation releases its waiter; cancel activation when last waiter leaves |
+| Failure cooldown | 2 s per exact activation key, only after an authorized attempt; no automatic hidden retry; new owner/generation invalidates it |
+| Active lazy leases | At most 32/environment and 128/account; reject excess, never evict another active stream to admit new work |
+| Owner heartbeat | Every 10 s, renewable deadline at most 30 s from authoritative renewal; known owner end closes immediately |
+| Idle resources | Release after 5 min with zero active requests/streams; timer starts at last stream close; listening sockets do not reset it |
+| Lease absolute lifetime | 8 h or earlier owner/policy/grant/user deadline; traffic cannot extend it; a later authorized request may create a new lease after fresh checks |
+| Active stream lifetime | At most 1 h, capped by lease and authorization deadlines; status makes closure explicit, no hidden replay |
+
+After authorization, distinguish `host_offline`, `origin_unavailable`,
+`activation_timeout`, `owner_replaced`, `generation_conflict`, and
+`forwarding_failed`. Only an exact usable route/carrier/origin becomes ready.
+At generation change cancel pending activation and discard its late result.
+Idle expiry releases only this lease's resources; stop/delete/revoke fences aliases
+and active work without closing a shared connector needed by other resources.
+Do not forward until ready, and never retry automatically after any application
+request bytes have been forwarded, regardless of method.
+
+### Daemon-local inspection and replay
+
+The daemon owns one capture store shared by native and edge forwarding. It is an
+in-memory bounded ring, not a server/edge database or disk archive; restart deletes
+captures. Limits count metadata, bodies, raw data, indexes, in-flight capture buffers
+and queued records, not just completed entries. Values below are hard maxima;
+owner configuration may lower them. Byte units are binary KiB/MiB.
+
+| Capture policy | Fixed v1 budget |
+| --- | --- |
+| Daemon aggregate | 64 MiB and 2000 records, whichever fills first |
+| Per preview | 8 MiB and 200 records, whichever fills first |
+| Retention | 15 min from request start, including in-flight records |
+| Metadata per record | 16 KiB total, URL at most 2048 bytes and 64 header entries per direction; mark omissions |
+| Body capture | Off by default; opt-in sanitized request/response bodies at most 64 KiB each |
+| Raw replay capture | Separate explicit opt-in; request only, at most 256 KiB including headers/body, 2 min from request start; counts against all aggregate budgets |
+| Capture work queue | At most 128 records/daemon and 16/preview, included in bytes/counts; full queue drops capture, never blocks forwarding |
+| Retrieval | 100 records or 1 MiB/page, whichever first; 4 concurrent reads/daemon; slow reads canceled after 10 s without progress |
+| Replay | At most 1 concurrent/preview, 4/daemon; 30 s total, capped by current authority/resource expiry |
+
+Evict oldest complete records within the exceeded scope; when only active records
+remain, stop/drop capture instead of retaining over budget. Raw bytes expire
+independently even while sanitized metadata remains. Use bounded chunks; capturing
+cannot accumulate a full streaming body, decompress unbounded data, defeat transport
+backpressure or retain a buffer after cancellation. On resource stop/revocation,
+immediately deny retrieval/replay and purge its records; removing one inspector's
+grant denies that subject without deleting records still authorized to the owner.
+
+Record opaque capture/request IDs, exact resource/target generations, method,
+sanitized URL, status/timing and typed errors. Header values are redacted by default;
+a small explicit non-sensitive allowlist (Content-Type, Content-Length) may be shown.
+Authorization, cookies, API keys, signed tokens and Paperboat headers remain redacted.
+Query values are redacted by default; configured additional sensitive names apply
+case-insensitively. Body display defaults to omitted; opt-in display supports bounded
+UTF-8 JSON with configured sensitive fields plus recursively matched, case-insensitive
+password/secret/token/key fields redacted, and fails closed on malformed/unsupported encoding. Do not pretend that
+arbitrary binary/form/text payloads can be safely redacted. Raw bytes are never part
+of ordinary list/detail/export, diagnostics or audit records.
+
+Capture states are `complete`, `truncated`, `dropped`, `unsupported`, `expired`;
+record request/response body states separately and a typed replay-ineligibility
+reason. Raw requests require an independent `replay` action; `inspect` returns only
+sanitized records. Application view, team membership or machine connectivity implies
+neither action. Even the owner must enable capture/raw mode explicitly. Grants are
+checked on daemon-local retrieval and again on replay, against current server
+resource authority with the same 10-second freshness/15-second revocation limits.
+
+Replay accepts only capture ID, expected resource/target generations and an
+idempotency key; it has no destination, header or body override. It reuses exact
+supported request method/path/body and application headers, removes hop-by-hop and
+reserved Paperboat credentials and recomputes transport framing for the same target.
+It rechecks current ownership, grant, expiry, binding and complete retained raw
+request before opening the target. Truncated/dropped/unsupported captures, upgrades,
+WebSocket/SSE/gRPC streams, missing raw bytes, changed targets or generations cannot
+be replayed. Non-idempotent HTTP may replay only as the deliberate user action;
+show method/target/body state/possible side effects and use a new request ID linked
+to the original. Duplicate action keys return the same replay operation, never a
+second origin request. Losing an ambiguous result does not permit implicit retry.
+Keep safe action-key/outcome metadata for the 15-minute capture lifetime; after
+expiry the old capture ID is unavailable, not reconstructed. Provider signature
+expiry is an origin result; do not bypass, re-sign, or claim provider redelivery.
+
+CLI retrieval uses native authenticated daemon access. The local dashboard uses an
+explicit authenticated edge inspection channel to the daemon at Task 32: it displays
+that edge TLS termination exposes retrieved capture data to the edge. Nothing is
+archived at the control plane/edge, responses are no-store, and native private
+forwarding remains end-to-end encrypted. There is no silent inspection trust-boundary
+fallback. Audit only actor/action, IDs/generations, time and outcome (no URL values,
+headers or payload); reserve bounded safe audit/outcome capacity before dispatch and
+reject replay if it cannot be recorded. Original and replay response captures are
+separate records governed by the same limits.
+
+### Replacement ownership and deletion gates
+
+Task numbers refer to the workspace TRACKER.md; names below are repository-relative.
+Keep runtime-backed vectors until their replacement passes, then remove obsolete
+assertions rather than weakening them. Task 34 verifies no residual wiring after
+these owning cutovers, not a license to retain two production paths.
+
+| Existing surface | Replacement and gate |
+| --- | --- |
+| Server `internal/previewtunnelstore/preview_lease_v1.go`, `internal/previewtunnelapi`, `internal/httpapi/preview_lease_handlers.go`, attachment adapters/queries; all copies of resources/dispatch/attachment schemas and fixtures | Tasks 24–25: resource/target generations and explicit publication; Task 27: reserved lazy identity and ownership policy; Task 28: durable ownership |
+| Server `internal/privateaccess` and `internal/db/queries/private_access_routes.sql`; `/v1/private-access/routes`, `/v1/edge/private-access/carrier-admissions`, `/v1/edge/private-access/grants`, `/v1/edge/private-access/authorize` and OpenAPI definitions | Task 26 replaces browser device-proof/accessor discovery authority with browser/scoped access. Native pair/resource consumers move at Task 19; remove old endpoints once both replacements pass |
+| All `preview-tunnel-v1/schemas/private_access.schema.json` and `fixtures/private_access.ndjson`; `internal/contracttest/private_access_v1_test.go`, server machine/grant tests, OpenAPI tests | Task 26 replaces device/PAC browser vectors with handoff, isolation, team/revocation vectors; native coverage belongs to Task 19 |
+| Server `internal/auth/auth.go` cookie names and browser CSRF/session consumers/tests, web login/session consumers | Task 26 replaces non-prefixed cookies and exact-origin handling together; no old-cookie reader survives cutover |
+| paperboat `internal/privatepreviewproxy`, `internal/hostruntime/privateproxyconfig`, `internal/hostruntime/preview/private_access.go`, `accessor_discovery.go`, private TCP manager, `cmd/pb/access_tunnel_command.go` and their tests/config wiring | Tasks 19/26 replace native access and browser PAC/local-daemon paths respectively; remove PAC/system-proxy setup and cleanup its installed state at cutover |
+| Tunnel `internal/edgehttp/private_access_stream.go`, `internal/edgehttp/private_connection.go` and Caddy binding in policy, `internal/control/private_access_grant.go`, `Config.PrivateAccessToken`, `internal/config/deployment.go` (`caddy_private_access_listen_address`) and corresponding tests | Tasks 24/26 replace carrier and browser ingress authority; Task 19 owns native private TCP. Remove the shared listener secret and accessor carrier path after those gates |
+| All connector-v1 private_access_http/private_access_tcp kinds, StreamOpen access frames, schemas/vectors and `internal/connectorprotocol/access_stream.go` copies | Task 24 replaces edge connector framing; old accessor frames removed when native/browser replacements pass Tasks 19/26; never relabel them as browser login |
+| Current “random lease only” URL and public/private-only `access_mode` declarations, validation and connector snapshots | Tasks 25–27 replace with explicit/lazy endpoint identity and separate audience/method in server, daemon, edge and web projections; existing explicit managed URL shape stays |
+| Inspector and replay declarations in this section | Tasks 31–32 implement daemon store, authenticated retrieval, redaction, audit and replay with positive/negative budget/authority tests; current log_entry is not evidence of an inspector |
+
+Task 3c owns the broader FRP/Caddy deployment/binary inventory and regional budgets.
+Task 26 gates cross-account/sibling-domain cookies, forged return/Origin/state,
+duplicate handoff/cookies, team removal, active-stream expiry, partitions and alias
+fencing. Task 27 gates cancellation, coalescing across nodes, replacement/reboot,
+idle versus active streams and capacity exhaustion. Tasks 31–32 gate memory under
+streaming load, redaction failures, raw expiry, unavailable audit capacity,
+unauthorized reads/replays and duplicate/ambiguous replay actions on real connected
+paths. These are required future acceptance cases, not tests run by Task 3b.
+
+### Security rationale sources
+
+These choices apply browser primitives to Paperboat; they are not claims that an
+upstream project implements this product policy. The
+[PSL explanation](https://publicsuffix.org/learn/) describes cookie inheritance
+boundaries; its [submission guidelines](https://github.com/publicsuffix/list/wiki/Guidelines)
+make acceptance and distribution a real prerequisite. Mozilla's
+[Set-Cookie reference](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie)
+defines host-prefixed cookie attributes; Task 26 must verify them in supported browsers.
+Workspace reference paths and implementation/test findings are recorded under Task 3b
+in TRACKER.md. No upstream source code is copied by this declaration change.

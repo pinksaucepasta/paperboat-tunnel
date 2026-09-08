@@ -36,3 +36,13 @@ observed interval bounds and an operation ID. An uncertain delivery is retried u
 All decisions return a stable request ID. Logs and metrics may contain environment, node,
 generation, route revision, result, and bounded byte counts, but never credentials, public
 signed URLs, target content, headers, or provider-specific secrets.
+
+## Replacement registry and publication declaration
+
+The FRP-specific admission text above describes the preserved runtime. The existing
+[connector-v1 regional declarations](../connector-v1/contracts.md#regional-registry-and-selection-decisions)
+own Task 3c's authenticated edge catalog, numeric selection/drain budgets, common-node
+coordination ownership, Paperboat DNS publication and removal gates. Task 8 updates
+registry producers/consumers, Task 24 replaces connector admission, and Task 30 couples
+ready assignments to public DNS. No candidate/health observation grants resource
+access, and no planned DNS/region recovery is claimed as currently implemented.

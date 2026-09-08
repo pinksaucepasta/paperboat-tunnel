@@ -6,6 +6,41 @@ The Go implementation in `internal/connectorprotocol` and its tests are
 maintained in this repository. Server-only SQL persistence is deliberately
 outside this fixture set.
 
+## Migration declaration status
+
+Sections 1–9 and their schemas/vectors describe the preserved connector runtime.
+They do not implement the product plan's HTTP/3/HTTP/2 edge connector or browser
+login. The existing preview-tunnel-v1
+[Edge migration decisions](../preview-tunnel-v1/contracts.md#edge-migration-decisions)
+are the authoritative Task 3b product declarations for audience versus connection
+method, exact route/target/owner generations, browser/scoped access, revocation,
+lazy activation and inspection. Do not interpret `private_access_http` or
+`private_access_tcp` as the replacement browser or native method.
+
+Task 24 owns the replacement connector: server-issued binding and target authority
+are consumed by paperboat-tunnel and independently checked by paperboatd on every
+stream, before origin dial. HTTP/3 and HTTP/2 carry the same binding and typed
+provenance; neither changes audience or grants access. Task 26 supplies browser and
+scoped machine decisions; login cookies/proofs terminate at the edge and never
+enter an application payload. Anonymous public traffic still needs an unexpired
+publication binding. Task 27 supplies exact lazy activation ownership. Task 31
+captures only in the daemon after authorization, subject to the preview-tunnel-v1
+budgets; connector diagnostics never capture payloads.
+
+The server owns resource/policy/route/target generations. Connector session/process,
+config/assignment and edge process generations fence transport attachments, not
+resource authority. Task 2 owns native pair generations; this connector cannot
+mint them. Task 3c must apply the referenced authorization freshness and active-stream
+revocation budgets to regional edges without increasing them for failover.
+
+At each owning gate, update protocol declarations, Go producer/consumer types,
+resource/dispatch/attachment/private-access and bootstrap schemas, snapshots, and
+positive/negative vectors in every affected repository together. Keep current
+runtime-backed shapes until that gate, then remove them once: no v2 or permanent
+old-frame reader. Private accessor frames disappear after Tasks 19/26 replace their
+native/browser consumers; Task 34 checks residual dependencies. This is planned
+behavior, not evidence of a passing connected path.
+
 ## 1. Wire envelope and bounds
 
 Each message is a length-prefixed JSON `Frame`:
@@ -482,4 +517,186 @@ operation-only exchange response.
 
 Run `go test ./internal/connectorprotocol ./internal/contracttest` from this
 repository. These tests exercise the connector implementation and the local
-wire/schema vectors.
+wire/schema vectors. Fixture ownership and verification are repository-local.
+
+## Regional registry and selection decisions
+
+Task 3c selects a mirror-style authenticated edge catalog and **Paperboat-owned DNS
+publication**. There is no managed load-balancing subscription, new selection service,
+or edge-to-edge forwarding mesh. The server is the authority; paperboatd measures
+eligible nodes and maintains a primary and hot standby. This section declares the
+replacement v1 behavior for Tasks 8/13/24/30, not the current runtime. Existing
+control schemas and vectors change with their producers/consumers at those gates.
+
+### Candidate and measurement declarations
+
+| Declaration | Required fields and ownership |
+| --- | --- |
+| Candidate set | Server-signed `schema`, `account_id`, `endpoint_id`, `authorization_generation`, monotonic `generation`, `issued_at`, `expires_at`, ordered `nodes`; at most 32 entries. Uses existing control signing/verification, no new cryptographic scheme. |
+| Node | Opaque `node_id`, `node_generation`, `process_epoch`, role edge/relay, region and independent failure_domain, authenticated endpoint addresses, supported transports, state ready/draining/offline, observed_at, expires_at, capacity_limit, capacity_used, capacity_observed_at, optional drain_deadline. Missing/stale health is not ready. |
+| Probe observation | Endpoint identity and boot/network generation, node/process identity, transport, monotonic sequence, observed_at, connect_ms, rtt_ms, loss numerator/sample count and typed result. No arbitrary URLs, payloads or credentials. |
+| Edge placement | Server-owned resource/route/target and policy generations from preview-tunnel-v1, assignment_generation, primary_node_id, optional standby_node_id, expiry, per-node route/config/certificate/connector readiness acknowledgments. A transport reconnect cannot advance resource authority. |
+| DNS publication | Exact managed hostname or verified customer alias target, resource and assignment generations, selected public addresses, provider record IDs and observed state; desired/submitted/verified/failed are separate states. No provider token in this projection. |
+
+Task 8 replaces the registry projection from server `control_tunnel_nodes` and
+current selection in `internal/previewattachment/edge_node.go`. Server policy filters
+role, region, account scope, transport compatibility, expiry and drain before giving
+candidates to a consumer. Geographic proximity is only a shortlist hint. Node
+selection never grants resource access, and a registry endpoint is not an arbitrary
+origin/probe destination. Diagnostic latency is measured, not supplied by a node
+about itself as trusted client reachability.
+
+| Selection budget | Replacement v1 value |
+| --- | --- |
+| Node heartbeat / stale health | 5 s / 15 s; stale or missing capacity cannot admit new assignments |
+| Candidate refresh / expiry | Refresh every 30 s with ±20% jitter; absolute validity 60 s, capped by authority; expiry stops new selection |
+| Probe shortlist / concurrency | At most 3 eligible nodes per endpoint, 2 concurrent probes, 2 s deadline each |
+| Probe volume | At most 1 KiB application probe payload per direction; at most 6 probe attempts/minute/endpoint, burst 3; reconnect does not reset the limiter |
+| Observations | At most 30 s old; carry boot/network generation; changed network invalidates cached reachability |
+| Active connector liveness | Authenticated keepalive every 5 s; 3 missed responses or explicit transport failure removes readiness; no payload-generating origin polling |
+| Capacity | Reject new assignments at 90% of reported configured capacity; existing authorized streams remain bounded by their original limits |
+| Ranking | Lowest measured RTT EWMA (alpha 0.25), then lower loss, lower utilization and stable node ID; relay ranking uses both endpoints as below |
+| Elective switch | At least 15% and 10 ms improvement, 3 fresh observations spanning at least 10 s, minimum 60 s dwell; failures/revocations bypass dwell |
+| Connection attempt / backoff | 5 s per candidate; exponential 1, 2, 4, 8, 16, 30 s capped, full jitter, one attempt per node at a time |
+| Warm connections | At most 2 per authorized placement, shared across resources with compatible placement; standby must be in another failure domain when one is eligible |
+| Graceful drain | Stop new assignments immediately; at most 30 s for valid active streams, never beyond resource/authority expiry; then close explicitly |
+
+Refresh and expiry of a candidate never extend application permission. Browser and
+edge publication freshness/revocation remain the 10-second/15-second limits in
+preview-tunnel-v1. Keep candidate metadata for diagnosis after expiry, but do not
+use it as fresh authority. Long-lived authenticated streams may continue only while
+their independently refreshed resource authority permits them. Neither a partition
+nor lack of an eligible backup widens region policy.
+
+### Common relay coordination
+
+Common native pair authority remains server `internal/peersessions` and the p2p-v1
+network/operation declarations; `internal/relayselection` owns ranking. Task 13
+replaces the present region-only selector with exact node and failure-domain binding.
+The edge connector never mints native pair grants or routes native application data.
+
+The server intersects the two endpoints' current authorized candidate sets and fresh
+reachability observations. Rank mutually reachable nodes by summed RTT, then worst-leg
+loss, utilization and node ID. Publish one assignment bound to the existing endpoint
+pair and authority generation plus a monotonic selection generation, primary and at
+most one mutually reachable backup. Each endpoint acknowledges an authenticated
+connection to the same node/process and selection generation within 10 s; promote
+only after both acknowledgments. Mixed DERP/QUIC and DERP/WSS legs are permitted.
+No common candidate is `no_common_relay`, not permission for an inter-region relay mesh.
+Stale/duplicate acknowledgments cannot promote a newer assignment; generation change
+cancels outstanding preparation. Preserve the healthy old authorized path until the
+replacement is ready, subject to expiry/drain; packet routing remains upstream-owned.
+Native restoration targets are set before Task 13 implementation using real replacement
+evidence from Tasks 6/9 and intended workloads. Missing old Task 2c measurements remain
+unavailable historical comparisons, not core implementation prerequisites. Native targets
+are never silently replaced with the DNS/browser budget below.
+
+### Publish ready edges through ordinary DNS
+
+The existing server reconciliation owner selects and publishes the exact primary
+and ready standby addresses as DNS-only A/AAAA records with TTL **60 s** under the
+existing DNS provider. No Cloudflare Load Balancing product is used. Both advertised
+edges must hold the same current route/target/config/certificate authority and be
+able to serve requests; DNS order does not guarantee primary preference. Use only
+publicly reachable addresses, never Tailscale/RFC1918 addresses in public records.
+No AAAA record without independently verified IPv6 reachability. A carrier endpoint
+for daemon selection remains distinct from a public browser endpoint.
+
+Publish per-resource exact managed records, not one fleet-wide wildcard pointing at
+nodes that may lack that resource. Custom wildcard bindings share one owning resource
+and placement. A reserved lazy hostname may advertise its eligible activation edges
+before forwarding exists: they can authenticate, resolve approved policy and run the
+bounded Task 27 activation, but must not claim origin readiness or probe anonymously.
+Public explicit previews publish only after readiness. Unknown wildcard requests
+never borrow another resource's routing or authority.
+
+The current DNS01 adapter `internal/tunnelcert/cloudflare_dns.go` is TXT-only. Task 30
+adds address-record reconciliation to the existing provider ownership with bounded,
+record-scoped operations; do not pass A/AAAA writes through an ACME challenge API.
+Persist desired generation before provider calls, use one fenced writer per resource,
+coalesce superseded work, and verify provider/authoritative results after uncertain
+outcomes before retry. Provider writes use a 5 s deadline, at most 2 concurrent calls
+and 10 calls/minute per zone, burst 5; bounded backoff follows the table above and
+honors Retry-After. Exhaustion reports pending publication, not ready. Record IDs
+are server-owned; stale cleanup may not delete a replacement record.
+
+Withdraw unready addresses and fence routes immediately; DNS removal does not revoke
+access at an edge. No healthy target means an unavailable resource, never another
+account/region or an unready fallback pool. Retain names, DNS ownership and certificates
+through connector replacement. At promotion, require matching readiness acknowledgments
+for every route sharing the hostname; stage generation changes so mixed DNS cache
+contents cannot authorize an old target. TLS remains terminated by paperboat-tunnel.
+Custom domain readiness includes its delegation and resolver TTL behavior; customer
+DNS outside the supported bounds does not receive the same recovery claim.
+
+### Recovery targets and infrastructure gate
+
+An edge-process/connector failure with an already usable authorized standby targets
+**20 s** to a successful fresh connection made directly to that standby. Full browser
+hostname recovery targets **180 s** for the qualification matrix using TTL-respecting
+resolvers and fresh request attempts: at most 15 s detection, 30 s publication,
+60 s DNS caching, with the remaining budget for connection retry and observation.
+These are acceptance targets, not a guarantee for every browser cache or an existing
+measurement. DNS may retain stale answers; an already-open HTTP/WebSocket stream
+cannot migrate, and partially forwarded requests are never automatically replayed.
+
+Task 30 must measure actual hostname requests with the supported browsers, OS and
+recursive resolvers, including stale-cache behavior, rather than `--resolve` alone.
+It must exercise failure while both addresses are cached, failure after publication,
+control/DNS-provider loss, all edges unavailable and recovery to the preferred node.
+A resolver/client that exceeds the budget is recorded as unsupported for that bound;
+do not claim universal prompt DNS failover or change the target to bless a failure.
+[The provider's TTL contract](https://developers.cloudflare.com/dns/manage-dns-records/reference/ttl/)
+permits 60-second DNS-only TTLs; it does not prove browser recovery time.
+
+Current authorized topology is Helsinki (`coolify`) and, by user approval on
+2026-09-05, Mumbai/APAC (`hp`). hp is an approved second edge host, not yet a ready
+public edge: its Tailscale address is reachable, but public 80/443 probes to its
+observed WAN address timed out and local 80/443 serve unrelated Coolify applications.
+Provision a non-conflicting publicly reachable edge endpoint before advertising it;
+management reachability cannot satisfy this gate. Do not disturb those applications.
+
+A single ready node is valid `redundancy: reduced`, with no node/region failover claim.
+The present server/database also run in Helsinki. Whole-host/region failure cannot
+meet the freshness-bound availability target unless control authority and its
+persistence survive that failure domain. hp alone does not establish this; Task 30
+requires a surviving control-plane deployment or an explicitly narrower availability
+claim. No offline authorization grace is introduced to mask it.
+
+Task 3 records these facts and requirements; Task 30 implements and qualifies DNS
+publication and regional deployment. Task 26 still requires the browser hostname/PSL
+isolation gate in preview-tunnel-v1. No infrastructure purchase, DNS mutation, managed
+load-balancer activation, or replacement ingress deployment is implied by this document.
+
+### Edge removal inventory
+
+Paths are repository-relative. Keep the current runtime until the named replacement
+passes; remove its obsolete producers, consumers, fixtures and configuration together.
+Task 34 checks residual wiring, not a permanent dual-stack period. Applied migration
+history remains history; remove obsolete live columns through a new forward migration.
+Shared carrier/route/bootstrap machinery is adapted where still required, not deleted
+merely because FRP once called it. hp's unrelated Coolify Caddy is outside this inventory.
+
+| Existing surface | Owning replacement/deletion gate |
+| --- | --- |
+| paperboat `internal/hostruntime/connector/frp.go`, `racing.go`, `supervisor.go`, `runid.go`, `admission_source.go`; `internal/hostruntime/runtime/production_unix.go` wiring | Task 24 replaces FRP dialing, QUIC/TCPMux races, run IDs and the single edge endpoint with the dedicated HTTP/3/HTTP/2 connector and candidate consumer |
+| paperboat connector `frp_test.go`, `frp_integration_test.go`, `racing_test.go`, `supervisor_test.go`; `internal/hostruntime/connector/testharness/edge.go` and FRP-dependent integration harness callers | Task 24 replaces transport-specific expectations and preserves forwarding/cleanup regression scenarios; Task 34 deletes unused harness inputs |
+| Server `internal/controlplane/edge.go`, `edge_test.go`, `enrollment_test.go`, `docs/openapi.json`; mirrored `testdata/contracts/edge/control.md`, `schemas/edge/admission.schema.json`, `schemas/edge/route.schema.json`, `fixtures/edge/control.ndjson` | Task 24 replaces FRP admission/run/proxy descriptors in every peer; retain exact authorization, generation, byte accounting and idempotency behavior |
+| Server `internal/controlplane/node_reconciliation.go`, `tunnel_edge_reconciliation.go`, `tunnel_edge_routes.go`, `internal/previewattachment/edge_node.go`, `internal/db/queries/control_plane.sql` and generated counterpart; origins in migrations 133/134 | Task 8 owns expiring registry/candidates; Task 30 owns ready primary/standby route assignments and public publication. Remove one-row selection, nullable-heartbeat eligibility and use of edge_pool as a physical failure domain |
+| Server `internal/relayselection/selector.go` and tests, native peer projections | Task 13 replaces region-only two-ended ranking with exact authorized common-node coordination; native private access cleanup is Task 19, not release Task 23 |
+| Tunnel `internal/edgefrp`, `internal/frpconfig`, `cmd/paperboat-tunnel/main.go` FRP hook/runtime wiring, `internal/control/contracts.go`, `http.go` | Task 24 replaces FRP hooks, vhost listener and connector admission/runtime; retain authenticated route/control ownership |
+| Tunnel `internal/edgehttp/policy.go`, `private_access_stream.go`, `private_connection.go`, old access grant control and private Caddy bridge tests/config | Task 26 replaces browser device/PAC authority; Task 19 owns native private TCP; remove accessor frames only after both consumers move |
+| Server `internal/tunnelv1/domain_reconciliation.go` and tests/SQL/OpenAPI; `internal/tunnelcert/acme.go`, `cloudflare_dns.go` and tests | Task 29 owns domain/certificate lifecycle and DNS01 authority; Task 30 adds separately scoped address publication and withdrawal. Keep provider secrets out of projections |
+| Tunnel `internal/caddyconfig`, `internal/certbroker`, `internal/runtime/certificate_broker.go`, certificate/runtime tests | Task 29 replaces Paperboat's Caddy TLS/config automation with the edge-owned certificate path; preserve issuance, renewal, revocation, custom domain and distribution proofs |
+| Tunnel `internal/node/state.go`, `manager.go`, `health.go`, `internal/route`, `internal/edgehttp/durable_carrier_transport.go`, related control/main wiring and tests | Task 30 adapts readiness and primary/standby observations; within-one-edge origin-carrier replica selection does not count as regional ingress recovery |
+| Tunnel `deploy/Dockerfile`, `deploy/docker-compose.yml`, `deploy/deployment.example.json`, `.gitmodules`, `Makefile`; server `deploy/docker-compose.yml` | Tasks 24/29 remove Paperboat FRPS/Caddy binaries, build stages, checksums, process slots and listener/config keys after replacement; Task 30 changes public DNS/endpoint deployment |
+| paperboat `go.mod`/`go.sum` FRP dependencies; tunnel FRP/Caddy dependency/build wiring; old metrics, fallback/LegacyRegistry paths, conformance inputs | Task 34 deletes after Tasks 19/24/26/29/30 pass. Remove only actual obsolete dependencies; retain libraries still used by supported code |
+| `tools/control-conformance/main.go` FRPS/Caddy executable/checksum inputs and verification scripts | Tasks 24/29/30 replace connected acceptance checks, then Task 34 removes old binary/config assumptions; do not delete regression coverage to claim success |
+
+Current `connectorprotocol/bootstrap.go` and `connector_bootstrap_v1.sql` preserve
+useful short-lived descriptor, endpoint pinning and generation constraints; they are
+not evidence of the new public catalog. Task 8/24 update their relevant projections
+and tests with the registry producer, without an unreleased v2 or a second source
+of placement truth. Required Task 30 regressions include wrong-pool/region selection,
+stale/missing heartbeat, process restart, late-ready ACK, stale detach, shared-origin
+failure, DNS write ambiguity and recovery to preferred placement after an outage.

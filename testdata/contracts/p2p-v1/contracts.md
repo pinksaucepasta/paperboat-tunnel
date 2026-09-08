@@ -124,6 +124,22 @@ Probes use DF/packet-too-big socket controls; fragmented success is never eviden
 
 ## File-transfer E2EE extension
 
+The operational carrier below remains until the shared native cutover. The native
+application replacement uses `file_transfer` operation streams with exact resource
+admission and HTTP operation authorization above Paperboat QUIC. Its existing v1
+create/status/content/complete/receipt routes retain endpoint-owned batch identity,
+offsets, full-file SHA-256, Inbox collision handling and atomic publication.
+Native PATCH requires `Upload-Digest: sha256=<lowercase chunk SHA-256>`; each commit
+is at most 1 MiB and is verified before advancing its durable offset. The existing
+two-writer limit bounds chunk buffering and storage work. Interrupted operations
+resume the same batch and original manifests from the receiver's offset; explicit
+cancellation removes partials. Native reverse staging requires a live session
+recipient and stores payloads only on the source endpoint until receipt or expiry.
+Interrupted Inbox reads retain partials without issuing permanent failure receipts.
+Native handlers reject content-key envelopes and use no chunk/manifest/receipt AEAD
+or transfer-key vault. Task 20 owns shared production startup/cutover; the remaining
+operational crypto consumers cannot be removed before that runtime migration.
+
 The existing `/v1/file-transfers` identity, lifecycle, HTTP/3 then HTTP/2 fallback, limits,
 expiry, completion, receipt, and cleanup remain authoritative. Version 1 adds an `e2ee`
 envelope. Relays see only opaque identifiers, ordinals, ciphertext lengths, and ciphertext.
