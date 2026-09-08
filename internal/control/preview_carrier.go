@@ -128,7 +128,7 @@ func (a PreviewCarrierAdmission) Normalize() (PreviewCarrierAdmission, error) {
 		switch a.AccessMode {
 		case previewCarrierAccessPublic:
 			a.RouteKind = previewCarrierPublicKind
-		case previewCarrierAccessPrivate:
+		case previewCarrierAccessPrivate, "team":
 			a.RouteKind = previewCarrierPrivateKind
 		default:
 			return PreviewCarrierAdmission{}, fmt.Errorf("%w: access mode is invalid", ErrPreviewCarrierInvalid)
@@ -176,11 +176,11 @@ func (a PreviewCarrierAdmission) Validate(nodeID string, now time.Time, processE
 	if normalized.Binding.LeaseGeneration == 0 || normalized.Binding.ProcessGeneration == 0 || normalized.Binding.ConfigGeneration == 0 || normalized.Binding.RouteGeneration == 0 || normalized.AttachmentGeneration == 0 || normalized.RouteRevision == 0 || normalized.RouteRevision != normalized.Binding.RouteGeneration {
 		return fmt.Errorf("%w: generation binding is invalid", ErrPreviewCarrierInvalid)
 	}
-	if normalized.AccessMode != previewCarrierAccessPublic && normalized.AccessMode != previewCarrierAccessPrivate {
+	if normalized.AccessMode != previewCarrierAccessPublic && normalized.AccessMode != previewCarrierAccessPrivate && normalized.AccessMode != "team" {
 		return fmt.Errorf("%w: access mode is invalid", ErrPreviewCarrierInvalid)
 	}
 	wantRouteKind := previewCarrierPublicKind
-	if normalized.AccessMode == previewCarrierAccessPrivate {
+	if normalized.AccessMode == previewCarrierAccessPrivate || normalized.AccessMode == "team" {
 		wantRouteKind = previewCarrierPrivateKind
 	}
 	if normalized.RouteKind != wantRouteKind || !validPreviewCarrierHostname(normalized.Hostname) {
@@ -206,7 +206,7 @@ func (a PreviewCarrierAdmission) Validate(nodeID string, now time.Time, processE
 	seenEndpointSchemes := make(map[string]struct{}, len(normalized.EdgeEndpoints))
 	for _, endpoint := range normalized.EdgeEndpoints {
 		parsed, err := url.Parse(endpoint)
-		if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != "" || parsed.Scheme != "tls" && parsed.Scheme != "quic" || parsed.Port() == "" {
+		if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != "" || parsed.Scheme != "h2" && parsed.Scheme != "h3" || parsed.Port() == "" {
 			return fmt.Errorf("%w: edge endpoint is invalid", ErrPreviewCarrierInvalid)
 		}
 		port, portErr := strconv.Atoi(parsed.Port())
@@ -218,11 +218,11 @@ func (a PreviewCarrierAdmission) Validate(nodeID string, now time.Time, processE
 		}
 		seenEndpointSchemes[parsed.Scheme] = struct{}{}
 	}
-	if _, ok := seenEndpointSchemes["tls"]; !ok {
-		return fmt.Errorf("%w: TLS edge endpoint is required", ErrPreviewCarrierInvalid)
+	if _, ok := seenEndpointSchemes["h2"]; !ok {
+		return fmt.Errorf("%w: HTTP/2 edge endpoint is required", ErrPreviewCarrierInvalid)
 	}
-	if _, ok := seenEndpointSchemes["quic"]; !ok {
-		return fmt.Errorf("%w: QUIC edge endpoint is required", ErrPreviewCarrierInvalid)
+	if _, ok := seenEndpointSchemes["h3"]; !ok {
+		return fmt.Errorf("%w: HTTP/3 edge endpoint is required", ErrPreviewCarrierInvalid)
 	}
 	if normalized.ExpiresAt.IsZero() || !normalized.ExpiresAt.After(now) {
 		return ErrPreviewCarrierStale

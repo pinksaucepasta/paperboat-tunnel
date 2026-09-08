@@ -205,7 +205,7 @@ func (r *DataCarrierPreviewRegistry) validateRoute(route DataCarrierPreviewRoute
 	if route.Server == nil || connectorprotocol.ValidateIdentifier(route.RouteID) != nil || route.Revision == 0 || route.Kind != dataCarrierPreviewRouteKind && route.Kind != dataCarrierPreviewPrivateRouteKind {
 		return DataCarrierPreviewRoute{}, ErrDataCarrierPreviewRegistryInvalid
 	}
-	if route.Kind == dataCarrierPreviewPrivateRouteKind && route.AccessMode != "private" || route.Kind == dataCarrierPreviewRouteKind && route.AccessMode != "" && route.AccessMode != "public" {
+	if route.Kind == dataCarrierPreviewPrivateRouteKind && route.AccessMode != "private" && route.AccessMode != "team" || route.Kind == dataCarrierPreviewRouteKind && route.AccessMode != "" && route.AccessMode != "public" {
 		return DataCarrierPreviewRoute{}, ErrDataCarrierPreviewRegistryInvalid
 	}
 	if route.AccessMode == "" {
@@ -214,7 +214,7 @@ func (r *DataCarrierPreviewRegistry) validateRoute(route DataCarrierPreviewRoute
 		}
 		route.AccessMode = "public"
 	}
-	if route.AccessMode != "public" && route.AccessMode != "private" {
+	if route.AccessMode != "public" && route.AccessMode != "private" && route.AccessMode != "team" {
 		return DataCarrierPreviewRoute{}, ErrDataCarrierPreviewRegistryInvalid
 	}
 	if route.Kind != dataCarrierPreviewRouteKind && route.Kind != dataCarrierPreviewPrivateRouteKind {
@@ -553,8 +553,13 @@ func (t *DataCarrierPreviewTransport) RoundTrip(request *http.Request) (*http.Re
 	if !route.ExpiresAt.IsZero() && !route.ExpiresAt.After(time.Now().UTC()) {
 		return nil, fmt.Errorf("%w: attachment expired", ErrDataCarrierPreviewRegistryUnavailable)
 	}
-	if route.AccessMode == "private" {
-		return nil, fmt.Errorf("%w: private routes require the authenticated hostd access stream", ErrDataCarrierPreviewTransport)
+	decision, browser := request.Context().Value(browserDecisionKey{}).(connectorprotocol.IngressDecision)
+	restricted := route.AccessMode == "private" || route.AccessMode == "team"
+	if restricted && (!browser || decision.Binding.Audience != route.AccessMode || decision.Binding.PublicationID != route.PreviewID || decision.Binding.Hostname != route.Hostname || decision.Binding.RouteGeneration != route.Revision) {
+		return nil, ErrDataCarrierPreviewTransport
+	}
+	if !restricted && browser {
+		return nil, ErrDataCarrierPreviewTransport
 	}
 	openContext := request.Context()
 	lifetimeContext := request.Context()
@@ -574,6 +579,13 @@ func (t *DataCarrierPreviewTransport) RoundTrip(request *http.Request) (*http.Re
 		RequestID:         fmt.Sprintf("preview-http-%d", t.nextID.Add(1)),
 		Kind:              previewStreamKind(request),
 	}
+	if restricted {
+		open.Kind = "http_browser"
+		if decision.Authorize(decision, open, route.EdgeNodeID, route.EdgeProcessEpoch, time.Now().UTC()) != nil {
+			cancelOpen()
+			return nil, ErrDataCarrierPreviewTransport
+		}
+	}
 	stream, err := route.Server.OpenStreamWithLifetime(openContext, lifetimeContext, open)
 	cancelOpen()
 	if err != nil {
@@ -582,6 +594,12 @@ func (t *DataCarrierPreviewTransport) RoundTrip(request *http.Request) (*http.Re
 			return nil, err
 		}
 		return nil, errors.Join(ErrDataCarrierPreviewTransport, err)
+	}
+	if restricted {
+		if err := connectorprotocol.WriteIngressDecision(stream, decision, time.Now().UTC()); err != nil {
+			_ = stream.Close()
+			return nil, err
+		}
 	}
 	stopCancel := context.AfterFunc(request.Context(), func() { _ = stream.Close() })
 	out := request.Clone(request.Context())

@@ -583,7 +583,7 @@ func testPreviewCarrierAdmission(previewID, operationID, routeID, hostname strin
 			MachineIdentityThumbprint: "sha256:" + base64.RawURLEncoding.EncodeToString(digest[:]),
 		},
 		AttachmentGeneration: 1, ConfigContentHash: "sha256:" + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		EdgeEndpoints: []string{"tls://edge.example.test:27443", "quic://edge.example.test:27444"}, Endpoint: "https://" + hostname,
+		EdgeEndpoints: []string{"h2://edge.example.test:27443", "h3://edge.example.test:27444"}, Endpoint: "https://" + hostname,
 		ExpiresAt: expiresAt, AccessMode: "public", RouteKind: "preview_public_https_wss", RouteRevision: 1,
 	}
 }

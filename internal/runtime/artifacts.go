@@ -11,26 +11,19 @@ import (
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/caddyconfig"
-	"github.com/pinksaucepasta/paperboat-tunnel/internal/frpconfig"
 )
 
 type BundleSpec struct {
 	Directory      string
-	FRPSBinary     string
 	CaddyBinary    string
-	FRPSSHA256     string
 	CaddySHA256    string
-	FRPS           frpconfig.Input
 	Caddy          caddyconfig.Input
 	MaxOutputBytes int64
 }
 
 type Bundle struct {
-	FRPSConfigPath  string
 	CaddyConfigPath string
-	FRPSMetadata    frpconfig.ArtifactMetadata
 	CaddyMetadata   CaddyArtifactMetadata
-	FRPSProcess     ProcessSpec
 	CaddyProcess    ProcessSpec
 }
 
@@ -40,21 +33,11 @@ func PrepareBundle(spec BundleSpec) (Bundle, error) {
 	if spec.Directory == "" || spec.MaxOutputBytes < 0 {
 		return Bundle{}, ErrProcessInvalid
 	}
-	if err := validateExecutable(spec.FRPSBinary); err != nil {
-		return Bundle{}, fmt.Errorf("frps artifact: %w", err)
-	}
-	if err := verifySHA256(spec.FRPSBinary, spec.FRPSSHA256); err != nil {
-		return Bundle{}, fmt.Errorf("frps artifact checksum: %w", err)
-	}
 	if err := validateExecutable(spec.CaddyBinary); err != nil {
 		return Bundle{}, fmt.Errorf("Caddy artifact: %w", err)
 	}
 	if err := verifySHA256(spec.CaddyBinary, spec.CaddySHA256); err != nil {
 		return Bundle{}, fmt.Errorf("Caddy artifact checksum: %w", err)
-	}
-	frpsData, metadata, err := frpconfig.Generate(spec.FRPS)
-	if err != nil {
-		return Bundle{}, err
 	}
 	caddyData, err := caddyconfig.Generate(spec.Caddy)
 	if err != nil {
@@ -73,15 +56,11 @@ func PrepareBundle(spec BundleSpec) (Bundle, error) {
 	if err := os.Chmod(spec.Directory, 0700); err != nil {
 		return Bundle{}, err
 	}
-	frpsPath, caddyPath := filepath.Join(spec.Directory, "frps.json"), filepath.Join(spec.Directory, "caddy.json")
-	if err := atomicConfigWrite(frpsPath, frpsData); err != nil {
-		return Bundle{}, err
-	}
+	caddyPath := filepath.Join(spec.Directory, "caddy.json")
 	if err := atomicConfigWrite(caddyPath, caddyData); err != nil {
 		return Bundle{}, err
 	}
-	return Bundle{FRPSConfigPath: frpsPath, CaddyConfigPath: caddyPath, FRPSMetadata: metadata, CaddyMetadata: CaddyArtifactMetadata{Version: caddyconfig.CaddyVersion, Commit: caddyconfig.CaddyCommit, LinuxAMD64SHA256: caddyconfig.CaddyLinuxAMD64SHA256, LinuxARM64SHA256: caddyconfig.CaddyLinuxARM64SHA256, MacARM64SHA256: caddyconfig.CaddyMacARM64SHA256},
-		FRPSProcess:  ProcessSpec{Name: "frps", Path: spec.FRPSBinary, Args: []string{"--config", frpsPath}, Env: os.Environ(), MaxOutputBytes: spec.MaxOutputBytes, StartupGrace: 500 * time.Millisecond, RestartLimit: 3, RestartBackoff: 250 * time.Millisecond, RestartMaxWait: 2 * time.Second},
+	return Bundle{CaddyConfigPath: caddyPath, CaddyMetadata: CaddyArtifactMetadata{Version: caddyconfig.CaddyVersion, Commit: caddyconfig.CaddyCommit, LinuxAMD64SHA256: caddyconfig.CaddyLinuxAMD64SHA256, LinuxARM64SHA256: caddyconfig.CaddyLinuxARM64SHA256, MacARM64SHA256: caddyconfig.CaddyMacARM64SHA256},
 		CaddyProcess: ProcessSpec{Name: "caddy", Path: spec.CaddyBinary, Args: []string{"run", "--config", caddyPath}, Env: environmentWith(os.Environ(), map[string]string{"XDG_DATA_HOME": caddyDataDirectory, "XDG_CONFIG_HOME": caddyConfigDirectory}), MaxOutputBytes: spec.MaxOutputBytes, StartupGrace: 500 * time.Millisecond, RestartLimit: 3, RestartBackoff: 250 * time.Millisecond, RestartMaxWait: 2 * time.Second}}, nil
 }
 

@@ -34,12 +34,20 @@ func (m *Meter) RestoreBaseline() error {
 		return ErrMeterInvalid
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.last == nil {
 		m.last = make(map[Key]uint64)
 	}
+	correction := false
 	for _, record := range m.Counters.Snapshot() {
-		m.last[record.Key] = record.Bytes
+		baseline := m.Counters.baseline(record)
+		m.last[record.Key.counterIdentity()] = baseline
+		correction = correction || baseline < record.Bytes
+	}
+	m.mu.Unlock()
+	// Persist any merged-partition correction with its signed pending report
+	// before another component can save the normalized counter snapshot.
+	if correction {
+		return m.Flush()
 	}
 	return nil
 }
@@ -74,10 +82,10 @@ func (m *Meter) Flush() error {
 		now = m.Now().UTC()
 	}
 	for _, record := range m.Counters.Snapshot() {
-		if record.Bytes == 0 || record.Bytes <= m.last[record.Key] {
+		if record.Bytes == 0 || record.Bytes <= m.last[record.Key.counterIdentity()] {
 			continue
 		}
-		start := m.start[record.Key]
+		start := m.start[record.Key.counterIdentity()]
 		if start.IsZero() {
 			start = now
 		}
@@ -89,8 +97,8 @@ func (m *Meter) Flush() error {
 		if err := m.Queue.EnqueueLatest(report); err != nil {
 			return err
 		}
-		m.last[record.Key] = record.Bytes
-		m.start[record.Key] = now
+		m.last[record.Key.counterIdentity()] = record.Bytes
+		m.start[record.Key.counterIdentity()] = now
 	}
 	return m.Persist()
 }

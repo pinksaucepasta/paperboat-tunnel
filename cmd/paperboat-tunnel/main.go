@@ -23,15 +23,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pinksaucepasta/paperboat-tunnel/internal/admission"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/auth"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/caddyconfig"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/config"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/control"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/datacarrier"
-	"github.com/pinksaucepasta/paperboat-tunnel/internal/edgefrp"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/edgehttp"
-	"github.com/pinksaucepasta/paperboat-tunnel/internal/frpconfig"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/node"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/observability"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/operation"
@@ -227,10 +224,6 @@ func buildServiceWithCarrier(cfg config.Config, deployment config.Deployment, ca
 	if err != nil {
 		return nil, fmt.Errorf("create durable carrier admission registry: %w", err)
 	}
-	durableRoutes, err := edgehttp.NewDataCarrierRouteRegistry(edgehttp.DataCarrierRouteRegistryConfig{MaximumRoutes: 4096})
-	if err != nil {
-		return nil, fmt.Errorf("create durable carrier route registry: %w", err)
-	}
 	snapshotState := func() store.State {
 		return store.State{Version: store.CurrentVersion, CounterEpoch: epoch, Operations: journal.Snapshot(), Counters: counters.Snapshot(), PendingUsage: queue.Snapshot()}
 	}
@@ -239,8 +232,6 @@ func buildServiceWithCarrier(cfg config.Config, deployment config.Deployment, ca
 	if err != nil {
 		return nil, fmt.Errorf("create peer signaling service: %w", err)
 	}
-	admissions := &admission.Service{Issuer: deployment.CredentialIssuer, Verifier: verifier, Authorizer: client, Journal: journal}
-	adapter := edgefrp.NewAdapter(admissions, routes, deployment.NodeCapacity)
 	previewWorker, previewHandler, expectedAdmissions, previewRoutes, err := previewCarrierState(cfg.NodeID, processEpoch, deployment, client)
 	if err != nil {
 		return nil, err
@@ -255,27 +246,33 @@ func buildServiceWithCarrier(cfg config.Config, deployment config.Deployment, ca
 	if err := meter.RestoreBaseline(); err != nil {
 		return nil, fmt.Errorf("restore usage baseline: %w", err)
 	}
-	adapter.Traffic = meter
+	ingressAuthority := &control.IngressAuthority{Client: client, NodeID: cfg.NodeID, ProcessEpoch: processEpoch}
+	durableRoutes, err := edgehttp.NewDataCarrierRouteRegistry(edgehttp.DataCarrierRouteRegistryConfig{MaximumRoutes: 4096, Usage: meter, IngressAuthority: ingressAuthority.Resolve})
+	if err != nil {
+		return nil, fmt.Errorf("create durable carrier route registry: %w", err)
+	}
+	publicListenHost, _, err := net.SplitHostPort(deployment.CaddyListenAddress)
+	if err != nil {
+		return nil, fmt.Errorf("parse public listener address: %w", err)
+	}
+	if publicListenHost == "" {
+		publicListenHost = "0.0.0.0"
+	}
+	publicTCP, err := edgehttp.NewPublicTCPListeners(edgehttp.PublicTCPListenerConfig{ListenHost: publicListenHost, Authority: ingressAuthority, Routes: durableRoutes, Interval: deployment.ControlInterval, MaximumListeners: 4096, MaximumConnections: int(deployment.NodeCapacity) * 128})
+	if err != nil {
+		return nil, fmt.Errorf("configure public TCP listeners: %w", err)
+	}
 	relayManager, err := peerrelay.NewManager(peerrelay.DevelopmentConfig(), peerrelay.MeterRecorder{Meter: meter}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create peer relay manager: %w", err)
 	}
-	internalToken, err := edgefrp.NewInternalAuthToken()
+	internalToken, err := newPrivateAccessToken()
 	if err != nil {
-		return nil, fmt.Errorf("create internal frps token: %w", err)
-	}
-	vhostHost, vhostPortText, err := net.SplitHostPort(deployment.PrivateVhostAddress)
-	if err != nil {
-		return nil, fmt.Errorf("prepare process bundle: %w", err)
-	}
-	vhostPort, err := strconv.Atoi(vhostPortText)
-	if err != nil {
-		return nil, fmt.Errorf("assemble data plane: %w", err)
+		return nil, fmt.Errorf("create private access token: %w", err)
 	}
 	bundle, err := edgeruntime.PrepareBundle(edgeruntime.BundleSpec{
-		Directory: filepath.Join(deployment.RuntimeDirectory, "config"), FRPSBinary: deployment.FRPSBinary, CaddyBinary: deployment.CaddyBinary, FRPSSHA256: deployment.FRPSSHA256, CaddySHA256: deployment.CaddySHA256, MaxOutputBytes: 1 << 20,
-		FRPS:  frpconfig.Input{BindAddr: deployment.ConnectorBindAddress, BindPort: deployment.ConnectorTCPPort, QUICBindPort: deployment.ConnectorQUICPort, PrivateProxyAddr: vhostHost, VhostHTTPPort: vhostPort, HookAddr: deployment.HookAddress, HookPath: deployment.HookPath, StreamBrokerPath: filepath.Join(deployment.RuntimeDirectory, "config", "frps-stream.sock"), InternalAuthToken: internalToken, LogLevel: deployment.FRPSLogLevel, TCPMux: deployment.ConnectorTCPMux},
-		Caddy: caddyconfig.Input{PreviewBaseDomain: deployment.PreviewBaseDomain, TunnelBaseDomain: deployment.TunnelBaseDomain, RuntimeBaseDomain: deployment.RuntimeBaseDomain, SignalingHost: deployment.SignalingHost, InfrastructureHosts: []string{deployment.ConnectorAdvertiseHost}, InfrastructureHealthUpstream: cfg.HealthAddress, PrivateUpstream: deployment.EdgeGatewayAddress, ListenAddress: deployment.CaddyListenAddress, PrivateAccessListenAddress: deployment.CaddyPrivateAccessListenAddress, PrivateAccessToken: internalToken, HTTPListenAddress: deployment.CaddyHTTPListenAddress, AdminAddress: deployment.CaddyAdminAddress, TrustedProxies: deployment.TrustedProxyCIDRs, IssuerModule: deployment.CertificateIssuer, StreamBrokerPath: filepath.Join(deployment.RuntimeDirectory, "config", "frps-stream.sock"), CertificateBrokerSocket: certificateBrokerSocket, PublicRoutes: publicCaddyRoutes(deployment.PublicRoutes)},
+		Directory: filepath.Join(deployment.RuntimeDirectory, "config"), CaddyBinary: deployment.CaddyBinary, CaddySHA256: deployment.CaddySHA256, MaxOutputBytes: 1 << 20,
+		Caddy: caddyconfig.Input{PreviewBaseDomain: deployment.PreviewBaseDomain, TunnelBaseDomain: deployment.TunnelBaseDomain, RuntimeBaseDomain: deployment.RuntimeBaseDomain, SignalingHost: deployment.SignalingHost, InfrastructureHosts: []string{deployment.ConnectorAdvertiseHost}, InfrastructureHealthUpstream: cfg.HealthAddress, PrivateUpstream: deployment.EdgeGatewayAddress, ListenAddress: deployment.CaddyListenAddress, PrivateAccessListenAddress: deployment.CaddyPrivateAccessListenAddress, PrivateAccessToken: internalToken, HTTPListenAddress: deployment.CaddyHTTPListenAddress, AdminAddress: deployment.CaddyAdminAddress, TrustedProxies: deployment.TrustedProxyCIDRs, IssuerModule: deployment.CertificateIssuer, CertificateBrokerSocket: certificateBrokerSocket, PublicRoutes: publicCaddyRoutes(deployment.PublicRoutes)},
 	})
 	if err != nil {
 		return nil, err
@@ -317,8 +314,8 @@ func buildServiceWithCarrier(cfg config.Config, deployment config.Deployment, ca
 	if err != nil {
 		return nil, fmt.Errorf("schedule process carrier trust refresh: %w", err)
 	}
-	nodeWorker := &edgeruntime.NodeWorker{Manager: manager, Sink: client, Registration: control.NodeRegistration{NodeID: cfg.NodeID, EdgePool: cfg.EdgePool, RelayID: cfg.RelayID, RelayRegion: cfg.RelayRegion, RelayName: cfg.RelayName, Artifact: bundle.FRPSMetadata.FRPVersion + "+" + bundle.CaddyMetadata.Version, Protocol: "1.0", ProcessEpoch: processEpoch, Capacity: deployment.NodeCapacity, Endpoint: control.ConnectorEndpoint{Host: deployment.ConnectorAdvertiseHost, TCPPort: uint16(deployment.ConnectorTCPPort), QUICPort: uint16(deployment.ConnectorQUICPort)}, CarrierEndpoint: *carrierEndpoint, CarrierServerSPKISHA256: carrierTrust.SPKISHA256, CarrierServerCertificateChainPEM: carrierTrust.CertificateChainPEM, SignalingHost: deployment.SignalingHost, STUNEndpoint: control.UDPEndpoint{Host: deployment.ConnectorAdvertiseHost, Port: uint16(stunPort)}}, Interval: deployment.ControlInterval}
-	routeWorker := &edgeruntime.RouteWorker{Registry: canonicalRoutes, LegacyRegistry: routes, Source: client, Observer: client, State: state, NodeID: cfg.NodeID, ProcessEpoch: processEpoch, Carrier: durableRoutes, DurableAdmissions: durableAdmissions, AccessorSource: client, AccessorAdmissions: accessorAdmissions, Interval: deployment.ControlInterval, DrainTimeout: deployment.ControlTimeout}
+	nodeWorker := &edgeruntime.NodeWorker{Manager: manager, Sink: client, Registration: control.NodeRegistration{NodeID: cfg.NodeID, EdgePool: cfg.EdgePool, RelayID: cfg.RelayID, RelayRegion: cfg.RelayRegion, RelayName: cfg.RelayName, Artifact: "paperboat-connector-v1+" + bundle.CaddyMetadata.Version, Protocol: "1.0", ProcessEpoch: processEpoch, Capacity: deployment.NodeCapacity, Endpoint: control.ConnectorEndpoint{Host: deployment.ConnectorAdvertiseHost, TCPPort: carrierEndpoint.TCPPort, QUICPort: carrierEndpoint.QUICPort}, CarrierEndpoint: *carrierEndpoint, CarrierServerSPKISHA256: carrierTrust.SPKISHA256, CarrierServerCertificateChainPEM: carrierTrust.CertificateChainPEM, SignalingHost: deployment.SignalingHost, STUNEndpoint: control.UDPEndpoint{Host: deployment.ConnectorAdvertiseHost, Port: uint16(stunPort)}}, Interval: deployment.ControlInterval}
+	routeWorker := &edgeruntime.RouteWorker{Registry: canonicalRoutes, LegacyRegistry: routes, Source: client, Observer: client, State: state, NodeID: cfg.NodeID, ProcessEpoch: processEpoch, Carrier: durableRoutes, PublicTCP: publicTCP, DurableAdmissions: durableAdmissions, AccessorSource: client, AccessorAdmissions: accessorAdmissions, Interval: deployment.ControlInterval, DrainTimeout: deployment.ControlTimeout}
 	usageWorker := &edgeruntime.UsageWorker{Queue: queue, Sink: client, Prepare: meter, Persist: meter.Persist, Interval: 250 * time.Millisecond}
 	metrics := observability.NewMetrics()
 	tlsProbeHost := caddyProbeHost(deployment)
@@ -393,7 +390,11 @@ func buildServiceWithCarrier(cfg config.Config, deployment config.Deployment, ca
 	if err != nil {
 		return nil, fmt.Errorf("create private connection registry: %w", err)
 	}
-	gateway, err := edgehttp.NewGatewayWithTransports(edgehttp.Config{PreviewBaseDomain: deployment.PreviewBaseDomain, TunnelBaseDomain: deployment.TunnelBaseDomain, RuntimeBaseDomain: deployment.RuntimeBaseDomain, TrustedProxies: trusted, MaxHeaderBytes: 32 << 10, MaxBodyBytes: 50 << 20, Routes: routeMatcher, PrivateAccessToken: internalToken, PrivateAccessConnections: privateConnections, Readiness: previewReadiness{Canonical: previewRoutes, Fallback: routes}, HelperAccess: verifier, Revocations: trust.Snapshot, RevocationCheckInterval: deployment.ControlInterval}, deployment.PrivateVhostAddress, previewForwarder, durableForwarder)
+	var browserAccess *edgehttp.BrowserAccess
+	if deployment.BrowserAccessEnabled {
+		browserAccess = &edgehttp.BrowserAccess{Authority: &control.BrowserAccessClient{HTTP: client, NodeID: cfg.NodeID, ProcessEpoch: processEpoch}, LoginOrigin: deployment.BrowserLoginOrigin}
+	}
+	gateway, err := edgehttp.NewGatewayWithTransports(edgehttp.Config{BrowserAccess: browserAccess, PreviewBaseDomain: deployment.PreviewBaseDomain, TunnelBaseDomain: deployment.TunnelBaseDomain, RuntimeBaseDomain: deployment.RuntimeBaseDomain, TrustedProxies: trusted, MaxHeaderBytes: 32 << 10, MaxBodyBytes: 50 << 20, Routes: routeMatcher, PrivateAccessToken: internalToken, PrivateAccessConnections: privateConnections, Readiness: previewReadiness{Canonical: previewRoutes, Fallback: routes}, HelperAccess: verifier, Revocations: trust.Snapshot, RevocationCheckInterval: deployment.ControlInterval}, "", previewForwarder, durableForwarder)
 	if err != nil {
 		return nil, fmt.Errorf("create edge gateway: %w", err)
 	}
@@ -443,22 +444,9 @@ func buildServiceWithCarrier(cfg config.Config, deployment config.Deployment, ca
 			return nil, err
 		}
 	}
-	assembly, err := edgeruntime.NewAssembly(edgeruntime.AssemblySpec{Persistence: persistence, Control: controlDependency, Carrier: carrierComponent, CertificateBroker: certificateBroker, Certificates: certificateWorker, Preview: previewWorker, Node: nodeWorker, Routes: routeWorker, Usage: usageWorker, HookAddress: deployment.HookAddress, GatewayAddress: deployment.EdgeGatewayAddress, GatewayHandler: gatewayHandler, HookPath: deployment.HookPath, Policy: edgefrp.Policy{Adapter: adapter, Resolver: edgefrp.MetadataResolver{}, InternalAuthToken: internalToken}, HookReject: func(operation, reason string) {
-		log.Printf("frp hook rejected operation=%s reason=%s", operation, reason)
-	}, HookObserve: func(operation string, rejected bool) {
-		if !rejected && (operation == "Login" || operation == "NewProxy") {
-			log.Printf("frp hook accepted operation=%s", operation)
-		}
-		kind := map[string]observability.Kind{"Login": observability.Admission, "NewProxy": observability.Route, "NewUserConn": observability.Stream, "CloseUserConn": observability.Stream, "Traffic": observability.Usage, "CloseProxy": observability.Cleanup}[operation]
-		if kind == "" {
-			return
-		}
-		result := observability.Success
-		if rejected {
-			result = observability.Rejected
-		}
-		metrics.Add(observability.MetricKey{Kind: kind, Result: result}, 1)
-	}, Bundle: bundle, CaddyReady: edgeruntime.Readiness{Probe: func() error {
+	trackedCarrier := &trackedCarrierComponent{Component: carrierComponent}
+	carrierComponent = trackedCarrier
+	assembly, err := edgeruntime.NewAssembly(edgeruntime.AssemblySpec{Persistence: persistence, Control: controlDependency, Carrier: carrierComponent, CertificateBroker: certificateBroker, Certificates: certificateWorker, Preview: previewWorker, Node: nodeWorker, Routes: routeWorker, PublicTCP: publicTCP, Usage: usageWorker, GatewayAddress: deployment.EdgeGatewayAddress, GatewayHandler: gatewayHandler, Bundle: bundle, CaddyReady: edgeruntime.Readiness{Probe: func() error {
 		_, err := probeCaddyTLS(deployment.CaddyListenAddress, tlsProbeHost)
 		return err
 	}, Timeout: deployment.ControlTimeout + deployment.ControlInterval, Interval: 250 * time.Millisecond}})
@@ -480,19 +468,19 @@ func buildServiceWithCarrier(cfg config.Config, deployment config.Deployment, ca
 	health, err := observability.NewHandler(observability.Sources{
 		Node:          state.Snapshot,
 		Manager:       manager.Snapshot,
-		Sessions:      func() int { return adapter.Stats().Sessions },
-		SessionRoutes: func() int { return adapter.Stats().Routes },
-		ActiveStreams: func() uint32 { return adapter.Stats().ActiveStreams },
+		Sessions:      func() int { return durableRoutes.Stats().Sessions },
+		SessionRoutes: func() int { return durableRoutes.Stats().Routes },
+		ActiveStreams: func() uint32 { return durableRoutes.Stats().ActiveStreams },
 		RouteCount: func() int {
 			_, canonical, _ := canonicalRoutes.CanonicalSnapshot()
 			return len(routes.Snapshot()) + len(canonical)
 		},
-		Usage:        queue.Stats,
-		ControlErr:   nodeWorker.LastError,
-		RouteErr:     routeWorker.LastError,
-		UsageErr:     usageWorker.LastError,
-		FRPRunning:   assembly.FRPS.Running,
-		CaddyRunning: assembly.Caddy.Running,
+		Usage:          queue.Stats,
+		ControlErr:     nodeWorker.LastError,
+		RouteErr:       routeWorker.LastError,
+		UsageErr:       usageWorker.LastError,
+		CarrierRunning: trackedCarrier.running.Load,
+		CaddyRunning:   assembly.Caddy.Running,
 		STUN: func() observability.STUNStats {
 			stats := stunService.Stats()
 			return observability.STUNStats{Running: stats.Running, Accepted: stats.Accepted, Rejected: stats.Rejected, Errors: stats.Errors}

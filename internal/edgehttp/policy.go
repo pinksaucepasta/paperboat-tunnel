@@ -15,10 +15,12 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/admission"
+	"github.com/pinksaucepasta/paperboat-tunnel/internal/connectorprotocol"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/route"
 	"github.com/realclientip/realclientip-go"
 )
@@ -32,6 +34,7 @@ type RouteMatcher interface {
 }
 
 type Config struct {
+	BrowserAccess            *BrowserAccess
 	PreviewBaseDomain        string
 	TunnelBaseDomain         string
 	RuntimeBaseDomain        string
@@ -115,6 +118,7 @@ func NewGatewayWithTransports(config Config, privateUpstream string, previewTran
 	legacy.FlushInterval = -1
 	legacy.ModifyResponse = func(response *http.Response) error {
 		response.Header.Del("X-Robots-Tag")
+		stripBrowserResponseCredentials(response.Header)
 		return nil
 	}
 	var canonical http.Handler
@@ -129,7 +133,11 @@ func NewGatewayWithTransports(config Config, privateUpstream string, previewTran
 			ModifyResponse: legacy.ModifyResponse,
 		}
 	}
-	var next http.Handler = legacy
+	var legacyHandler http.Handler = legacy
+	if privateUpstream == "" {
+		legacyHandler = http.NotFoundHandler()
+	}
+	var next http.Handler = legacyHandler
 	if previewTransport != nil || canonicalTransport != nil {
 		var preview http.Handler
 		if previewTransport != nil {
@@ -164,7 +172,7 @@ func NewGatewayWithTransports(config Config, privateUpstream string, previewTran
 				preview.ServeHTTP(writer, request)
 				return
 			}
-			legacy.ServeHTTP(writer, request)
+			legacyHandler.ServeHTTP(writer, request)
 		})
 	}
 	return New(config, next)
@@ -174,6 +182,9 @@ type retryPreviewTransport struct{ next http.RoundTripper }
 
 func (t retryPreviewTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	response, err := t.next.RoundTrip(request)
+	if _, restricted := request.Context().Value(browserDecisionKey{}).(connectorprotocol.IngressDecision); restricted {
+		return response, err
+	}
 	if err == nil || !retryablePreviewRequest(request) || !retryablePreviewTransportError(err) {
 		return response, err
 	}
@@ -216,6 +227,14 @@ func ParseTrustedProxies(values []string) ([]*net.IPNet, error) {
 }
 
 func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/.paperboat/access/") {
+		if r.URL.Path == browserCallbackPath && p.config.BrowserAccess != nil {
+			p.config.BrowserAccess.callback(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+		return
+	}
 	host, expectedKind, ok := p.allowedHost(r.Host)
 	var matched route.RouteMatch
 	var lease *route.StreamLease
@@ -228,10 +247,34 @@ func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		candidateLease, acquired, acquireErr := p.config.Routes.Acquire(r.Context(), candidateHost, r.URL.Path)
 		if acquireErr != nil {
+			token, hasSession := browserCookie(r, browserEdgeCookie)
+			machine := false
+			if values := r.Header.Values("Paperboat-Access-Token"); len(values) == 1 && values[0] != "" && strings.TrimSpace(values[0]) == values[0] {
+				token, hasSession, machine = values[0], true, true
+			}
+			if errors.Is(acquireErr, route.ErrNoMatch) && hasSession && !browserReservedDuplicates(r) && p.config.BrowserAccess != nil && lazyPreviewHostname(r.Host, candidateHost, p.config.PreviewBaseDomain) {
+				activate, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+				activationErr := p.config.BrowserAccess.activateLazy(activate, candidateHost, token, machine)
+				cancel()
+				if activationErr != nil {
+					lazyActivationError(w, r, activationErr)
+					return
+				}
+				candidateLease, acquired, acquireErr = p.config.Routes.Acquire(r.Context(), candidateHost, r.URL.Path)
+				if acquireErr == nil {
+					matched, lease = acquired, candidateLease
+					goto acquiredRoute
+				}
+			}
+			if !hasSession && r.Header.Get("Paperboat-Access-Token") == "" && p.config.BrowserAccess != nil && p.config.BrowserAccess.validate() && browserNavigation(r) {
+				p.config.BrowserAccess.begin(w, r, candidateHost)
+				return
+			}
 			http.NotFound(w, r)
 			return
 		}
 		matched, lease = acquired, candidateLease
+	acquiredRoute:
 		host, expectedKind, ok = matched.Host, string(matched.Rule.Kind), true
 		if expectedKind == string(route.TunnelHTTPSWSS) && (matched.Rule.MatchType == route.MatchManagedExact || strings.HasSuffix(host, "."+strings.ToLower(p.config.TunnelBaseDomain))) && !route.ValidManagedTunnelHostname(host, p.config.TunnelBaseDomain) {
 			http.NotFound(w, r)
@@ -255,7 +298,20 @@ func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("Connection", "Upgrade")
 		r.Header.Set("Upgrade", "websocket")
 	}
-	privateRoute := matched.Rule.AccessMode == "private" && (expectedKind == dataCarrierPreviewPrivateRouteKind || expectedKind == string(route.TunnelHTTPSWSS))
+	browserAuthorized := false
+	if (matched.Rule.AccessMode == "private" || matched.Rule.AccessMode == "team") && p.config.BrowserAccess != nil && r.Header.Get("X-Paperboat-Private-Carrier") == "" {
+		var finish func()
+		r, finish, browserAuthorized = p.config.BrowserAccess.authorize(w, r, matched)
+		if !browserAuthorized {
+			return
+		}
+		defer finish()
+	}
+	if matched.Rule.AccessMode == "team" && !browserAuthorized {
+		http.Error(w, "Authentication required", 401)
+		return
+	}
+	privateRoute := !browserAuthorized && matched.Rule.AccessMode == "private" && (expectedKind == dataCarrierPreviewPrivateRouteKind || expectedKind == string(route.TunnelHTTPSWSS))
 	if privateRoute {
 		// Private routes are reachable only through stable hostd's authenticated
 		// client-initiated carrier stream. Public edge requests never become
@@ -346,6 +402,31 @@ func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		go p.cancelWhenAccessRevoked(ctx, cancel, claims)
 	}
 	p.next.ServeHTTP(w, r)
+}
+
+func lazyPreviewHostname(rawHost, canonicalHost, baseDomain string) bool {
+	baseDomain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(baseDomain), "."))
+	if rawHost != canonicalHost || canonicalHost != strings.ToLower(canonicalHost) || baseDomain == "" {
+		return false
+	}
+	label, ok := strings.CutSuffix(canonicalHost, "."+baseDomain)
+	if !ok || strings.Contains(label, ".") || !strings.HasPrefix(label, "p") {
+		return false
+	}
+	portText, environment, ok := strings.Cut(label[1:], "-")
+	if !ok || len(environment) != 16 || portText == "" || portText[0] == '0' {
+		return false
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return false
+	}
+	for _, r := range environment {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *Policy) consumePrivateCarrierToken(headers http.Header) bool {
@@ -625,6 +706,7 @@ var helperOperationHeaders = map[string]struct{}{
 }
 
 func stripPrivate(headers http.Header, routeKind string) {
+	stripBrowserRequestCredentials(headers)
 	for name := range headers {
 		normalized := strings.ToLower(name)
 		if !strings.HasPrefix(normalized, "x-paperboat-") {

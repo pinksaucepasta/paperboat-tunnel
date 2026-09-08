@@ -82,7 +82,7 @@ func TestPrivateAccessThroughRealCaddy(t *testing.T) {
 	adminAddress := listenAddress(t)
 	publicAddress := listenAddress(t)
 	httpAddress := listenAddress(t)
-	input := caddyconfig.Input{PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test", SignalingHost: "signal.example.test", PrivateUpstream: upstream.Addr().String(), ListenAddress: publicAddress, PrivateAccessListenAddress: privateAddress, PrivateAccessToken: token, HTTPListenAddress: httpAddress, AdminAddress: adminAddress, TrustedProxies: []string{"127.0.0.0/8"}, IssuerModule: "internal", StreamBrokerPath: filepath.Join(t.TempDir(), "broker.sock"), PublicRoutes: []caddyconfig.PublicRoute{{Host: hostA, Upstream: upstream.Addr().String()}, {Host: hostB, Upstream: upstream.Addr().String()}}}
+	input := caddyconfig.Input{PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test", SignalingHost: "signal.example.test", PrivateUpstream: upstream.Addr().String(), ListenAddress: publicAddress, PrivateAccessListenAddress: privateAddress, PrivateAccessToken: token, HTTPListenAddress: httpAddress, AdminAddress: adminAddress, TrustedProxies: []string{"127.0.0.0/8"}, IssuerModule: "internal", PublicRoutes: []caddyconfig.PublicRoute{{Host: hostA, Upstream: upstream.Addr().String()}, {Host: hostB, Upstream: upstream.Addr().String()}}}
 	configuration, err := caddyconfig.Generate(input)
 	if err != nil {
 		t.Fatal(err)

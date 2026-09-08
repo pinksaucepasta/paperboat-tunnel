@@ -84,7 +84,7 @@ func MetricDescriptors() []MetricDescriptor {
 		{Name: "paperboat_tunnel_certificate_expiry_timestamp_seconds", Kind: "gauge"},
 		{Name: "paperboat_tunnel_connector_capacity", Kind: "gauge"},
 		{Name: "paperboat_tunnel_connectors", Kind: "gauge"},
-		{Name: "paperboat_tunnel_dependency_healthy", Kind: "gauge", Labels: map[string][]string{"dependency": {"caddy", "control", "frps", "routes", "signaling", "stun", "usage"}}},
+		{Name: "paperboat_tunnel_dependency_healthy", Kind: "gauge", Labels: map[string][]string{"dependency": {"caddy", "carrier", "control", "routes", "signaling", "stun", "usage"}}},
 		{Name: "paperboat_tunnel_events_total", Kind: "counter", Labels: map[string][]string{
 			"direction": {"", "egress", "ingress"}, "kind": {"admission", "cleanup", "node", "route", "stream", "usage"},
 			"result": {"canceled", "failed", "rejected", "success"}, "route_kind": {"", "preview_public_https_wss", "runtime_https_wss"},
@@ -159,7 +159,7 @@ const (
 type Diagnostics struct {
 	Control   Status `json:"control"`
 	Store     Status `json:"store"`
-	FRP       Status `json:"frp"`
+	Carrier   Status `json:"carrier"`
 	Caddy     Status `json:"caddy"`
 	STUN      Status `json:"stun"`
 	Signaling Status `json:"signaling"`
@@ -167,7 +167,7 @@ type Diagnostics struct {
 }
 
 func (d Diagnostics) Ready() bool {
-	return d.Control == Healthy && d.Store == Healthy && d.FRP == Healthy && d.Caddy == Healthy && d.STUN == Healthy && d.Signaling == Healthy && d.Usage != Unavailable
+	return d.Control == Healthy && d.Store == Healthy && d.Carrier == Healthy && d.Caddy == Healthy && d.STUN == Healthy && d.Signaling == Healthy && d.Usage != Unavailable
 }
 
 type Sources struct {
@@ -181,7 +181,7 @@ type Sources struct {
 	ControlErr     func() error
 	RouteErr       func() error
 	UsageErr       func() error
-	FRPRunning     func() bool
+	CarrierRunning func() bool
 	CaddyRunning   func() bool
 	STUN           func() STUNStats
 	Signaling      func() SignalingStats
@@ -215,7 +215,7 @@ type Snapshot struct {
 	Control               Status                        `json:"control"`
 	Routes                Status                        `json:"routes"`
 	Usage                 Status                        `json:"usage"`
-	FRP                   Status                        `json:"frp"`
+	Carrier               Status                        `json:"carrier"`
 	Caddy                 Status                        `json:"caddy"`
 	STUN                  Status                        `json:"stun"`
 	Signaling             Status                        `json:"signaling"`
@@ -245,7 +245,7 @@ type Snapshot struct {
 }
 
 func NewHandler(s Sources) (http.Handler, error) {
-	if s.Node == nil || s.Manager == nil || s.Sessions == nil || s.SessionRoutes == nil || s.ActiveStreams == nil || s.RouteCount == nil || s.Usage == nil || s.ControlErr == nil || s.RouteErr == nil || s.UsageErr == nil || s.FRPRunning == nil || s.CaddyRunning == nil || s.STUN == nil || s.Signaling == nil || s.CaddyTLS == nil || s.Events == nil || s.Traffic == nil {
+	if s.Node == nil || s.Manager == nil || s.Sessions == nil || s.SessionRoutes == nil || s.ActiveStreams == nil || s.RouteCount == nil || s.Usage == nil || s.ControlErr == nil || s.RouteErr == nil || s.UsageErr == nil || s.CarrierRunning == nil || s.CaddyRunning == nil || s.STUN == nil || s.Signaling == nil || s.CaddyTLS == nil || s.Events == nil || s.Traffic == nil {
 		return nil, fmt.Errorf("observability sources are incomplete")
 	}
 	mux := http.NewServeMux()
@@ -265,7 +265,7 @@ func snapshot(s Sources) Snapshot {
 	stun := s.STUN()
 	signaling := s.Signaling()
 	routeErr := s.RouteErr()
-	result := Snapshot{At: now, Node: s.Node(), Control: statusFor(s.ControlErr()), Routes: statusFor(routeErr), Usage: statusFor(s.UsageErr()), FRP: runningStatus(s.FRPRunning()), Caddy: runningStatus(s.CaddyRunning()), STUN: runningStatus(stun.Running), Signaling: runningStatus(signaling.Running), STUNRequests: stun.Accepted, STUNRejected: stun.Rejected, STUNErrors: stun.Errors, SignalingSessions: signaling.Sessions, SignalingAttachments: signaling.Attachments, SignalingCapacity: signaling.Capacity, Connectors: s.Sessions(), ActiveStreams: s.ActiveStreams(), AttachedRoutes: s.RouteCount(), UsagePendingReports: pending.Reports, UsagePendingBytes: pending.Bytes, Capacity: manager.Capacity, Events: s.Events()}
+	result := Snapshot{At: now, Node: s.Node(), Control: statusFor(s.ControlErr()), Routes: statusFor(routeErr), Usage: statusFor(s.UsageErr()), Carrier: runningStatus(s.CarrierRunning()), Caddy: runningStatus(s.CaddyRunning()), STUN: runningStatus(stun.Running), Signaling: runningStatus(signaling.Running), STUNRequests: stun.Accepted, STUNRejected: stun.Rejected, STUNErrors: stun.Errors, SignalingSessions: signaling.Sessions, SignalingAttachments: signaling.Attachments, SignalingCapacity: signaling.Capacity, Connectors: s.Sessions(), ActiveStreams: s.ActiveStreams(), AttachedRoutes: s.RouteCount(), UsagePendingReports: pending.Reports, UsagePendingBytes: pending.Bytes, Capacity: manager.Capacity, Events: s.Events()}
 	if s.Health != nil {
 		health := s.Health()
 		result.Health = &health
@@ -308,7 +308,7 @@ func snapshot(s Sources) Snapshot {
 	if !pending.OldestAt.IsZero() && now.After(pending.OldestAt) {
 		result.UsageOldestAgeSeconds = int64(now.Sub(pending.OldestAt) / time.Second)
 	}
-	for name, status := range map[string]Status{"control_unavailable": result.Control, "usage_delivery_failed": result.Usage, "frps_unavailable": result.FRP} {
+	for name, status := range map[string]Status{"control_unavailable": result.Control, "usage_delivery_failed": result.Usage, "carrier_unavailable": result.Carrier} {
 		if status != Healthy {
 			result.FailureCodes = append(result.FailureCodes, name)
 		}
@@ -348,7 +348,7 @@ func runningStatus(running bool) Status {
 }
 
 func (s Snapshot) ready() bool {
-	return s.Node.Ready && s.Control == Healthy && s.Routes == Healthy && s.Usage != Unavailable && s.FRP == Healthy && s.Caddy == Healthy && s.STUN == Healthy && s.Signaling == Healthy
+	return s.Node.Ready && s.Control == Healthy && s.Routes == Healthy && s.Usage != Unavailable && s.Carrier == Healthy && s.Caddy == Healthy && s.STUN == Healthy && s.Signaling == Healthy
 }
 
 func writeSnapshot(w http.ResponseWriter, value Snapshot, readiness bool) {
@@ -388,7 +388,7 @@ func writeMetrics(w http.ResponseWriter, s Snapshot) {
 	for _, dependency := range []struct {
 		name   string
 		status Status
-	}{{"control", s.Control}, {"routes", s.Routes}, {"usage", s.Usage}, {"frps", s.FRP}, {"caddy", s.Caddy}, {"stun", s.STUN}, {"signaling", s.Signaling}} {
+	}{{"control", s.Control}, {"routes", s.Routes}, {"usage", s.Usage}, {"carrier", s.Carrier}, {"caddy", s.Caddy}, {"stun", s.STUN}, {"signaling", s.Signaling}} {
 		lines = append(lines, `paperboat_tunnel_dependency_healthy{dependency="`+dependency.name+`"} `+booleanMetric(dependency.status == Healthy))
 	}
 	keys := make([]MetricKey, 0, len(s.Events))

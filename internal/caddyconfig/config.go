@@ -44,7 +44,6 @@ type Input struct {
 	AdminAddress                 string
 	TrustedProxies               []string
 	IssuerModule                 string
-	StreamBrokerPath             string
 	// CertificateBrokerSocket is the private runtime-to-Caddy certificate
 	// selector. When set, Caddy never falls back to disk-backed certificates.
 	CertificateBrokerSocket string
@@ -160,11 +159,6 @@ func Generate(input Input) ([]byte, error) {
 		"admin":   map[string]any{"listen": input.AdminAddress},
 		"logging": map[string]any{"logs": map[string]any{"default": map[string]any{"level": "PANIC"}}},
 		"apps": map[string]any{
-			"paperboat_quic": map[string]any{
-				"listen": input.ListenAddress, "http_server": "paperboat_public", "broker_socket": input.StreamBrokerPath,
-				"max_connections": 4096, "max_connections_per_ip": 32, "max_streams_per_connection": 3, "max_http3_streams_per_connection": 64,
-				"idle_timeout": 120_000_000_000, "handshake_timeout": 10_000_000_000,
-			},
 			"http": map[string]any{
 				"servers": map[string]any{
 					"paperboat_redirect": map[string]any{
@@ -173,7 +167,7 @@ func Generate(input Input) ([]byte, error) {
 					},
 					"paperboat_public": map[string]any{
 						"listen":                 []string{input.ListenAddress},
-						"protocols":              []string{"h1", "h2"},
+						"protocols":              []string{"h1", "h2", "h3"},
 						"allow_0rtt":             false,
 						"automatic_https":        map[string]any{"disable_redirects": true},
 						"trusted_proxies":        map[string]any{"source": "static", "ranges": input.TrustedProxies},
@@ -325,7 +319,7 @@ func validate(input Input) error {
 	if err := validatePrivateEndpoint(input.PrivateUpstream); err != nil {
 		return err
 	}
-	if input.ListenAddress == "" || input.PrivateAccessListenAddress == "" || input.HTTPListenAddress == "" || input.ListenAddress == input.HTTPListenAddress || input.ListenAddress == input.PrivateAccessListenAddress || input.HTTPListenAddress == input.PrivateAccessListenAddress || input.AdminAddress == "" || !filepath.IsAbs(input.StreamBrokerPath) || len(input.StreamBrokerPath) > 100 {
+	if input.ListenAddress == "" || input.PrivateAccessListenAddress == "" || input.HTTPListenAddress == "" || input.ListenAddress == input.HTTPListenAddress || input.ListenAddress == input.PrivateAccessListenAddress || input.HTTPListenAddress == input.PrivateAccessListenAddress || input.AdminAddress == "" {
 		return ErrInvalid
 	}
 	if validateLoopbackEndpoint(input.PrivateAccessListenAddress) != nil || len(input.PrivateAccessToken) < 32 || len(input.PrivateAccessToken) > 256 || strings.TrimSpace(input.PrivateAccessToken) != input.PrivateAccessToken || strings.ContainsAny(input.PrivateAccessToken, "\r\n\x00") {

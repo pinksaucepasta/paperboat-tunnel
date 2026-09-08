@@ -1,16 +1,18 @@
 # paperboat-tunnel
 
-The Paperboat data plane. It packages the pinned Paperboat frp fork, Caddy edge policy,
-and the narrow admission, routing, usage, and node-lifecycle integration used by the
-control plane.
+The Paperboat edge data plane provides the dedicated HTTP/3 and HTTP/2 connector,
+authenticated routing, usage accounting, and node lifecycle. Caddy currently owns
+public TLS; its replacement belongs to Task 29.
 
-The frp fork is tracked in `frp/` as a Git submodule and pinned to an exact release commit.
-`origin` is the Paperboat fork; `upstream` tracks `fatedier/frp`.
+The pinned `frp/` submodule remains for historical harnesses and retained Caddy
+module dependencies until their deletion gates. Production connector startup does
+not launch or forward through FRPS.
 
 ## Development
 
-Clone with submodules and use the repository Makefile so the pinned toolchain, submodule,
-frp tests, and both binaries are verified consistently:
+Clone with submodules for the retained dependencies. `make build` builds the edge
+binary; select tests for the boundary being changed. The full historical check
+target also exercises the retained upstream harnesses:
 
 ```sh
 git clone --recurse-submodules https://github.com/pinksaucepasta/paperboat-tunnel.git
@@ -31,8 +33,9 @@ Deployment monitoring and incident recovery are defined in
 ## Deployment
 
 Build `deploy/Dockerfile` from the repository root. The tunnel image contains
-`paperboat-tunnel`, pinned frps, and Caddy with the `paperboat_quic` app. This single
-deployment owns public HTTP/HTTPS, native terminal QUIC, and connector ingress. Copy
+`paperboat-tunnel` and Caddy with the retained certificate/private-access modules.
+FRPS is no longer built or started. The dedicated connector uses HTTP/3-preferred
+HTTP/2-fallback CONNECT independently of Caddy; public TLS remains with Caddy. Copy
 `deploy/.env.example` and `deploy/deployment.example.json`, fill deployment-owned values,
 mount the required files under `deploy/secrets/`, then run:
 

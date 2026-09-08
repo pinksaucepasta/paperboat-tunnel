@@ -8,19 +8,21 @@ outside this fixture set.
 
 ## Migration declaration status
 
-Sections 1–9 and their schemas/vectors describe the preserved connector runtime.
-They do not implement the product plan's HTTP/3/HTTP/2 edge connector or browser
-login. The existing preview-tunnel-v1
+Sections 1–9 and their schemas/vectors describe the connector runtime. Task 24
+implements the HTTP/3/HTTP/2 data carrier, per-stream ingress decision, origin
+forwarding, and scoped edge limits described below; it does not claim deployment,
+browser login, public-listener lifecycle, or regional qualification. The existing preview-tunnel-v1
 [Edge migration decisions](../preview-tunnel-v1/contracts.md#edge-migration-decisions)
 are the authoritative Task 3b product declarations for audience versus connection
 method, exact route/target/owner generations, browser/scoped access, revocation,
 lazy activation and inspection. Do not interpret `private_access_http` or
 `private_access_tcp` as the replacement browser or native method.
 
-Task 24 owns the replacement connector: server-issued binding and target authority
-are consumed by paperboat-tunnel and independently checked by paperboatd on every
-stream, before origin dial. HTTP/3 and HTTP/2 carry the same binding and typed
-provenance; neither changes audience or grants access. Task 26 supplies browser and
+The replacement connector consumes server-issued binding and target authority in
+paperboat-tunnel and independently checks it in paperboatd on every stream before
+origin dial. HTTP/3 and HTTP/2 carry the same binding and typed provenance; neither
+changes audience or grants access. Current SQL projects public durable HTTP
+authority only. Task 26 supplies browser and
 scoped machine decisions; login cookies/proofs terminate at the edge and never
 enter an application payload. Anonymous public traffic still needs an unexpired
 publication binding. Task 27 supplies exact lazy activation ownership. Task 31
@@ -82,11 +84,46 @@ connector-v1 `StreamOpen` preface. It is a four-byte big-endian JSON length
 followed by a JSON object no larger than 16 KiB. The object carries
 `protocol`, `version`, `account_id`, `tunnel_id`, `connector_id`, `session_id`,
 `process_generation`, `generation`, `route_id`, `request_id`, and `kind`.
-`kind` is one of `http`, `https`, `h2c`, `websocket`, `sse`, `grpc`,
-`tcp_private`, `private_access_http`, or `private_access_tcp`. The edge rejects malformed, unknown-field, duplicate-key,
+`kind` is one of `connector_ready`, `tcp_public`, `http_browser`, `http`, `https`, `h2c`,
+`websocket`, `sse`, `grpc`, `tcp_private`, `private_access_http`, or
+`private_access_tcp`. The edge rejects malformed, unknown-field, duplicate-key,
 oversized, stale-identity, and unauthorized prefices before forwarding any
 application bytes. The bearer or reusable session credential belongs only to
 carrier authentication and is never repeated in this per-stream preface.
+
+For replacement ingress, `StreamOpen` is followed by a second strict four-byte
+big-endian length and JSON `IngressDecision`, also bounded by the 16 KiB stream
+preface limit. It includes `environment_id`, lifecycle (`ephemeral` or `durable`),
+exact resource/route/target/host/installation/publication identity and generations,
+audience, connection method, protocol/origin/TLS target, connector session/process/
+config/assignment generations, edge node/process epoch, policy generation, and any
+applicable principal/grant/membership generations. Public decisions contain no
+viewer grant. The decision lifetime is at most 10 seconds and active forwarding
+refreshes authority every 5 seconds; expiry, mismatch, or revocation closes the
+stream without replay. The daemon validates the same current binding independently
+before dialing the origin. Application bytes begin only after these prefices.
+
+The authenticated carrier itself is a full-duplex HTTP `CONNECT`, preferring
+HTTP/3 and falling back to HTTP/2 from the bootstrap endpoints. The client uses
+`/_paperboat/connector-v1` as its request URL; regular CONNECT is routed by its
+authority target and HTTP/2 encoding does not require that path on the wire. Its
+body carries the bounded libp2p yamux byte session. Each
+yamux stream uses its own open/decision prefices followed directly by application
+bytes; there are no Paperboat DATA or FIN frames. Native stream/TCP half-close,
+backpressure, cancellation, and bounded stream windows carry those semantics.
+
+Edge admission applies shared limits before opening the carrier stream: per
+publication, 64 active connections, 10 opens/second with burst 32, and 8 MiB/second
+across both directions with burst 256 KiB; per account per edge, 128 active
+connections, 50 opens/second with burst 128, and 32 MiB/second across both directions
+with burst 1 MiB. Pacing uses chunks no larger than 32 KiB and has no total-byte
+cutoff. Successful application bytes, including partial reads/writes, enter the
+existing usage meter by environment, route, route generation, ingress, and egress;
+carrier and ingress prefices are excluded. Absolute counters span route generations
+within the same edge/counter epoch, environment, route, and direction; the highest
+observed generation is report metadata. Delayed old-generation bytes and restored
+revision partitions remain counted, with signed corrective reports persisted before
+startup continues.
 
 The client-initiated private-access kinds are used only by stable hostd after
 the local Paperboat CONNECT proxy selects a private hostname. Immediately
@@ -469,12 +506,12 @@ Success is a `no-store` JSON response whose `data` is exactly one
 `config_generation`, and `config_content_hash` to the active control session.
 The host passes this exact endpoint identity into production assembly; it never
 derives one from a tunnel name or URL. `issued_at` and `expires_at` are UTC
-timestamps; expiry is strictly after issue and no more than two minutes later.
+timestamps; expiry is strictly after issue and no more than 15 seconds later.
 
-The descriptor contains one to four carriers. Every carrier has a distinct
+The descriptor contains one to two carriers. Every carrier has a distinct
 `failure_domain` and distinct `(edge_node_id, edge_process_epoch)` pair. Each
-has exactly two authority-only endpoints: exactly one `tls://host:port` and
-exactly one `quic://host:port`. The connector authenticates the carrier using
+has exactly two authority-only endpoints: exactly one `h2://host:port` and
+exactly one `h3://host:port`. The connector authenticates the carrier using
 both `server_spki_sha256` in `sha256:<64 lowercase hex>` form and a bounded,
 parseable `server_certificate_chain_pem`. The descriptor and every error are
 secret-free: private keys, bearer tokens, cookies, authorization values, query
@@ -610,15 +647,26 @@ bounded Task 27 activation, but must not claim origin readiness or probe anonymo
 Public explicit previews publish only after readiness. Unknown wildcard requests
 never borrow another resource's routing or authority.
 
-The current DNS01 adapter `internal/tunnelcert/cloudflare_dns.go` is TXT-only. Task 30
-adds address-record reconciliation to the existing provider ownership with bounded,
-record-scoped operations; do not pass A/AAAA writes through an ACME challenge API.
+The DNS01 adapter `internal/tunnelcert/cloudflare_dns.go` remains TXT-only;
+`cloudflare_addresses.go` and `address_reconciliation.go` own separately scoped
+A/AAAA operations. The existing server reconciliation lifecycle projects current
+assignments and certificate distribution into persisted `edge_dns_publications`.
+Deployment-owned `public_ingress_ipv4`, `public_ingress_ipv6` and
+`public_ingress_verified_at` on the node are required before first publication;
+registration and heartbeats cannot grant public reachability. Zone admission is
+shared through PostgreSQL, including concurrent-call limits and Retry-After.
+Do not pass A/AAAA writes through an ACME challenge API.
 Persist desired generation before provider calls, use one fenced writer per resource,
 coalesce superseded work, and verify provider/authoritative results after uncertain
 outcomes before retry. Provider writes use a 5 s deadline, at most 2 concurrent calls
 and 10 calls/minute per zone, burst 5; bounded backoff follows the table above and
-honors Retry-After. Exhaustion reports pending publication, not ready. Record IDs
-are server-owned; stale cleanup may not delete a replacement record.
+honors Retry-After. Before reading provider state, reserve the three-call budget for
+one bounded reconciliation step (list, identity readback, deletion); an unfunded step
+returns pending without consuming calls. Perform at most one mutation per step and
+refund unused credits. Reuse unchanged verified publication for at most one 60-second
+DNS TTL; changed resource/readiness/address identity invalidates that reuse immediately.
+Exhaustion reports pending publication, not ready. Record IDs are server-owned;
+stale cleanup may not delete a replacement record.
 
 Withdraw unready addresses and fence routes immediately; DNS removal does not revoke
 access at an edge. No healthy target means an unavailable resource, never another
@@ -640,21 +688,22 @@ These are acceptance targets, not a guarantee for every browser cache or an exis
 measurement. DNS may retain stale answers; an already-open HTTP/WebSocket stream
 cannot migrate, and partially forwarded requests are never automatically replayed.
 
-Task 30 must measure actual hostname requests with the supported browsers, OS and
-recursive resolvers, including stale-cache behavior, rather than `--resolve` alone.
-It must exercise failure while both addresses are cached, failure after publication,
-control/DNS-provider loss, all edges unavailable and recovery to the preferred node.
+Task 30 measures actual hostname requests, including cached-address behavior, rather
+than `--resolve` alone. The user-authorized 2026-09-08 gate uses two isolated Docker
+edges on Hetzner, live DNS publication, a TTL-respecting recursive cache, Go HTTP/TCP
+clients and an actual Chromium session. Exercise cached edge loss, publication changes,
+all edges unavailable and restored readiness; reuse control/provider-loss contract checks.
+Task 35 owns the broader browser, OS, resolver and geographic-outage qualification matrix.
 A resolver/client that exceeds the budget is recorded as unsupported for that bound;
 do not claim universal prompt DNS failover or change the target to bless a failure.
 [The provider's TTL contract](https://developers.cloudflare.com/dns/manage-dns-records/reference/ttl/)
 permits 60-second DNS-only TTLs; it does not prove browser recovery time.
 
-Current authorized topology is Helsinki (`coolify`) and, by user approval on
-2026-09-05, Mumbai/APAC (`hp`). hp is an approved second edge host, not yet a ready
-public edge: its Tailscale address is reachable, but public 80/443 probes to its
-observed WAN address timed out and local 80/443 serve unrelated Coolify applications.
-Provision a non-conflicting publicly reachable edge endpoint before advertising it;
-management reachability cannot satisfy this gate. Do not disturb those applications.
+The current Task 30 topology, explicitly narrowed by the user on 2026-09-08, is
+Hetzner only: two task-owned Docker edges with independently reachable public test
+endpoints. Helsinki's shared server, database and services must remain online and
+untouched. This demonstrates simulated edge loss only, not geographic outage survival.
+The earlier Mumbai/hp ingress proposal is superseded for this gate.
 
 A single ready node is valid `redundancy: reduced`, with no node/region failover claim.
 The present server/database also run in Helsinki. Whole-host/region failure cannot
@@ -684,12 +733,12 @@ merely because FRP once called it. hp's unrelated Coolify Caddy is outside this 
 | Server `internal/controlplane/edge.go`, `edge_test.go`, `enrollment_test.go`, `docs/openapi.json`; mirrored `testdata/contracts/edge/control.md`, `schemas/edge/admission.schema.json`, `schemas/edge/route.schema.json`, `fixtures/edge/control.ndjson` | Task 24 replaces FRP admission/run/proxy descriptors in every peer; retain exact authorization, generation, byte accounting and idempotency behavior |
 | Server `internal/controlplane/node_reconciliation.go`, `tunnel_edge_reconciliation.go`, `tunnel_edge_routes.go`, `internal/previewattachment/edge_node.go`, `internal/db/queries/control_plane.sql` and generated counterpart; origins in migrations 133/134 | Task 8 owns expiring registry/candidates; Task 30 owns ready primary/standby route assignments and public publication. Remove one-row selection, nullable-heartbeat eligibility and use of edge_pool as a physical failure domain |
 | Server `internal/relayselection/selector.go` and tests, native peer projections | Task 13 replaces region-only two-ended ranking with exact authorized common-node coordination; native private access cleanup is Task 19, not release Task 23 |
-| Tunnel `internal/edgefrp`, `internal/frpconfig`, `cmd/paperboat-tunnel/main.go` FRP hook/runtime wiring, `internal/control/contracts.go`, `http.go` | Task 24 replaces FRP hooks, vhost listener and connector admission/runtime; retain authenticated route/control ownership |
+| Tunnel `internal/edgefrp`, `internal/frpconfig`, former `cmd/paperboat-tunnel/main.go` FRP hook/runtime wiring, `internal/control/contracts.go`, `http.go` | Task 24 has removed the FRPS process/hook from production assembly and Caddy's custom FRPS stream broker; connected cutover evidence remains pending. Delete the now-unreferenced FRP packages at Task 34; retain authenticated route/control ownership |
 | Tunnel `internal/edgehttp/policy.go`, `private_access_stream.go`, `private_connection.go`, old access grant control and private Caddy bridge tests/config | Task 26 replaces browser device/PAC authority; Task 19 owns native private TCP; remove accessor frames only after both consumers move |
 | Server `internal/tunnelv1/domain_reconciliation.go` and tests/SQL/OpenAPI; `internal/tunnelcert/acme.go`, `cloudflare_dns.go` and tests | Task 29 owns domain/certificate lifecycle and DNS01 authority; Task 30 adds separately scoped address publication and withdrawal. Keep provider secrets out of projections |
 | Tunnel `internal/caddyconfig`, `internal/certbroker`, `internal/runtime/certificate_broker.go`, certificate/runtime tests | Task 29 replaces Paperboat's Caddy TLS/config automation with the edge-owned certificate path; preserve issuance, renewal, revocation, custom domain and distribution proofs |
 | Tunnel `internal/node/state.go`, `manager.go`, `health.go`, `internal/route`, `internal/edgehttp/durable_carrier_transport.go`, related control/main wiring and tests | Task 30 adapts readiness and primary/standby observations; within-one-edge origin-carrier replica selection does not count as regional ingress recovery |
-| Tunnel `deploy/Dockerfile`, `deploy/docker-compose.yml`, `deploy/deployment.example.json`, `.gitmodules`, `Makefile`; server `deploy/docker-compose.yml` | Tasks 24/29 remove Paperboat FRPS/Caddy binaries, build stages, checksums, process slots and listener/config keys after replacement; Task 30 changes public DNS/endpoint deployment |
+| Tunnel `deploy/Dockerfile`, `deploy/docker-compose.yml`, `deploy/deployment.example.json`, `.gitmodules`, `Makefile`; server `deploy/docker-compose.yml` | Task 24 removes FRPS binary/build/config inputs after replacement evidence; Task 29 retains and later updates Caddy for edge-owned certificates; Task 30 changes public DNS/endpoint deployment |
 | paperboat `go.mod`/`go.sum` FRP dependencies; tunnel FRP/Caddy dependency/build wiring; old metrics, fallback/LegacyRegistry paths, conformance inputs | Task 34 deletes after Tasks 19/24/26/29/30 pass. Remove only actual obsolete dependencies; retain libraries still used by supported code |
 | `tools/control-conformance/main.go` FRPS/Caddy executable/checksum inputs and verification scripts | Tasks 24/29/30 replace connected acceptance checks, then Task 34 removes old binary/config assumptions; do not delete regression coverage to claim success |
 

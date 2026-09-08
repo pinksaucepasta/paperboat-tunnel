@@ -67,7 +67,7 @@ func (a PrivateAccessCarrierAdmission) Validate(nodeID, processEpoch string, now
 	if err := a.Durable().Validate(nodeID, processEpoch, now); err != nil {
 		return ErrControlUnavailable
 	}
-	for index, scheme := range []string{"tls", "quic"} {
+	for index, scheme := range []string{"h2", "h3"} {
 		endpoint, err := url.Parse(a.EdgeEndpoints[index])
 		port, portErr := strconv.ParseUint(endpoint.Port(), 10, 16)
 		if err != nil || endpoint.Scheme != scheme || endpoint.Hostname() == "" || portErr != nil || port == 0 || endpoint.User != nil || endpoint.Path != "" || endpoint.RawQuery != "" || endpoint.Fragment != "" {

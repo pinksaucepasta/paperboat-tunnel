@@ -46,7 +46,7 @@ const (
 	MaxJSONDepth        = 64
 	MaxClockSkew        = 2 * time.Minute
 	DefaultLease        = 45 * time.Second
-	DefaultHeartbeat    = 15 * time.Second
+	DefaultHeartbeat    = 5 * time.Second
 	DefaultApplyTimeout = 15 * time.Second
 	DefaultAbortTimeout = 5 * time.Second
 	MaxLease            = 24 * time.Hour
@@ -1156,7 +1156,7 @@ func validateConfigSnapshotPayload(payload []byte, tunnelID string, generation u
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return ErrSnapshotRejected
 	}
-	if snapshot.Schema != "paperboat.preview-tunnel/v1" || snapshot.Kind != "tunnel_config_snapshot" || snapshot.TunnelID != tunnelID || snapshot.Generation != generation || strings.TrimSpace(snapshot.Name) != snapshot.Name || len(snapshot.Name) == 0 || len(snapshot.Name) > 80 || snapshot.DesiredState != "active" && snapshot.DesiredState != "paused" && snapshot.DesiredState != "deleted" || snapshot.AccessMode != "public" && snapshot.AccessMode != "private" || snapshot.Routes == nil || !validWireStableEndpoint(snapshot.StableEndpoint) {
+	if snapshot.Schema != "paperboat.preview-tunnel/v1" || snapshot.Kind != "tunnel_config_snapshot" || snapshot.TunnelID != tunnelID || snapshot.Generation != generation || strings.TrimSpace(snapshot.Name) != snapshot.Name || len(snapshot.Name) == 0 || len(snapshot.Name) > 80 || snapshot.DesiredState != "active" && snapshot.DesiredState != "paused" && snapshot.DesiredState != "deleted" || snapshot.AccessMode != "public" && snapshot.AccessMode != "private" && snapshot.AccessMode != "team" || snapshot.Routes == nil || !validWireStableEndpoint(snapshot.StableEndpoint) {
 		return ErrSnapshotRejected
 	}
 	var rawRoutes []json.RawMessage

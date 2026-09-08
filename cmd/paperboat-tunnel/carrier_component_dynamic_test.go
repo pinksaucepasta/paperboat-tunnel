@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/http2"
+
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/config"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/connectorprotocol"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/datacarrier"
@@ -139,15 +141,25 @@ func TestCarrierPromotesAnAlreadyLivePreviewSessionToDurableRouting(t *testing.T
 	clientConfig := datacarrier.DefaultConfig()
 	clientConfig.Identity = identity
 	clientConfig.Authorize = datacarrier.AuthorizerFunc(func(context.Context, datacarrier.Identity, datacarrier.StreamOpen) error { return nil })
-	connection, err := (&tls.Dialer{Config: &tls.Config{
-		MinVersion:         tls.VersionTLS13,
-		Certificates:       []tls.Certificate{carrierCertificate},
-		InsecureSkipVerify: true, // The test server certificate is intentionally self-signed.
-		NextProtos:         []string{datacarrier.DataCarrierALPN},
-	}}).DialContext(ctx, "tcp", tcpAddress)
+	transport := &http2.Transport{TLSClientConfig: &tls.Config{
+		MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{carrierCertificate},
+		InsecureSkipVerify: true, // This fixture's server certificate is self-signed.
+		NextProtos:         []string{"h2"},
+	}}
+	defer transport.CloseIdleConnections()
+	reader, writer := io.Pipe()
+	request, err := http.NewRequestWithContext(ctx, http.MethodConnect, "https://"+tcpAddress, reader)
 	if err != nil {
-		t.Fatalf("dial carrier: %v", err)
+		t.Fatal(err)
 	}
+	response, err := transport.RoundTrip(request)
+	if err != nil {
+		t.Fatalf("dial HTTP2 carrier: %v", err)
+	}
+	if response.StatusCode != http.StatusOK || response.ProtoMajor != 2 {
+		t.Fatalf("carrier HTTP response: %d %s", response.StatusCode, response.Proto)
+	}
+	connection := dynamicHTTPLink{ReadCloser: response.Body, writer: writer}
 	client, err := datacarrier.NewClient(ctx, connection, clientConfig)
 	if err != nil {
 		_ = connection.Close()
@@ -314,3 +326,11 @@ func waitDynamicCondition(t *testing.T, ctx context.Context, condition func() bo
 		}
 	}
 }
+
+type dynamicHTTPLink struct {
+	io.ReadCloser
+	writer *io.PipeWriter
+}
+
+func (l dynamicHTTPLink) Write(p []byte) (int, error) { return l.writer.Write(p) }
+func (l dynamicHTTPLink) Close() error                { _ = l.writer.Close(); return l.ReadCloser.Close() }

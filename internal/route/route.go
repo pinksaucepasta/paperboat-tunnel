@@ -25,6 +25,9 @@ const (
 	// TunnelHTTPSWSS is the durable connector-v1 route kind. Its target is an
 	// opaque authenticated carrier binding, never a host-local origin address.
 	TunnelHTTPSWSS Kind = "tunnel_http_wss"
+	// TunnelTCP is selected by its server-reserved public port and must never
+	// enter the HTTP hostname matcher.
+	TunnelTCP Kind = "tunnel_tcp"
 	// TunnelPrivateTCP is an access-only durable route. It is retained by the
 	// carrier/admission layer but must never be inserted into the HTTP matcher.
 	TunnelPrivateTCP Kind = "tunnel_private_tcp"

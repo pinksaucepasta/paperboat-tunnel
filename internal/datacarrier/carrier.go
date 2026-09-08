@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hashicorp/yamux"
+	yamux "github.com/libp2p/go-yamux/v5"
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/connectorprotocol"
 )
 
@@ -899,16 +899,17 @@ func newYamuxSession(link io.ReadWriteCloser, config Config, client bool) (Sessi
 	yamuxConfig.KeepAliveInterval = config.KeepAliveInterval
 	yamuxConfig.ConnectionWriteTimeout = config.ConnectionWriteLimit
 	yamuxConfig.MaxStreamWindowSize = config.StreamWindow
-	yamuxConfig.StreamOpenTimeout = config.StreamOpenLimit
-	yamuxConfig.StreamCloseTimeout = config.StreamCloseLimit
+	yamuxConfig.InitialStreamWindowSize = config.StreamWindow
+	yamuxConfig.MaxIncomingStreams = uint32(config.MaximumStreams)
+	connection := asCarrierNetConn(link)
 	if client {
-		session, err := yamux.Client(link, yamuxConfig)
+		session, err := yamux.Client(connection, yamuxConfig, nil)
 		if err != nil {
 			return nil, err
 		}
 		return &yamuxSession{session: session}, nil
 	}
-	session, err := yamux.Server(link, yamuxConfig)
+	session, err := yamux.Server(connection, yamuxConfig, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -923,19 +924,36 @@ func (s *yamuxSession) OpenStream(ctx context.Context) (StreamLink, error) {
 	if s == nil || s.session == nil || ctx == nil {
 		return nil, ErrInvalidConfig
 	}
-	result := make(chan openResult, 1)
-	go func() {
-		stream, err := s.session.OpenStream()
-		result <- openResult{stream: stream, err: err}
-	}()
-	select {
-	case opened := <-result:
-		return opened.stream, opened.err
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-s.session.CloseChan():
-		return nil, ErrCarrierClosed
+	return s.session.OpenStream(ctx)
+}
+
+type carrierNetConn struct{ io.ReadWriteCloser }
+
+func asCarrierNetConn(link io.ReadWriteCloser) net.Conn {
+	if connection, ok := link.(net.Conn); ok {
+		return connection
 	}
+	return &carrierNetConn{ReadWriteCloser: link}
+}
+func (c *carrierNetConn) LocalAddr() net.Addr  { return carrierAddr("local") }
+func (c *carrierNetConn) RemoteAddr() net.Addr { return carrierAddr("remote") }
+func (c *carrierNetConn) SetDeadline(t time.Time) error {
+	if v, ok := c.ReadWriteCloser.(interface{ SetDeadline(time.Time) error }); ok {
+		return v.SetDeadline(t)
+	}
+	return nil
+}
+func (c *carrierNetConn) SetReadDeadline(t time.Time) error {
+	if v, ok := c.ReadWriteCloser.(interface{ SetReadDeadline(time.Time) error }); ok {
+		return v.SetReadDeadline(t)
+	}
+	return nil
+}
+func (c *carrierNetConn) SetWriteDeadline(t time.Time) error {
+	if v, ok := c.ReadWriteCloser.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		return v.SetWriteDeadline(t)
+	}
+	return nil
 }
 
 func (s *yamuxSession) AcceptStream(ctx context.Context) (StreamLink, error) {
@@ -1025,7 +1043,7 @@ func wrapStream(raw StreamLink, ctx context.Context, release func(), open ...Str
 	}
 	if ctx != nil && ctx != context.Background() {
 		stream.cancelMu.Lock()
-		stream.stopCancel = context.AfterFunc(ctx, func() { _ = stream.Close() })
+		stream.stopCancel = context.AfterFunc(ctx, func() { _ = stream.abort() })
 		stream.cancelMu.Unlock()
 	}
 	return stream
@@ -1062,6 +1080,35 @@ func (s *Stream) Close() error {
 		}
 	})
 	return s.closeErr
+}
+
+func (s *Stream) abort() error {
+	if s == nil || s.raw == nil {
+		return nil
+	}
+	s.closeOnce.Do(func() {
+		if resetter, ok := s.raw.(interface{ Reset() error }); ok {
+			s.closeErr = resetter.Reset()
+		} else {
+			s.closeErr = s.raw.Close()
+		}
+		if s.release != nil {
+			s.release()
+		}
+	})
+	return s.closeErr
+}
+
+// CloseWrite sends a native stream FIN without releasing the stream permit;
+// Close retains ownership of final cleanup and accounting.
+func (s *Stream) CloseWrite() error {
+	if s == nil || s.raw == nil {
+		return ErrCarrierClosed
+	}
+	if closer, ok := s.raw.(interface{ CloseWrite() error }); ok {
+		return closer.CloseWrite()
+	}
+	return s.raw.Close()
 }
 
 func (s *Stream) StreamID() uint32 {

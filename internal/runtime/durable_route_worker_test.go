@@ -17,7 +17,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/route"
 )
 
-func TestRouteWorkerSeparatesCanonicalHTTPAndPrivateTCPFromLegacyRoutes(t *testing.T) {
+func TestRouteWorkerSeparatesCanonicalHTTPPublicAndPrivateTCPFromLegacyRoutes(t *testing.T) {
 	publicKey := make(ed25519.PublicKey, ed25519.PublicKeySize)
 	for index := range publicKey {
 		publicKey[index] = byte(index + 1)
@@ -38,11 +38,19 @@ func TestRouteWorkerSeparatesCanonicalHTTPAndPrivateTCPFromLegacyRoutes(t *testi
 	private.MatchHostname = ""
 	private.WildcardSuffix = ""
 	private.PathPrefix = ""
+	publicTCP := durableWorkerAssignment(encodedKey, thumbprint, "route_public_tcp", "assignment_public_tcp", route.TunnelTCP)
+	publicTCP.Protocol, publicTCP.OriginScheme, publicTCP.PreserveHost, publicTCP.PathPrefix = "tcp", "tcp", false, ""
+	publicTCP.MatchType = route.MatchManagedExact
+	publicTCP.PublicHost, publicTCP.MatchHostname = "11111111-1111-4111-8111-111111111111.tunnels.example.test", "11111111-1111-4111-8111-111111111111.tunnels.example.test"
+	publicTCP.Revision, publicTCP.AssignmentGeneration = 3, 3
 	if err := validateCanonicalAssignment(assignment, "edge_1", "edge_epoch_1"); err != nil {
 		t.Fatalf("http assignment validation: %v", err)
 	}
 	if err := validateCanonicalAssignment(private, "edge_1", "edge_epoch_1"); err != nil {
 		t.Fatalf("private assignment validation: %v", err)
+	}
+	if err := validateCanonicalAssignment(publicTCP, "edge_1", "edge_epoch_1"); err != nil {
+		t.Fatalf("public TCP assignment validation: %v", err)
 	}
 	legacy := route.NewRegistry("preview.example.test", "example.test")
 	if _, err := legacy.Attach(route.Attachment{ID: "legacy_route", Revision: 1, Environment: "env", Node: "edge_1", Generation: 1, Kind: route.HelperHTTPSWSS, Host: "helper.example.test", Target: "127.0.0.1:8080"}); err != nil {
@@ -61,13 +69,14 @@ func TestRouteWorkerSeparatesCanonicalHTTPAndPrivateTCPFromLegacyRoutes(t *testi
 	state.MarkReady()
 	source := &workerSnapshotSource{snapshot: control.RouteSnapshot{Routes: []control.RouteAssignment{
 		assignment,
+		publicTCP,
 		private,
 		{RouteID: "legacy_route", Revision: 1, Environment: "env", Generation: 1, NodeID: "edge_1", Kind: string(route.HelperHTTPSWSS), PublicHost: "helper.example.test", TargetHost: "127.0.0.1", TargetPort: 8080},
 	}, Complete: true, Canonical: true}}
 	observer := &appendRouteObserver{}
 	worker := &RouteWorker{
 		Registry: canonical, LegacyRegistry: legacy, Source: source, Observer: observer, State: state,
-		NodeID: "edge_1", ProcessEpoch: "edge_epoch_1", Carrier: carrier, DurableAdmissions: durable,
+		NodeID: "edge_1", ProcessEpoch: "edge_epoch_1", Carrier: carrier, PublicTCP: carrier, DurableAdmissions: durable,
 		Ready: func(context.Context, []route.RouteRule) error { return nil }, Pulse: make(chan time.Time),
 	}
 	if err := worker.Start(context.Background()); err != nil {
@@ -86,6 +95,9 @@ func TestRouteWorkerSeparatesCanonicalHTTPAndPrivateTCPFromLegacyRoutes(t *testi
 	if _, err := canonical.Match("private.example.test", "/"); !errors.Is(err, route.ErrNoMatch) {
 		t.Fatalf("private TCP route entered HTTP matcher: %v", err)
 	}
+	if _, err := canonical.Match(publicTCP.PublicHost, "/"); !errors.Is(err, route.ErrNoMatch) {
+		t.Fatalf("public TCP route entered HTTP matcher: %v", err)
+	}
 	if _, err := legacy.Match("helper.example.test", "/healthz"); err != nil {
 		t.Fatalf("legacy route was erased by canonical snapshot: %v", err)
 	}
@@ -93,14 +105,17 @@ func TestRouteWorkerSeparatesCanonicalHTTPAndPrivateTCPFromLegacyRoutes(t *testi
 		t.Fatalf("stale legacy route survived replacement: %v", err)
 	}
 	admissions := durable.Snapshot()
-	if len(admissions) != 2 {
-		t.Fatalf("durable admissions = %d, want 2", len(admissions))
+	if len(admissions) != 3 {
+		t.Fatalf("durable admissions = %d, want 3", len(admissions))
 	}
 	if carrier.privateProbes != 1 || len(carrier.privateRules) != 1 || carrier.privateRules[0].Kind != route.TunnelPrivateTCP {
 		t.Fatalf("private carrier probes = %d rules=%+v", carrier.privateProbes, carrier.privateRules)
 	}
-	if len(observer.observations) != 3 {
-		t.Fatalf("observations = %+v, want HTTP, private, and legacy", observer.observations)
+	if carrier.routeProbes[publicTCP.TunnelID] != 1 {
+		t.Fatalf("public TCP connector probe count = %d", carrier.routeProbes[publicTCP.TunnelID])
+	}
+	if len(observer.observations) != 4 {
+		t.Fatalf("observations = %+v, want HTTP, public TCP, private TCP, and legacy", observer.observations)
 	}
 	var legacyObservation *control.RouteObservation
 	for index := range observer.observations {
@@ -397,6 +412,8 @@ func (p *workerCarrierProbe) ProbePrivateRoutes(_ context.Context, rules []route
 	p.privateRules = append([]route.RouteRule(nil), rules...)
 	return nil
 }
+
+func (p *workerCarrierProbe) PrepareTCPRoutes(context.Context, []route.RouteRule) error { return nil }
 
 func (p *workerCarrierProbe) OpenRouteStream(context.Context, route.RouteRule, string) (io.ReadWriteCloser, error) {
 	return nil, errors.New("not used in worker probe")

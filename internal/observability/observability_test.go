@@ -49,7 +49,7 @@ func TestPrivateHandlerReportsBoundedDiagnosticsAndMetrics(t *testing.T) {
 	controlErr := errors.New("Authorization: Bearer secret")
 	var certificateErr error
 	sessionRoutes := 2
-	handler, err := NewHandler(Sources{Node: state.Snapshot, Manager: manager.Snapshot, Sessions: func() int { return 1 }, SessionRoutes: func() int { return sessionRoutes }, ActiveStreams: func() uint32 { return 3 }, RouteCount: func() int { return 2 }, Usage: queue.Stats, ControlErr: func() error { return controlErr }, RouteErr: func() error { return nil }, UsageErr: func() error { return nil }, FRPRunning: func() bool { return true }, CaddyRunning: func() bool { return true }, STUN: func() STUNStats { return STUNStats{Running: true, Accepted: 7, Rejected: 2, Errors: 1} }, Signaling: func() SignalingStats { return SignalingStats{Running: true, Sessions: 2, Attachments: 3, Capacity: 16} }, CaddyTLS: func() (time.Time, error) { return now.Add(time.Hour), certificateErr }, Events: NewMetrics().Snapshot, Traffic: usage.NewCounters().Snapshot, Now: func() time.Time { return now }})
+	handler, err := NewHandler(Sources{Node: state.Snapshot, Manager: manager.Snapshot, Sessions: func() int { return 1 }, SessionRoutes: func() int { return sessionRoutes }, ActiveStreams: func() uint32 { return 3 }, RouteCount: func() int { return 2 }, Usage: queue.Stats, ControlErr: func() error { return controlErr }, RouteErr: func() error { return nil }, UsageErr: func() error { return nil }, CarrierRunning: func() bool { return true }, CaddyRunning: func() bool { return true }, STUN: func() STUNStats { return STUNStats{Running: true, Accepted: 7, Rejected: 2, Errors: 1} }, Signaling: func() SignalingStats { return SignalingStats{Running: true, Sessions: 2, Attachments: 3, Capacity: 16} }, CaddyTLS: func() (time.Time, error) { return now.Add(time.Hour), certificateErr }, Events: NewMetrics().Snapshot, Traffic: usage.NewCounters().Snapshot, Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestPrivateHandlerReportsBoundedDiagnosticsAndMetrics(t *testing.T) {
 		t.Fatalf("certificate diagnostics = %d %s", certificate.Code, certificate.Body.String())
 	}
 	certificateErr = nil
-	// An offline connector leaves a desired route without an active FRP route;
+	// An offline connector leaves a desired route without an active Carrier route;
 	// this is normal availability state, not route ownership drift.
 	sessionRoutes = 0
 	offline := httptest.NewRecorder()
@@ -108,7 +108,7 @@ func TestMetricsRejectUnboundedDimensions(t *testing.T) {
 }
 
 func TestDiagnosticsDistinguishDependencies(t *testing.T) {
-	healthy := Diagnostics{Control: Healthy, Store: Healthy, FRP: Healthy, Caddy: Healthy, STUN: Healthy, Signaling: Healthy, Usage: Healthy}
+	healthy := Diagnostics{Control: Healthy, Store: Healthy, Carrier: Healthy, Caddy: Healthy, STUN: Healthy, Signaling: Healthy, Usage: Healthy}
 	if !healthy.Ready() {
 		t.Fatal("healthy node is not ready")
 	}
@@ -152,7 +152,7 @@ func TestPrivateHandlerProjectsTypedHealthEventsMetricsAndDrops(t *testing.T) {
 	if err := typedMetrics.AddCounter(edgetelemetry.MetricRouteRequests, edgetelemetry.MetricLabels{"route_kind": "tunnel_https_wss", "outcome": "success"}, 2); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := NewHandler(Sources{Node: state.Snapshot, Manager: manager.Snapshot, Sessions: func() int { return 0 }, SessionRoutes: func() int { return 0 }, ActiveStreams: func() uint32 { return 0 }, RouteCount: func() int { return 0 }, Usage: queue.Stats, ControlErr: func() error { return nil }, RouteErr: func() error { return nil }, UsageErr: func() error { return nil }, FRPRunning: func() bool { return true }, CaddyRunning: func() bool { return true }, STUN: func() STUNStats { return STUNStats{Running: true} }, Signaling: func() SignalingStats { return SignalingStats{Running: true} }, CaddyTLS: func() (time.Time, error) { return now.Add(time.Hour), nil }, Events: NewMetrics().Snapshot, Traffic: usage.NewCounters().Snapshot, Health: health.Snapshot, Lifecycle: events.Snapshot, TypedMetrics: typedMetrics.Snapshot, TelemetryDrops: func() uint64 { return 3 }, Now: func() time.Time { return now }})
+	handler, err := NewHandler(Sources{Node: state.Snapshot, Manager: manager.Snapshot, Sessions: func() int { return 0 }, SessionRoutes: func() int { return 0 }, ActiveStreams: func() uint32 { return 0 }, RouteCount: func() int { return 0 }, Usage: queue.Stats, ControlErr: func() error { return nil }, RouteErr: func() error { return nil }, UsageErr: func() error { return nil }, CarrierRunning: func() bool { return true }, CaddyRunning: func() bool { return true }, STUN: func() STUNStats { return STUNStats{Running: true} }, Signaling: func() SignalingStats { return SignalingStats{Running: true} }, CaddyTLS: func() (time.Time, error) { return now.Add(time.Hour), nil }, Events: NewMetrics().Snapshot, Traffic: usage.NewCounters().Snapshot, Health: health.Snapshot, Lifecycle: events.Snapshot, TypedMetrics: typedMetrics.Snapshot, TelemetryDrops: func() uint64 { return 3 }, Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,14 +3,29 @@
   "$id": "paperboat://contracts/connector-v1/bootstrap",
   "title": "Paperboat connector carrier bootstrap v1 payloads",
   "oneOf": [
-    { "$ref": "#/definitions/carrier_bootstrap_request" },
-    { "$ref": "#/definitions/carrier_bootstrap_descriptor" },
-    { "$ref": "#/definitions/connector_activation" },
-    { "$ref": "#/definitions/error_response" }
+    {
+      "$ref": "#/definitions/carrier_bootstrap_request"
+    },
+    {
+      "$ref": "#/definitions/carrier_bootstrap_descriptor"
+    },
+    {
+      "$ref": "#/definitions/connector_activation"
+    },
+    {
+      "$ref": "#/definitions/error_response"
+    },
+    {
+      "$ref": "#/definitions/ingress_decision"
+    }
   ],
   "definitions": {
-    "bootstrap_schema": { "const": "paperboat.connector-bootstrap/v1" },
-    "preview_tunnel_schema": { "const": "paperboat.preview-tunnel/v1" },
+    "bootstrap_schema": {
+      "const": "paperboat.connector-bootstrap/v1"
+    },
+    "preview_tunnel_schema": {
+      "const": "paperboat.preview-tunnel/v1"
+    },
     "identifier": {
       "type": "string",
       "minLength": 1,
@@ -21,16 +36,22 @@
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
     },
-    "generation": { "type": "integer", "minimum": 1 },
+    "generation": {
+      "type": "integer",
+      "minimum": 1
+    },
     "content_hash": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
-    "timestamp": { "type": "string", "format": "date-time" },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
     "carrier_endpoint": {
       "type": "string",
       "format": "uri",
-      "pattern": "^(tls|quic)://(?:\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):[1-9][0-9]{0,4}$"
+      "pattern": "^(h2|h3)://(?:\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):[1-9][0-9]{0,4}$"
     },
     "carrier_bootstrap_request": {
       "type": "object",
@@ -43,12 +64,24 @@
         "config_content_hash"
       ],
       "properties": {
-        "schema": { "$ref": "#/definitions/bootstrap_schema" },
-        "kind": { "const": "carrier_bootstrap_request" },
-        "session_id": { "$ref": "#/definitions/identifier" },
-        "process_generation": { "$ref": "#/definitions/generation" },
-        "config_generation": { "$ref": "#/definitions/generation" },
-        "config_content_hash": { "$ref": "#/definitions/content_hash" }
+        "schema": {
+          "$ref": "#/definitions/bootstrap_schema"
+        },
+        "kind": {
+          "const": "carrier_bootstrap_request"
+        },
+        "session_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "process_generation": {
+          "$ref": "#/definitions/generation"
+        },
+        "config_generation": {
+          "$ref": "#/definitions/generation"
+        },
+        "config_content_hash": {
+          "$ref": "#/definitions/content_hash"
+        }
       },
       "additionalProperties": false
     },
@@ -63,21 +96,39 @@
         "server_certificate_chain_pem"
       ],
       "properties": {
-        "edge_node_id": { "$ref": "#/definitions/identifier" },
-        "edge_process_epoch": { "$ref": "#/definitions/identifier" },
-        "failure_domain": { "$ref": "#/definitions/identifier" },
+        "edge_node_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "edge_process_epoch": {
+          "$ref": "#/definitions/identifier"
+        },
+        "failure_domain": {
+          "$ref": "#/definitions/identifier"
+        },
         "endpoints": {
           "type": "array",
           "minItems": 2,
           "maxItems": 2,
           "uniqueItems": true,
-          "items": { "$ref": "#/definitions/carrier_endpoint" },
+          "items": {
+            "$ref": "#/definitions/carrier_endpoint"
+          },
           "allOf": [
-            { "contains": { "pattern": "^tls://" } },
-            { "contains": { "pattern": "^quic://" } }
+            {
+              "contains": {
+                "pattern": "^h2://"
+              }
+            },
+            {
+              "contains": {
+                "pattern": "^h3://"
+              }
+            }
           ]
         },
-        "server_spki_sha256": { "$ref": "#/definitions/content_hash" },
+        "server_spki_sha256": {
+          "$ref": "#/definitions/content_hash"
+        },
         "server_certificate_chain_pem": {
           "type": "string",
           "minLength": 1,
@@ -104,30 +155,68 @@
         "config_content_hash",
         "carriers",
         "issued_at",
-        "expires_at"
+        "expires_at",
+        "ingress_decisions"
       ],
       "properties": {
-        "schema": { "$ref": "#/definitions/bootstrap_schema" },
-        "kind": { "const": "carrier_bootstrap_descriptor" },
-        "account_id": { "$ref": "#/definitions/identifier" },
-        "tunnel_id": { "$ref": "#/definitions/identifier" },
-        "connector_id": { "$ref": "#/definitions/identifier" },
-        "host_id": { "$ref": "#/definitions/identifier" },
-        "stable_endpoint_id": { "$ref": "#/definitions/endpoint_uuid" },
-        "session_id": { "$ref": "#/definitions/identifier" },
-        "process_generation": { "$ref": "#/definitions/generation" },
-        "credential_generation": { "$ref": "#/definitions/generation" },
-        "config_generation": { "$ref": "#/definitions/generation" },
-        "config_content_hash": { "$ref": "#/definitions/content_hash" },
+        "schema": {
+          "$ref": "#/definitions/bootstrap_schema"
+        },
+        "kind": {
+          "const": "carrier_bootstrap_descriptor"
+        },
+        "account_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "tunnel_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "connector_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "host_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "stable_endpoint_id": {
+          "$ref": "#/definitions/endpoint_uuid"
+        },
+        "session_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "process_generation": {
+          "$ref": "#/definitions/generation"
+        },
+        "credential_generation": {
+          "$ref": "#/definitions/generation"
+        },
+        "config_generation": {
+          "$ref": "#/definitions/generation"
+        },
+        "config_content_hash": {
+          "$ref": "#/definitions/content_hash"
+        },
         "carriers": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 4,
+          "maxItems": 2,
           "uniqueItems": true,
-          "items": { "$ref": "#/definitions/carrier" }
+          "items": {
+            "$ref": "#/definitions/carrier"
+          }
         },
-        "issued_at": { "$ref": "#/definitions/timestamp" },
-        "expires_at": { "$ref": "#/definitions/timestamp" }
+        "issued_at": {
+          "$ref": "#/definitions/timestamp"
+        },
+        "expires_at": {
+          "$ref": "#/definitions/timestamp"
+        },
+        "ingress_decisions": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "$ref": "#/definitions/ingress_decision"
+          }
+        }
       },
       "additionalProperties": false
     },
@@ -146,8 +235,12 @@
         "correlation_id"
       ],
       "properties": {
-        "schema": { "$ref": "#/definitions/preview_tunnel_schema" },
-        "kind": { "const": "error" },
+        "schema": {
+          "$ref": "#/definitions/preview_tunnel_schema"
+        },
+        "kind": {
+          "const": "error"
+        },
         "code": {
           "enum": [
             "invalid_content_type",
@@ -161,27 +254,57 @@
             "connector_control_unavailable"
           ]
         },
-        "component": { "const": "control" },
-        "message": { "type": "string", "minLength": 1, "maxLength": 4096 },
-        "outcome": { "enum": ["unchanged", "changed", "uncertain"] },
-        "retryable": { "type": "boolean" },
-        "retry_at": {
-          "oneOf": [
-            { "$ref": "#/definitions/timestamp" },
-            { "type": "null" }
+        "component": {
+          "const": "control"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "outcome": {
+          "enum": [
+            "unchanged",
+            "changed",
+            "uncertain"
           ]
         },
-        "repair_action": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "request_id": { "$ref": "#/definitions/identifier" },
-        "correlation_id": { "$ref": "#/definitions/identifier" }
+        "retryable": {
+          "type": "boolean"
+        },
+        "retry_at": {
+          "oneOf": [
+            {
+              "$ref": "#/definitions/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "repair_action": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "request_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "correlation_id": {
+          "$ref": "#/definitions/identifier"
+        }
       },
       "additionalProperties": false
     },
     "error_response": {
       "type": "object",
-      "required": ["error"],
+      "required": [
+        "error"
+      ],
       "properties": {
-        "error": { "$ref": "#/definitions/error" }
+        "error": {
+          "$ref": "#/definitions/error"
+        }
       },
       "additionalProperties": false
     },
@@ -202,20 +325,53 @@
         "updated_at"
       ],
       "properties": {
-        "schema": { "$ref": "#/definitions/preview_tunnel_schema" },
-        "kind": { "const": "operation" },
-        "id": { "$ref": "#/definitions/identifier" },
-        "resource_kind": { "const": "connector" },
-        "resource_id": { "$ref": "#/definitions/identifier" },
-        "phase": { "const": "connecting" },
-        "state": { "const": "running" },
-        "progress": { "type": "integer", "minimum": 0, "maximum": 100 },
-        "retrying": { "type": "boolean" },
-        "next_retry_at": { "$ref": "#/definitions/timestamp" },
-        "error": { "type": ["object", "null"] },
-        "correlation_id": { "$ref": "#/definitions/identifier" },
-        "created_at": { "$ref": "#/definitions/timestamp" },
-        "updated_at": { "$ref": "#/definitions/timestamp" }
+        "schema": {
+          "$ref": "#/definitions/preview_tunnel_schema"
+        },
+        "kind": {
+          "const": "operation"
+        },
+        "id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "resource_kind": {
+          "const": "connector"
+        },
+        "resource_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "phase": {
+          "const": "connecting"
+        },
+        "state": {
+          "const": "running"
+        },
+        "progress": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "retrying": {
+          "type": "boolean"
+        },
+        "next_retry_at": {
+          "$ref": "#/definitions/timestamp"
+        },
+        "error": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "correlation_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "created_at": {
+          "$ref": "#/definitions/timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/definitions/timestamp"
+        }
       },
       "additionalProperties": false
     },
@@ -234,16 +390,356 @@
         "operation"
       ],
       "properties": {
-        "schema": { "$ref": "#/definitions/preview_tunnel_schema" },
-        "kind": { "const": "connector_activation" },
-        "account_id": { "$ref": "#/definitions/identifier" },
-        "tunnel_id": { "$ref": "#/definitions/identifier" },
-        "connector_id": { "$ref": "#/definitions/identifier" },
-        "host_id": { "$ref": "#/definitions/identifier" },
-        "stable_endpoint_id": { "$ref": "#/definitions/endpoint_uuid" },
-        "credential_generation": { "$ref": "#/definitions/generation" },
-        "process_generation": { "$ref": "#/definitions/generation" },
-        "operation": { "$ref": "#/definitions/connector_operation" }
+        "schema": {
+          "$ref": "#/definitions/preview_tunnel_schema"
+        },
+        "kind": {
+          "const": "connector_activation"
+        },
+        "account_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "tunnel_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "connector_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "host_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "stable_endpoint_id": {
+          "$ref": "#/definitions/endpoint_uuid"
+        },
+        "credential_generation": {
+          "$ref": "#/definitions/generation"
+        },
+        "process_generation": {
+          "$ref": "#/definitions/generation"
+        },
+        "operation": {
+          "$ref": "#/definitions/connector_operation"
+        }
+      },
+      "additionalProperties": false
+    },
+    "stream_open": {
+      "type": "object",
+      "required": [
+        "protocol",
+        "version",
+        "account_id",
+        "tunnel_id",
+        "connector_id",
+        "session_id",
+        "process_generation",
+        "generation",
+        "route_id",
+        "request_id",
+        "kind"
+      ],
+      "properties": {
+        "protocol": {
+          "const": "paperboat.connector"
+        },
+        "version": {
+          "const": "1.0"
+        },
+        "account_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "tunnel_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "connector_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "session_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "process_generation": {
+          "$ref": "#/definitions/generation"
+        },
+        "generation": {
+          "$ref": "#/definitions/generation"
+        },
+        "route_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "request_id": {
+          "$ref": "#/definitions/identifier"
+        },
+        "kind": {
+          "enum": [
+            "connector_ready",
+            "tcp_public",
+            "http_browser",
+            "http",
+            "https",
+            "h2c",
+            "websocket",
+            "sse",
+            "grpc",
+            "tcp_private",
+            "private_access_http",
+            "private_access_tcp"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ingress_binding": {
+      "type": "object",
+      "required": [
+        "account_id",
+        "tunnel_id",
+        "lifecycle",
+        "resource_generation",
+        "route_id",
+        "route_generation",
+        "target_id",
+        "target_generation",
+        "host_id",
+        "installation_generation",
+        "audience",
+        "connection_method",
+        "protocol",
+        "hostname",
+        "path_prefix",
+        "origin_scheme",
+        "origin_address",
+        "tls_server_name",
+        "tls_verification",
+        "ca_reference",
+        "mtls_credential_reference",
+        "publication_id",
+        "publication_generation",
+        "listener_id",
+        "public_port",
+        "environment_id"
+      ],
+      "properties": {
+        "account_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "tunnel_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "lifecycle": {
+          "enum": [
+            "ephemeral",
+            "durable"
+          ]
+        },
+        "resource_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "route_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "route_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "target_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "target_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "host_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "installation_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "audience": {
+          "enum": [
+            "public",
+            "private",
+            "team"
+          ]
+        },
+        "connection_method": {
+          "enum": [
+            "edge"
+          ]
+        },
+        "protocol": {
+          "enum": [
+            "http",
+            "tcp"
+          ]
+        },
+        "hostname": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "path_prefix": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "origin_scheme": {
+          "enum": [
+            "http",
+            "https",
+            "h2c",
+            "tcp"
+          ]
+        },
+        "origin_address": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "tls_server_name": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "tls_verification": {
+          "enum": [
+            "not_applicable",
+            "system",
+            "custom_ca"
+          ]
+        },
+        "ca_reference": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "mtls_credential_reference": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "publication_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "publication_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "listener_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "public_port": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "environment_id": {
+          "$ref": "#/definitions/identifier"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ingress_decision": {
+      "type": "object",
+      "required": [
+        "binding",
+        "decision_id",
+        "policy_generation",
+        "edge_node_id",
+        "edge_process_epoch",
+        "connector_id",
+        "session_id",
+        "process_generation",
+        "config_generation",
+        "assignment_generation",
+        "principal_id",
+        "grant_id",
+        "grant_generation",
+        "membership_generation",
+        "action",
+        "issued_at",
+        "expires_at"
+      ],
+      "properties": {
+        "binding": {
+          "$ref": "#/definitions/ingress_binding"
+        },
+        "decision_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "policy_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "edge_node_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "edge_process_epoch": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "connector_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "session_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "process_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "config_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "assignment_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "principal_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "grant_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "grant_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "membership_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "action": {
+          "const": "view"
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
       },
       "additionalProperties": false
     }

@@ -70,6 +70,8 @@ type RouteAssignment struct {
 	PathPrefix                 string          `json:"path_prefix,omitempty"`
 	Priority                   int             `json:"priority,omitempty"`
 	Protocol                   string          `json:"protocol,omitempty"`
+	PublicTCPListenerID        string          `json:"public_tcp_listener_id,omitempty"`
+	PublicTCPPort              uint16          `json:"public_tcp_port,omitempty"`
 	OriginScheme               string          `json:"origin_scheme,omitempty"`
 	AccessMode                 string          `json:"access_mode,omitempty"`
 	OriginAddress              string          `json:"origin_address,omitempty"`

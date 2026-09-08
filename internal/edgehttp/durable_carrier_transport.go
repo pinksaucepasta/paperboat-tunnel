@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -37,12 +38,15 @@ var (
 // select it by the complete connector/session/process/config identity tuple.
 // It never stores or accepts a host-local origin address.
 type DataCarrierRouteRegistry struct {
-	maximum int
-	done    chan struct{}
-	once    sync.Once
-	mu      sync.RWMutex
-	closed  bool
-	byKey   map[string]*dataCarrierRouteEntry
+	ingressAuthority func(context.Context, route.RouteRule) (connectorprotocol.IngressDecision, error)
+	ingressLimits    *IngressLimits
+	usage            IngressUsage
+	maximum          int
+	done             chan struct{}
+	once             sync.Once
+	mu               sync.RWMutex
+	closed           bool
+	byKey            map[string]*dataCarrierRouteEntry
 }
 
 type dataCarrierRouteEntry struct {
@@ -81,7 +85,10 @@ type ReplicaRouteBinding struct {
 }
 
 type DataCarrierRouteRegistryConfig struct {
-	MaximumRoutes int
+	IngressAuthority func(context.Context, route.RouteRule) (connectorprotocol.IngressDecision, error)
+	IngressLimits    *IngressLimits
+	Usage            IngressUsage
+	MaximumRoutes    int
 }
 
 func NewDataCarrierRouteRegistry(config DataCarrierRouteRegistryConfig) (*DataCarrierRouteRegistry, error) {
@@ -91,7 +98,11 @@ func NewDataCarrierRouteRegistry(config DataCarrierRouteRegistryConfig) (*DataCa
 	if config.MaximumRoutes < 1 || config.MaximumRoutes > maximumDataCarrierRoutes {
 		return nil, ErrDataCarrierRouteInvalid
 	}
-	return &DataCarrierRouteRegistry{maximum: config.MaximumRoutes, done: make(chan struct{}), byKey: make(map[string]*dataCarrierRouteEntry)}, nil
+	limits, err := newIngressLimits(config.IngressLimits)
+	if err != nil {
+		return nil, ErrDataCarrierRouteInvalid
+	}
+	return &DataCarrierRouteRegistry{ingressAuthority: config.IngressAuthority, ingressLimits: limits, usage: config.Usage, maximum: config.MaximumRoutes, done: make(chan struct{}), byKey: make(map[string]*dataCarrierRouteEntry)}, nil
 }
 
 // Attach registers one already-authenticated server. The Server identity is
@@ -348,7 +359,7 @@ func carrierRouteIdentityKey(identity datacarrier.Identity) string {
 }
 
 func (r *DataCarrierRouteRegistry) entryFor(rule route.RouteRule, requestID string) (*dataCarrierRouteEntry, error) {
-	if r == nil || rule.Kind != route.TunnelHTTPSWSS && rule.Kind != route.TunnelPrivateTCP || rule.AccountID == "" || rule.HostID == "" || rule.TunnelID == "" || rule.ConnectorID == "" || rule.ConnectorSessionID == "" || rule.ConnectorProcessGeneration == 0 || rule.ConfigGeneration == 0 {
+	if r == nil || rule.Kind != route.TunnelHTTPSWSS && rule.Kind != route.TunnelTCP && rule.Kind != route.TunnelPrivateTCP || rule.AccountID == "" || rule.HostID == "" || rule.TunnelID == "" || rule.ConnectorID == "" || rule.ConnectorSessionID == "" || rule.ConnectorProcessGeneration == 0 || rule.ConfigGeneration == 0 {
 		return nil, ErrDataCarrierRouteInvalid
 	}
 	r.mu.RLock()
@@ -484,13 +495,40 @@ func (r *DataCarrierRouteRegistry) OpenRouteStream(ctx context.Context, rule rou
 	}
 	openContext, cancel := context.WithTimeout(ctx, defaultDataCarrierRouteOpenTimeout)
 	defer cancel()
+	decision, err := r.ingressDecision(openContext, rule, open)
+	if err != nil {
+		return nil, err
+	}
+	var lease *IngressLease
+	if decision != nil {
+		lease, err = r.AcquireIngress(openContext, *decision)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if lease != nil {
+				lease.Release()
+			}
+		}()
+	}
 	started := time.Now()
 	stream, err := entry.server.OpenStreamWithLifetime(openContext, ctx, open)
 	if err != nil {
 		return nil, errors.Join(ErrDataCarrierRouteTransport, err)
 	}
+	if decision != nil {
+		if err := connectorprotocol.WriteIngressDecision(stream, *decision, time.Now().UTC()); err != nil {
+			_ = stream.Close()
+			return nil, err
+		}
+	}
+	var application io.ReadWriteCloser = stream
+	if lease != nil {
+		application = lease.Wrap(ctx, stream)
+		lease = nil
+	}
 	r.recordOpenLatency(entry, time.Since(started))
-	return stream, nil
+	return application, nil
 }
 
 // OpenPrivateTCPStream is the non-HTTP access-only carrier seam. Unlike
@@ -510,6 +548,25 @@ func (r *DataCarrierRouteRegistry) OpenPrivateTCPStream(ctx context.Context, rul
 func (r *DataCarrierRouteRegistry) ProbeRoutes(ctx context.Context, rules []route.RouteRule) error {
 	if ctx == nil {
 		return ErrDataCarrierRouteInvalid
+	}
+	if r.ingressAuthority != nil {
+		for _, rule := range rules {
+			probe, cancel := context.WithTimeout(ctx, defaultDataCarrierRouteOpenTimeout)
+			stream, err := r.openExactAssignmentWithTimeout(probe, probe, rule, fmt.Sprintf("ready-%d", time.Now().UnixNano()), "connector_ready")
+			if err == nil {
+				var ack [1]byte
+				_, err = io.ReadFull(stream, ack[:])
+				if err == nil && ack[0] != 1 {
+					err = ErrDataCarrierRouteUnavailable
+				}
+				_ = stream.Close()
+			}
+			cancel()
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	ordered := append([]route.RouteRule(nil), rules...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
@@ -643,7 +700,7 @@ func (t *DataCarrierRouteTransport) RoundTrip(request *http.Request) (*http.Resp
 	if !ok || match.Rule.Kind != route.TunnelHTTPSWSS {
 		return nil, ErrDataCarrierRouteInvalid
 	}
-	if match.Rule.AccessMode == "private" {
+	if (match.Rule.AccessMode == "private" || match.Rule.AccessMode == "team") && !hasBrowserDecision(request.Context(), match) {
 		// Private durable routes require the explicit private-access decision
 		// contract. This transport has no proof source, so never downgrade one
 		// to public forwarding.
@@ -675,15 +732,73 @@ func (t *DataCarrierRouteTransport) RoundTrip(request *http.Request) (*http.Resp
 		}
 		writeDone <- writeErr
 	}()
-	response, err := http.ReadResponse(bufio.NewReader(&boundedPreviewResponseHeaderReader{reader: stream, maximum: maximumDataCarrierProbeHeader}), out)
+	responseReader := bufio.NewReader(&boundedPreviewResponseHeaderReader{reader: stream, maximum: maximumDataCarrierProbeHeader})
+	response, err := http.ReadResponse(responseReader, out)
 	if err != nil {
 		stopCancel()
 		_ = stream.Close()
 		return nil, errors.Join(ErrDataCarrierRouteTransport, err)
 	}
 	response.Request = request
-	response.Body = &dataCarrierPreviewResponseBody{body: response.Body, stream: stream, stopCancel: stopCancel, writeDone: writeDone}
+	if response.StatusCode == http.StatusSwitchingProtocols {
+		response.Body = &dataCarrierRouteUpgradeBody{reader: responseReader, stream: stream, stopCancel: stopCancel, writeDone: writeDone}
+	} else {
+		response.Body = &dataCarrierPreviewResponseBody{body: response.Body, stream: stream, stopCancel: stopCancel, writeDone: writeDone}
+	}
 	return response, nil
+}
+
+// dataCarrierRouteUpgradeBody retains the response reader because it may
+// already contain application bytes read together with the 101 headers.
+// ReverseProxy requires the response body to be an io.ReadWriteCloser before
+// it will bridge an upgraded connection.
+type dataCarrierRouteUpgradeBody struct {
+	reader     io.Reader
+	stream     io.ReadWriteCloser
+	stopCancel func() bool
+	writeDone  <-chan error
+	once       sync.Once
+	err        error
+}
+
+func (b *dataCarrierRouteUpgradeBody) Read(payload []byte) (int, error) {
+	if b == nil || b.reader == nil {
+		return 0, io.EOF
+	}
+	return b.reader.Read(payload)
+}
+
+func (b *dataCarrierRouteUpgradeBody) Write(payload []byte) (int, error) {
+	if b == nil || b.stream == nil {
+		return 0, net.ErrClosed
+	}
+	return b.stream.Write(payload)
+}
+
+func (b *dataCarrierRouteUpgradeBody) Close() error {
+	if b == nil {
+		return nil
+	}
+	b.once.Do(func() {
+		if b.stopCancel != nil {
+			b.stopCancel()
+		}
+		if b.stream != nil {
+			if err := b.stream.Close(); !expectedPrivateStreamClose(err) {
+				b.err = err
+			}
+		}
+		if b.writeDone != nil {
+			select {
+			case err := <-b.writeDone:
+				if b.err == nil && !expectedPrivateStreamClose(err) {
+					b.err = err
+				}
+			default:
+			}
+		}
+	})
+	return b.err
 }
 
 func (r *DataCarrierRouteRegistry) openWithTimeout(openCtx, lifetimeCtx context.Context, rule route.RouteRule, requestID string) (io.ReadWriteCloser, error) {
@@ -701,16 +816,43 @@ func (r *DataCarrierRouteRegistry) openWithTimeout(openCtx, lifetimeCtx context.
 		Generation: entry.identity.Generation, RouteID: carrierRouteID(rule), RequestID: requestID,
 		Kind: durableStreamKind(rule.Protocol),
 	}
+	decision, err := r.ingressDecision(openCtx, rule, open)
+	if err != nil {
+		return nil, err
+	}
+	var lease *IngressLease
+	if decision != nil {
+		lease, err = r.AcquireIngress(openCtx, *decision)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if lease != nil {
+				lease.Release()
+			}
+		}()
+	}
 	started := time.Now()
 	stream, err := entry.server.OpenStreamWithLifetime(openCtx, lifetimeCtx, open)
 	if err != nil {
 		return nil, errors.Join(ErrDataCarrierRouteTransport, err)
 	}
+	if decision != nil {
+		if err := connectorprotocol.WriteIngressDecision(stream, *decision, time.Now().UTC()); err != nil {
+			_ = stream.Close()
+			return nil, err
+		}
+	}
+	var application io.ReadWriteCloser = stream
+	if lease != nil {
+		application = lease.Wrap(lifetimeCtx, stream)
+		lease = nil
+	}
 	r.recordOpenLatency(entry, time.Since(started))
-	return stream, nil
+	return application, nil
 }
 
-func (r *DataCarrierRouteRegistry) openExactAssignmentWithTimeout(openCtx, lifetimeCtx context.Context, rule route.RouteRule, requestID string) (io.ReadWriteCloser, error) {
+func (r *DataCarrierRouteRegistry) openExactAssignmentWithTimeout(openCtx, lifetimeCtx context.Context, rule route.RouteRule, requestID string, readiness ...string) (io.ReadWriteCloser, error) {
 	if openCtx == nil || lifetimeCtx == nil || requestID == "" || connectorprotocol.ValidateIdentifier(requestID) != nil {
 		return nil, ErrDataCarrierRouteInvalid
 	}
@@ -719,6 +861,9 @@ func (r *DataCarrierRouteRegistry) openExactAssignmentWithTimeout(openCtx, lifet
 		return nil, err
 	}
 	open := connectorprotocol.StreamOpen{Protocol: connectorprotocol.ProtocolName, Version: connectorprotocol.ProtocolVersion, AccountID: entry.identity.AccountID, TunnelID: entry.identity.TunnelID, ConnectorID: entry.identity.ConnectorID, SessionID: entry.identity.SessionID, ProcessGeneration: entry.identity.ProcessGeneration, Generation: entry.identity.Generation, RouteID: carrierRouteID(rule), RequestID: requestID, Kind: durableStreamKind(rule.Protocol)}
+	if len(readiness) == 1 && readiness[0] == "connector_ready" {
+		open.Kind = "connector_ready"
+	}
 	started := time.Now()
 	stream, err := entry.server.OpenStreamWithLifetime(openCtx, lifetimeCtx, open)
 	if err != nil {

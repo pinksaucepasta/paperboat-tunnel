@@ -270,7 +270,7 @@ func TestDataPlaneStopsCarrierBeforeRouteAndIngress(t *testing.T) {
 	component := func(name string) Component { return orderedComponent{name: name, events: &events, mu: &mu} }
 	dataPlane, err := NewDataPlane(DataPlaneSpec{
 		Persistence: component("store"), Control: component("control"), Carrier: component("carrier"), Node: component("node"), Routes: component("routes"),
-		Hook: component("hook"), Gateway: component("gateway"), FRPS: component("frps"), Caddy: component("caddy"), CaddyReady: component("caddy-ready"), Usage: component("usage"),
+		Gateway: component("gateway"), Caddy: component("caddy"), CaddyReady: component("caddy-ready"), Usage: component("usage"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -281,7 +281,7 @@ func TestDataPlaneStopsCarrierBeforeRouteAndIngress(t *testing.T) {
 	if err := dataPlane.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"start:store", "start:hook", "start:gateway", "start:frps", "start:caddy", "start:control", "start:node", "start:caddy-ready", "start:carrier", "start:routes", "start:usage", "stop:usage", "stop:routes", "stop:carrier", "stop:caddy-ready", "stop:caddy", "stop:node", "stop:control", "stop:frps", "stop:gateway", "stop:hook", "stop:store"}
+	want := []string{"start:store", "start:gateway", "start:caddy", "start:control", "start:node", "start:caddy-ready", "start:carrier", "start:routes", "start:usage", "stop:usage", "stop:routes", "stop:carrier", "stop:caddy-ready", "stop:caddy", "stop:node", "stop:control", "stop:gateway", "stop:store"}
 	if !equalStrings(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
 	}

@@ -251,6 +251,8 @@ type RouteWorker struct {
 	// routes. It opens authenticated connector-v1 streams; it must not dial a
 	// host-local origin address.
 	Carrier RouteCarrier
+	// PublicTCP owns server-reserved sockets and participates in readiness.
+	PublicTCP PublicTCPRouteBinder
 	// DurableAdmissions is the edge's authenticated connector admission
 	// authority. It is replaced from the complete server snapshot before a
 	// staged route is probed, so a carrier cannot be selected from route data
@@ -304,6 +306,12 @@ type RouteCarrier interface {
 // never enter the HTTP GenerationRegistry.
 type PrivateRouteCarrier interface {
 	ProbePrivateRoutes(context.Context, []route.RouteRule) error
+}
+
+// PublicTCPRouteBinder binds server-reserved listener identities before the
+// worker acknowledges the assignment as ready.
+type PublicTCPRouteBinder interface {
+	PrepareTCPRoutes(context.Context, []route.RouteRule) error
 }
 
 func (w *RouteWorker) Start(ctx context.Context) error {
@@ -556,7 +564,7 @@ func (w *RouteWorker) reconcileRoutes(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		httpAssignments, _ := splitCanonicalAssignments(activeAssignments)
+		httpAssignments, _, _ := splitCanonicalAssignments(activeAssignments)
 		rules := canonicalRouteRules(httpAssignments)
 		sortRouteRules(rules)
 		contentHash := canonicalRouteHash(activeAssignments)
@@ -872,16 +880,37 @@ func canonicalPrivateRouteRules(assignments []control.RouteAssignment) []route.R
 	return rules
 }
 
-func splitCanonicalAssignments(assignments []control.RouteAssignment) (httpAssignments, privateAssignments []control.RouteAssignment) {
+func canonicalTCPRouteRules(assignments []control.RouteAssignment) []route.RouteRule {
+	rules := make([]route.RouteRule, 0, len(assignments))
+	for _, assignment := range assignments {
+		if assignment.Kind != string(route.TunnelTCP) {
+			continue
+		}
+		rules = append(rules, route.RouteRule{ID: assignment.RouteID, RouteID: assignment.RouteID, Revision: assignment.Revision, RouteGeneration: assignment.Revision,
+			AssignmentID: assignment.AssignmentID, AssignmentGeneration: assignment.AssignmentGeneration, AccountID: assignment.AccountID, HostID: assignment.HostID, TunnelID: assignment.TunnelID,
+			ConnectorID: assignment.ConnectorID, ConnectorSessionID: assignment.ConnectorSessionID, ConnectorProcessGeneration: assignment.ConnectorProcessGeneration,
+			ConfigGeneration: assignment.ConfigGeneration, ConfigContentHash: assignment.ConfigContentHash, MachineIdentityPublicKey: assignment.MachineIdentityPublicKey,
+			MachineIdentityThumbprint: assignment.MachineIdentityThumbprint, Node: assignment.NodeID, EdgeProcessEpoch: assignment.EdgeProcessEpoch,
+			EdgeFailureDomain: assignment.EdgeFailureDomain, Kind: route.TunnelTCP, Protocol: "tcp", AccessMode: "public", Target: assignment.RouteID,
+			PublicTCPListenerID: assignment.PublicTCPListenerID, PublicTCPPort: assignment.PublicTCPPort,
+			DesiredState: assignment.DesiredState, ObservedState: assignment.ObservedState})
+	}
+	sortRouteRules(rules)
+	return rules
+}
+
+func splitCanonicalAssignments(assignments []control.RouteAssignment) (httpAssignments, tcpAssignments, privateAssignments []control.RouteAssignment) {
 	for _, assignment := range assignments {
 		switch assignment.Kind {
 		case string(route.TunnelHTTPSWSS):
 			httpAssignments = append(httpAssignments, assignment)
+		case string(route.TunnelTCP):
+			tcpAssignments = append(tcpAssignments, assignment)
 		case string(route.TunnelPrivateTCP):
 			privateAssignments = append(privateAssignments, assignment)
 		}
 	}
-	return httpAssignments, privateAssignments
+	return httpAssignments, tcpAssignments, privateAssignments
 }
 
 // canonicalAssignmentGroup is the unit of durable route readiness. A
@@ -918,8 +947,9 @@ func canonicalAssignmentGroups(assignments []control.RouteAssignment) []canonica
 }
 
 func (w *RouteWorker) probeCanonicalGroup(ctx context.Context, assignments []control.RouteAssignment) error {
-	httpAssignments, privateAssignments := splitCanonicalAssignments(assignments)
+	httpAssignments, tcpAssignments, privateAssignments := splitCanonicalAssignments(assignments)
 	httpRules := canonicalRouteRules(httpAssignments)
+	tcpRules := canonicalTCPRouteRules(tcpAssignments)
 	privateRules := canonicalPrivateRouteRules(privateAssignments)
 	sortRouteRules(httpRules)
 
@@ -932,6 +962,21 @@ func (w *RouteWorker) probeCanonicalGroup(ctx context.Context, assignments []con
 			ready = w.Carrier.ProbeRoutes
 		}
 		if err := ready(ctx, httpRules); err != nil {
+			return err
+		}
+	}
+	if len(tcpRules) != 0 {
+		if w.Carrier == nil {
+			return route.ErrGenerationNotReady
+		}
+		if err := w.Carrier.ProbeRoutes(ctx, tcpRules); err != nil {
+			return err
+		}
+		binder, ok := w.PublicTCP.(PublicTCPRouteBinder)
+		if !ok {
+			return route.ErrGenerationNotReady
+		}
+		if err := binder.PrepareTCPRoutes(ctx, tcpRules); err != nil {
 			return err
 		}
 	}
@@ -986,7 +1031,7 @@ func (w *RouteWorker) resolveCanonicalGroups(ctx context.Context, candidates, pr
 }
 
 func isCanonicalAssignment(assignment control.RouteAssignment) bool {
-	return assignment.Canonical || assignment.AssignmentID != "" || assignment.Kind == string(route.TunnelHTTPSWSS) || assignment.Kind == string(route.TunnelPrivateTCP) || assignment.ConfigContentHash != ""
+	return assignment.Canonical || assignment.AssignmentID != "" || assignment.Kind == string(route.TunnelHTTPSWSS) || assignment.Kind == string(route.TunnelTCP) || assignment.Kind == string(route.TunnelPrivateTCP) || assignment.ConfigContentHash != ""
 }
 
 // canonicalPendingAdmissionAssignments returns the candidate set needed while
@@ -1203,7 +1248,7 @@ func validateCanonicalAssignment(assignment control.RouteAssignment, nodeID, pro
 	}
 	switch assignment.Kind {
 	case string(route.TunnelHTTPSWSS):
-		if assignment.AccessMode != "public" && assignment.AccessMode != "private" || assignment.PublicHost == "" || assignment.MatchType == "" || assignment.Protocol == "" {
+		if assignment.AccessMode != "public" && assignment.AccessMode != "private" && assignment.AccessMode != "team" || assignment.PublicHost == "" || assignment.MatchType == "" || assignment.Protocol == "" {
 			return route.ErrInvalid
 		}
 		if assignment.MatchType == route.MatchManagedExact {
@@ -1217,6 +1262,10 @@ func validateCanonicalAssignment(assignment control.RouteAssignment, nodeID, pro
 		}
 		if err := validateDomainBindings(assignment.DomainBindings); err != nil {
 			return err
+		}
+	case string(route.TunnelTCP):
+		if assignment.AccessMode != "public" || assignment.Protocol != "tcp" || assignment.PublicHost == "" || assignment.MatchType != route.MatchManagedExact || assignment.PathPrefix != "" || assignment.OriginScheme != "tcp" || assignment.HostOverride != "" || assignment.PreserveHost || len(assignment.DomainBindings) != 0 {
+			return route.ErrInvalid
 		}
 	case string(route.TunnelPrivateTCP):
 		// Private TCP is an access-only carrier binding. It has no public

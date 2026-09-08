@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -28,11 +27,14 @@ type Key struct {
 	Revision    uint64 `json:"route_revision"`
 }
 
-type Counters struct {
-	values sync.Map
-}
+// Revision is report metadata, not part of the server's absolute counter identity.
+func (k Key) counterIdentity() Key { k.Revision = 0; return k }
 
-type atomicCounter struct{ value atomic.Uint64 }
+type Counters struct {
+	mu               sync.Mutex
+	values           map[Key]CounterRecord
+	restoredBaseline map[Key]uint64
+}
 
 type CounterRecord struct {
 	Key   Key    `json:"key"`
@@ -41,77 +43,94 @@ type CounterRecord struct {
 
 func NewCounters() *Counters { return &Counters{} }
 
-// Add records bytes observed at the edge. Counters never decrease.
+func (c *Counters) update(k Key, bytes uint64, add bool) (uint64, uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.values == nil {
+		c.values = make(map[Key]CounterRecord)
+	}
+	identity := k.counterIdentity()
+	record := c.values[identity]
+	previous := record.Bytes
+	if record.Key.Revision <= k.Revision {
+		record.Key = k
+	}
+	if add {
+		if bytes > ^uint64(0)-record.Bytes {
+			record.Bytes = ^uint64(0)
+		} else {
+			record.Bytes += bytes
+		}
+	} else if bytes > record.Bytes {
+		record.Bytes = bytes
+	}
+	c.values[identity] = record
+	return record.Bytes, record.Bytes - previous
+}
+
+// Add records bytes across all revisions, including late bytes from old streams.
 func (c *Counters) Add(k Key, bytes uint64) uint64 {
-	value, _ := c.values.LoadOrStore(k, &atomicCounter{})
-	counter := &value.(*atomicCounter).value
-	for {
-		current := counter.Load()
-		if bytes > ^uint64(0)-current {
-			if counter.CompareAndSwap(current, ^uint64(0)) {
-				return ^uint64(0)
-			}
-			continue
-		}
-		next := current + bytes
-		if counter.CompareAndSwap(current, next) {
-			return next
-		}
-	}
+	total, _ := c.update(k, bytes, true)
+	return total
 }
-
 func (c *Counters) Observe(k Key, absolute uint64) uint64 {
-	value, _ := c.values.LoadOrStore(k, &atomicCounter{})
-	counter := value.(*atomicCounter)
-	for current := counter.value.Load(); absolute > current; current = counter.value.Load() {
-		if counter.value.CompareAndSwap(current, absolute) {
-			return absolute
-		}
-	}
-	return counter.value.Load()
+	total, _ := c.update(k, absolute, false)
+	return total
 }
-
+func (c *Counters) Reconcile(k Key, absolute uint64) uint64 {
+	_, delta := c.update(k, absolute, false)
+	return delta
+}
 func (c *Counters) Get(k Key) uint64 {
-	value, ok := c.values.Load(k)
-	if !ok {
-		return 0
-	}
-	return value.(*atomicCounter).value.Load()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.values[k.counterIdentity()].Bytes
 }
-
 func (c *Counters) Snapshot() []CounterRecord {
-	result := make([]CounterRecord, 0)
-	c.values.Range(func(key, value any) bool {
-		result = append(result, CounterRecord{Key: key.(Key), Bytes: value.(*atomicCounter).value.Load()})
-		return true
-	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	result := make([]CounterRecord, 0, len(c.values))
+	for _, record := range c.values {
+		result = append(result, record)
+	}
 	return result
 }
 
+// Restore accepts durable revision partitions, deduplicates identical records by
+// their maximum absolute value, and sums distinct partitions once. The next
+// snapshot writes exactly one cumulative record per server counter identity.
 func RestoreCounters(records []CounterRecord) *Counters {
 	counters := NewCounters()
+	partitions := make(map[Key]uint64)
 	for _, record := range records {
-		if record.Key.Node == "" || record.Key.Epoch == "" || record.Key.Environment == "" || record.Key.Route == "" || (record.Key.Direction != "ingress" && record.Key.Direction != "egress") {
+		k := record.Key
+		if k.Node == "" || k.Epoch == "" || k.Environment == "" || k.Route == "" || (k.Direction != "ingress" && k.Direction != "egress") {
 			continue
 		}
-		counters.Observe(record.Key, record.Bytes)
+		if record.Bytes > partitions[k] {
+			partitions[k] = record.Bytes
+		}
+	}
+	counters.restoredBaseline = make(map[Key]uint64)
+	for key, bytes := range partitions {
+		counters.Add(key, bytes)
+		identity := key.counterIdentity()
+		// The server could only acknowledge the maximum partition. Any excess
+		// must be reported even when the old durable queue has already emptied.
+		if bytes > counters.restoredBaseline[identity] {
+			counters.restoredBaseline[identity] = bytes
+		}
 	}
 	return counters
 }
 
-// Reconcile applies an absolute observation and returns the newly observed delta.
-func (c *Counters) Reconcile(k Key, absolute uint64) (delta uint64) {
-	value, _ := c.values.LoadOrStore(k, &atomicCounter{})
-	counter := value.(*atomicCounter)
-	for {
-		current := counter.value.Load()
-		if absolute <= current {
-			return 0
-		}
-		if counter.value.CompareAndSwap(current, absolute) {
-			return absolute - current
-		}
+func (c *Counters) baseline(record CounterRecord) uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if value, ok := c.restoredBaseline[record.Key.counterIdentity()]; ok {
+		return value
 	}
+	return record.Bytes
 }
 
 type Report struct {
@@ -181,7 +200,7 @@ func (q *Queue) EnqueueLatest(report Report) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for id, current := range q.pending {
-		if current.Key != report.Key {
+		if current.Key.counterIdentity() != report.Key.counterIdentity() {
 			continue
 		}
 		if report.Bytes <= current.Bytes {
@@ -268,7 +287,7 @@ func (q *Queue) HasKey(key Key) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for _, report := range q.pending {
-		if report.Key == key {
+		if report.Key.counterIdentity() == key.counterIdentity() {
 			return true
 		}
 	}

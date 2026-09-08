@@ -13,7 +13,7 @@ import (
 )
 
 func validInput() Input {
-	return Input{PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test", SignalingHost: "signal.example.test", PrivateUpstream: "127.0.0.1:8080", ListenAddress: ":443", PrivateAccessListenAddress: "127.0.0.1:9443", PrivateAccessToken: "private-access-token-0123456789abcdef", HTTPListenAddress: ":80", AdminAddress: "127.0.0.1:2019", TrustedProxies: []string{"10.0.0.0/8", "fd00::/8"}, IssuerModule: "internal", StreamBrokerPath: "/run/paperboat/frps-stream.sock"}
+	return Input{PreviewBaseDomain: "preview.example.test", TunnelBaseDomain: "tunnels.example.test", RuntimeBaseDomain: "runtime.example.test", SignalingHost: "signal.example.test", PrivateUpstream: "127.0.0.1:8080", ListenAddress: ":443", PrivateAccessListenAddress: "127.0.0.1:9443", PrivateAccessToken: "private-access-token-0123456789abcdef", HTTPListenAddress: ":80", AdminAddress: "127.0.0.1:2019", TrustedProxies: []string{"10.0.0.0/8", "fd00::/8"}, IssuerModule: "internal"}
 }
 
 func TestGenerateCaddyPolicy(t *testing.T) {
@@ -32,12 +32,8 @@ func TestGenerateCaddyPolicy(t *testing.T) {
 		t.Fatalf("unsafe policy: %s", data)
 	}
 	apps := document["apps"].(map[string]any)
-	quicApp := apps["paperboat_quic"].(map[string]any)
-	if quicApp["listen"] != ":443" || quicApp["http_server"] != "paperboat_public" || quicApp["broker_socket"] != "/run/paperboat/frps-stream.sock" {
-		t.Fatalf("native QUIC app = %v", quicApp)
-	}
-	if quicApp["max_streams_per_connection"].(float64) != 3 || quicApp["max_http3_streams_per_connection"].(float64) != 64 {
-		t.Fatalf("QUIC stream limits=%v", quicApp)
+	if _, exists := apps["paperboat_quic"]; exists {
+		t.Fatal("obsolete FRPS stream-broker app remains")
 	}
 	policies := apps["tls"].(map[string]any)["automation"].(map[string]any)["policies"].([]any)
 	automation := apps["tls"].(map[string]any)["automation"].(map[string]any)
@@ -69,7 +65,7 @@ func TestGenerateCaddyPolicy(t *testing.T) {
 	}
 	server := servers["paperboat_public"].(map[string]any)
 	protocols := server["protocols"].([]any)
-	if len(protocols) != 2 || protocols[0] != "h1" || protocols[1] != "h2" {
+	if len(protocols) != 3 || protocols[0] != "h1" || protocols[1] != "h2" || protocols[2] != "h3" {
 		t.Fatalf("normal HTTP server protocols = %v", protocols)
 	}
 	if server["trusted_proxies_strict"].(float64) != 1 {

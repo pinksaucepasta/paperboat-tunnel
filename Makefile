@@ -39,11 +39,9 @@ submodule-check:
 	@test "$$(git -C $(FRP_DIR) rev-parse HEAD)" = "$(FRP_COMMIT)" || { echo "frp must be pinned to $(FRP_VERSION) ($(FRP_COMMIT))" >&2; exit 1; }
 	@test -z "$$(git -C $(FRP_DIR) status --short)" || { echo "frp submodule has local changes" >&2; exit 1; }
 
-build: verify-toolchain submodule-check
+build: verify-toolchain
 	@mkdir -p bin
 	CGO_ENABLED=0 $(GO) build $(BUILD_FLAGS) -o bin/paperboat-tunnel ./cmd/paperboat-tunnel
-	cd $(FRP_DIR) && CGO_ENABLED=0 $(GO) build $(BUILD_FLAGS) -ldflags "-s -w" -tags "frps,$(FRP_TAGS)" -o ../bin/frps ./cmd/frps
-	cd $(FRP_DIR) && CGO_ENABLED=0 $(GO) build $(BUILD_FLAGS) -ldflags "-s -w" -tags "frpc,$(FRP_TAGS)" -o ../bin/frpc ./cmd/frpc
 
 fmt:
 	@if test -n "$(OWNED_GO_FILES)"; then $(GOFMT) -w $(OWNED_GO_FILES); fi

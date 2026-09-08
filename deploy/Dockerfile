@@ -9,7 +9,6 @@ WORKDIR /src
 COPY . .
 RUN printf '%s\n' "${PAPERBOAT_VERSION}" | grep -Eq '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.(0|[1-9][0-9]*)$' \
   && CGO_ENABLED=0 go build -p=2 -trimpath -ldflags='-s -w' -o /out/paperboat-tunnel ./cmd/paperboat-tunnel
-RUN cd frp && CGO_ENABLED=0 go build -p=2 -trimpath -buildvcs=false -ldflags='-s -w' -tags='frps,noweb' -o /out/frps ./cmd/frps
 
 FROM golang:${GO_VERSION}-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b AS caddy-build
 ARG CADDY_VERSION
@@ -32,7 +31,6 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --system --home /var/lib/paperboat-tunnel --create-home paperboat-tunnel
 COPY --from=go-build /out/paperboat-tunnel /usr/local/bin/paperboat-tunnel
-COPY --from=go-build /out/frps /usr/local/bin/frps
 COPY --from=caddy-build /src/caddy /usr/local/bin/caddy
 RUN install -d -o paperboat-tunnel -g paperboat-tunnel /var/lib/paperboat-tunnel/runtime /var/lib/paperboat-tunnel/state
 USER paperboat-tunnel

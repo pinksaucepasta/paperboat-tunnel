@@ -86,6 +86,8 @@ type RouteRule struct {
 	Priority                   int
 	Target                     string
 	Protocol                   string
+	PublicTCPListenerID        string
+	PublicTCPPort              uint16
 	OriginScheme               string
 	AccessMode                 string
 	PreserveHost               bool

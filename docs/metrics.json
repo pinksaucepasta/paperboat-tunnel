@@ -31,8 +31,8 @@
       "labels": {
         "dependency": [
           "caddy",
+          "carrier",
           "control",
-          "frps",
           "routes",
           "signaling",
           "stun",

@@ -524,6 +524,7 @@
         "records": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "$ref": "#/definitions/dns_record_instruction" } },
         "certificate_strategy": { "type": "string", "minLength": 1, "maxLength": 128 },
         "verification_state": { "enum": ["requested", "waiting_dns", "verified", "issuing_tls", "ready", "conflict", "dns_error", "tls_error", "expired", "quarantined"] },
+        "public_tcp_port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
         "note": { "type": "string", "minLength": 1, "maxLength": 512 }
       },
       "additionalProperties": false

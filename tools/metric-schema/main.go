@@ -95,7 +95,7 @@ func verifyHandler() error {
 		ActiveStreams: func() uint32 { return 1 }, RouteCount: func() int { return 1 },
 		Usage:      func() usage.QueueStats { return usage.QueueStats{MaxReports: 8, MaxBytes: 1024} },
 		ControlErr: func() error { return nil }, RouteErr: func() error { return nil }, UsageErr: func() error { return nil },
-		FRPRunning: func() bool { return true }, CaddyRunning: func() bool { return true },
+		CarrierRunning: func() bool { return true }, CaddyRunning: func() bool { return true },
 		STUN: func() observability.STUNStats { return observability.STUNStats{Running: true, Accepted: 1} },
 		Signaling: func() observability.SignalingStats {
 			return observability.SignalingStats{Running: true, Sessions: 1, Attachments: 1, Capacity: 8}

@@ -13,23 +13,35 @@ func TestLoadDeploymentStrictProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if deployment.ConnectorTCPPort != 26023 || deployment.ConnectorQUICPort != 26023 || deployment.STUNListenAddress != "0.0.0.0:3478" || deployment.PreviewBaseDomain != "preview.example.test" || deployment.TunnelBaseDomain != "tunnels.example.test" || deployment.RuntimeBaseDomain != "runtime.example.test" || deployment.SignalingHost != "signal.example.test" || deployment.SignalingCapacity != 4096 || deployment.NodeCapacity != 128 {
+	if deployment.CarrierTCPListenAddress != "0.0.0.0:27443" || deployment.CarrierQUICListenAddress != "0.0.0.0:27444" || deployment.STUNListenAddress != "0.0.0.0:3478" || deployment.PreviewBaseDomain != "preview.example.test" || deployment.TunnelBaseDomain != "tunnels.example.test" || deployment.RuntimeBaseDomain != "runtime.example.test" || deployment.SignalingHost != "signal.example.test" || deployment.SignalingCapacity != 4096 || deployment.NodeCapacity != 128 {
 		t.Fatalf("deployment = %+v", deployment)
+	}
+}
+
+func TestBrowserRolloutRequiresDistributedHostnameIsolation(t *testing.T) {
+	// Neither DNS readiness nor an operator's enable flag substitutes for the
+	// browser public-suffix boundary. Existing public/native startup stays valid.
+	base := strings.TrimSuffix(validDeploymentJSON(), "}")
+	if _, err := LoadDeployment(writeDeployment(t, base+`,"browser_access_enabled":true,"browser_login_origin":"https://login.example.test"}`)); err == nil {
+		t.Fatal("enabled browser access without PSL isolation")
+	}
+	if _, err := LoadDeployment(writeDeployment(t, base+`,"browser_access_enabled":false,"browser_login_origin":"https://login.example.test"}`)); err != nil {
+		t.Fatal(err)
 	}
 }
 
 func TestLoadDeploymentRejectsUnsafeProfiles(t *testing.T) {
 	for _, mutate := range []func(string) string{
 		func(value string) string { return strings.Replace(value, "https://", "http://", 1) },
-		func(value string) string { return strings.Replace(value, "127.0.0.1:18082", "0.0.0.0:18082", 1) },
+		func(value string) string { return strings.Replace(value, "127.0.0.1:18085", "0.0.0.0:18085", 1) },
 		func(value string) string {
-			return strings.Replace(value, `"frps_sha256":"`+strings.Repeat("a", 64)+`"`, `"frps_sha256":"bad"`, 1)
+			return strings.Replace(value, `"caddy_sha256":"`+strings.Repeat("b", 64)+`"`, `"caddy_sha256":"bad"`, 1)
 		},
 		func(value string) string {
 			return strings.Replace(value, `"node_capacity":128`, `"node_capacity":0`, 1)
 		},
 		func(value string) string {
-			return strings.Replace(value, `"stun_listen_address":"0.0.0.0:3478"`, `"stun_listen_address":"0.0.0.0:26023"`, 1)
+			return strings.Replace(value, `"stun_listen_address":"0.0.0.0:3478"`, `"stun_listen_address":"0.0.0.0:27444"`, 1)
 		},
 		func(value string) string {
 			return strings.Replace(value, `"preview_base_domain":"preview.example.test"`, `"preview_base_domain":"PREVIEW.example.test"`, 1)
@@ -84,7 +96,7 @@ func TestLoadDeploymentAcceptsBoundedPublicRoutes(t *testing.T) {
 }
 
 func validDeploymentJSON() string {
-	return `{"control_url":"https://edge-control.example.test","control_credential_file":"/opt/paperboat-tunnel/private/control.credential","jwks_file":"/opt/paperboat-tunnel/private/jwks.json","revocations_file":"/opt/paperboat-tunnel/private/revocations.json","usage_signing_key_file":"/opt/paperboat-tunnel/private/usage.key","frps_binary":"/opt/paperboat-tunnel/bin/frps","frps_sha256":"` + strings.Repeat("a", 64) + `","caddy_binary":"/opt/paperboat-tunnel/bin/caddy","caddy_sha256":"` + strings.Repeat("b", 64) + `","runtime_directory":"/opt/paperboat-tunnel/runtime","hook_address":"127.0.0.1:18082","hook_path":"/private/paperboat-hook-0123456789abcdef","connector_bind_address":"0.0.0.0","connector_advertise_host":"edge.example.test","connector_tcp_port":26023,"connector_quic_port":26023,"carrier_tcp_listen_address":"0.0.0.0:27443","carrier_quic_listen_address":"0.0.0.0:27444","stun_listen_address":"0.0.0.0:3478","private_vhost_address":"127.0.0.1:18083","edge_gateway_address":"127.0.0.1:18085","caddy_listen_address":"127.0.0.1:18443","caddy_private_access_listen_address":"127.0.0.1:19443","caddy_http_listen_address":"127.0.0.1:18080","caddy_admin_address":"127.0.0.1:18084","preview_base_domain":"preview.example.test","tunnel_base_domain":"tunnels.example.test","runtime_base_domain":"runtime.example.test","signaling_host":"signal.example.test","signaling_capacity":4096,"trusted_proxy_cidrs":["127.0.0.1/32"],"certificate_issuer":"internal","node_capacity":128,"control_interval":5000000000,"usage_interval":10000000000,"control_timeout":5000000000}`
+	return `{"control_url":"https://edge-control.example.test","control_credential_file":"/opt/paperboat-tunnel/private/control.credential","jwks_file":"/opt/paperboat-tunnel/private/jwks.json","revocations_file":"/opt/paperboat-tunnel/private/revocations.json","usage_signing_key_file":"/opt/paperboat-tunnel/private/usage.key","caddy_binary":"/opt/paperboat-tunnel/bin/caddy","caddy_sha256":"` + strings.Repeat("b", 64) + `","runtime_directory":"/opt/paperboat-tunnel/runtime","connector_advertise_host":"edge.example.test","carrier_tcp_listen_address":"0.0.0.0:27443","carrier_quic_listen_address":"0.0.0.0:27444","stun_listen_address":"0.0.0.0:3478","edge_gateway_address":"127.0.0.1:18085","caddy_listen_address":"127.0.0.1:18443","caddy_private_access_listen_address":"127.0.0.1:19443","caddy_http_listen_address":"127.0.0.1:18080","caddy_admin_address":"127.0.0.1:18084","preview_base_domain":"preview.example.test","tunnel_base_domain":"tunnels.example.test","runtime_base_domain":"runtime.example.test","signaling_host":"signal.example.test","signaling_capacity":4096,"trusted_proxy_cidrs":["127.0.0.1/32"],"certificate_issuer":"internal","node_capacity":128,"control_interval":5000000000,"usage_interval":10000000000,"control_timeout":5000000000}`
 }
 
 func writeDeployment(t *testing.T, value string) string {

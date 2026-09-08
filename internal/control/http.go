@@ -231,7 +231,7 @@ func (c *HTTPClient) DesiredRouteSnapshot(ctx context.Context, nodeID, processEp
 	routes := make([]RouteAssignment, 0, len(result.Routes))
 	canonical := false
 	for _, wire := range result.Routes {
-		isCanonical := wire.AssignmentID != "" || wire.Kind == "tunnel_http_wss" || wire.Kind == "tunnel_private_tcp" || wire.ConfigContentHash != ""
+		isCanonical := wire.AssignmentID != "" || wire.Kind == "tunnel_http_wss" || wire.Kind == "tunnel_tcp" || wire.Kind == "tunnel_private_tcp" || wire.ConfigContentHash != ""
 		if isCanonical {
 			canonical = true
 		}

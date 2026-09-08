@@ -83,7 +83,7 @@
         "owner_device_id": { "$ref": "#/definitions/id" },
         "owner_session_id": { "$ref": "#/definitions/id" },
         "target": { "$ref": "#/definitions/target" },
-        "access_mode": { "enum": ["public", "private"] },
+        "access_mode": { "enum": ["public", "private", "team"] },
         "endpoint": {
           "type": "string",
           "format": "uri",
@@ -103,8 +103,23 @@
         "idempotency_key": { "$ref": "#/definitions/trace_key" },
         "request_id": { "$ref": "#/definitions/trace_id" },
         "correlation_id": { "$ref": "#/definitions/trace_id" },
+        "lazy": {
+          "type": "object",
+          "required": ["policy_id", "policy_generation", "installation_generation", "boot_id"],
+          "properties": {
+            "policy_id": { "$ref": "#/definitions/id" },
+            "policy_generation": { "type": "integer", "minimum": 1 },
+            "installation_generation": { "type": "integer", "minimum": 1 },
+            "boot_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{16,64}$" }
+          },
+          "additionalProperties": false
+        },
         "request_hash": { "$ref": "#/definitions/request_hash" }
       },
+      "allOf": [{
+        "if": { "required": ["lazy"] },
+        "then": { "properties": { "access_mode": { "enum": ["private", "team"] } } }
+      }],
       "additionalProperties": false
     },
     "dispatch_outcome": {

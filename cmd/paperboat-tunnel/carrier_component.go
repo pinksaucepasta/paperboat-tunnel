@@ -68,7 +68,7 @@ func newCarrierComponentWithTelemetry(
 		authorizers = append(authorizers, accessorExpected)
 	}
 	carrierConfig.Authorize = datacarrier.AnyAuthorizer(authorizers...)
-	service, err := datacarrier.NewService(context.Background(), datacarrier.ServiceConfig{
+	service, err := datacarrier.NewHTTPService(context.Background(), datacarrier.ServiceConfig{
 		Carrier: carrierConfig,
 		TCP:     &datacarrier.EndpointConfig{Address: deployment.CarrierTCPListenAddress, TLS: tlsConfig, PeerBinding: peerBinding},
 		QUIC:    &datacarrier.EndpointConfig{Address: deployment.CarrierQUICListenAddress, TLS: tlsConfig, PeerBinding: peerBinding},
@@ -192,7 +192,7 @@ func newCarrierComponentWithTelemetry(
 			return ctx.Err()
 		}
 	}
-	assembly, err := edgeruntime.NewDataCarrierAssemblyWithTelemetry(service, handle, maximumHandlers, nil, carrierTelemetry)
+	assembly, err := edgeruntime.NewCarrierAssembly(edgeruntime.CarrierAssemblyConfig{Service: service, Handle: handle, MaximumHandlers: maximumHandlers, Telemetry: carrierTelemetry})
 	if err != nil {
 		_ = service.Close()
 		return nil, nil, fmt.Errorf("create carrier assembly: %w", err)

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-tunnel/internal/strictjson"
+	"golang.org/x/net/publicsuffix"
 )
 
 const maxDeploymentBytes = 1 << 20
@@ -22,6 +23,8 @@ const maxDeploymentBytes = 1 << 20
 var routeBaseDomainPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 type Deployment struct {
+	BrowserAccessEnabled   bool   `json:"browser_access_enabled"`
+	BrowserLoginOrigin     string `json:"browser_login_origin"`
 	ControlURL             string `json:"control_url"`
 	CredentialIssuer       string `json:"credential_issuer"`
 	ControlCredentialFile  string `json:"control_credential_file"`
@@ -29,26 +32,16 @@ type Deployment struct {
 	JWKSFile               string `json:"jwks_file"`
 	RevocationsFile        string `json:"revocations_file"`
 	UsageSigningKeyFile    string `json:"usage_signing_key_file"`
-	FRPSBinary             string `json:"frps_binary"`
-	FRPSSHA256             string `json:"frps_sha256"`
-	FRPSLogLevel           string `json:"frps_log_level,omitempty"`
 	CaddyBinary            string `json:"caddy_binary"`
 	CaddySHA256            string `json:"caddy_sha256"`
 	RuntimeDirectory       string `json:"runtime_directory"`
-	HookAddress            string `json:"hook_address"`
-	HookPath               string `json:"hook_path"`
-	ConnectorBindAddress   string `json:"connector_bind_address"`
 	ConnectorAdvertiseHost string `json:"connector_advertise_host"`
-	ConnectorTCPPort       int    `json:"connector_tcp_port"`
-	ConnectorQUICPort      int    `json:"connector_quic_port"`
 	// Carrier listeners are dedicated connector-v1 data-plane endpoints. They
-	// are separate from the legacy FRP ports and require mutual TLS plus the
+	// require mutual TLS plus the
 	// server's admission-backed peer binding.
 	CarrierTCPListenAddress         string `json:"carrier_tcp_listen_address,omitempty"`
 	CarrierQUICListenAddress        string `json:"carrier_quic_listen_address,omitempty"`
 	STUNListenAddress               string `json:"stun_listen_address"`
-	ConnectorTCPMux                 *bool  `json:"connector_tcp_mux,omitempty"`
-	PrivateVhostAddress             string `json:"private_vhost_address"`
 	EdgeGatewayAddress              string `json:"edge_gateway_address"`
 	CaddyListenAddress              string `json:"caddy_listen_address"`
 	CaddyPrivateAccessListenAddress string `json:"caddy_private_access_listen_address"`
@@ -95,13 +88,7 @@ func LoadDeployment(path string) (Deployment, error) {
 	if deployment.CredentialIssuer == "" {
 		deployment.CredentialIssuer = deployment.ControlURL
 	}
-	if deployment.FRPSLogLevel == "" {
-		deployment.FRPSLogLevel = "error"
-	}
-	if deployment.ConnectorTCPMux == nil {
-		enabled := true
-		deployment.ConnectorTCPMux = &enabled
-	}
+
 	if err := deployment.validate(); err != nil {
 		return Deployment{}, invalid("deployment config", err)
 	}
@@ -117,7 +104,7 @@ func (d Deployment) validate() error {
 	if err != nil || issuer.Scheme != "https" || issuer.Host == "" || issuer.User != nil || issuer.RawQuery != "" || issuer.Fragment != "" {
 		return errors.New("credential_issuer must be an HTTPS origin")
 	}
-	for _, path := range []string{d.ControlCredentialFile, d.JWKSFile, d.RevocationsFile, d.UsageSigningKeyFile, d.FRPSBinary, d.CaddyBinary, d.RuntimeDirectory} {
+	for _, path := range []string{d.ControlCredentialFile, d.JWKSFile, d.RevocationsFile, d.UsageSigningKeyFile, d.CaddyBinary, d.RuntimeDirectory} {
 		if path == "" || !filepath.IsAbs(path) || len(path) > 4096 {
 			return errors.New("deployment paths must be bounded and absolute")
 		}
@@ -140,7 +127,7 @@ func (d Deployment) validate() error {
 	if endpointPort(d.CarrierTCPListenAddress) == endpointPort(d.CarrierQUICListenAddress) {
 		return errors.New("carrier TCP and QUIC listeners must use distinct ports")
 	}
-	for _, digest := range []string{d.FRPSSHA256, d.CaddySHA256} {
+	for _, digest := range []string{d.CaddySHA256} {
 		if digest == "" {
 			continue
 		}
@@ -151,28 +138,13 @@ func (d Deployment) validate() error {
 			return errors.New("artifact checksums must be SHA-256")
 		}
 	}
-	if d.FRPSLogLevel != "error" && d.FRPSLogLevel != "warn" && d.FRPSLogLevel != "info" {
-		return errors.New("frps_log_level is invalid")
-	}
-	if err := privateEndpoint(d.HookAddress); err != nil {
-		return err
-	}
-	if err := privateEndpoint(d.PrivateVhostAddress); err != nil {
-		return err
-	}
 	if err := privateEndpoint(d.EdgeGatewayAddress); err != nil {
 		return err
 	}
 	if err := privateEndpoint(d.CaddyAdminAddress); err != nil {
 		return err
 	}
-	if d.HookPath == "" || !strings.HasPrefix(d.HookPath, "/") || len(d.HookPath) > 256 {
-		return errors.New("hook_path is invalid")
-	}
-	if net.ParseIP(d.ConnectorBindAddress) == nil || d.ConnectorTCPPort < 1 || d.ConnectorTCPPort > 65535 || d.ConnectorQUICPort < 1 || d.ConnectorQUICPort > 65535 {
-		return errors.New("connector listener configuration is invalid")
-	}
-	if err := publicUDPEndpoint(d.STUNListenAddress); err != nil || endpointPort(d.STUNListenAddress) == d.ConnectorQUICPort {
+	if err := publicUDPEndpoint(d.STUNListenAddress); err != nil || endpointPort(d.STUNListenAddress) == endpointPort(d.CarrierQUICListenAddress) {
 		return errors.New("STUN listener configuration is invalid")
 	}
 	if d.ConnectorAdvertiseHost == "" || len(d.ConnectorAdvertiseHost) > 253 || strings.ContainsAny(d.ConnectorAdvertiseHost, "/:@") {
@@ -186,6 +158,26 @@ func (d Deployment) validate() error {
 	}
 	if _, _, err := net.SplitHostPort(d.CaddyHTTPListenAddress); err != nil || d.CaddyHTTPListenAddress == d.CaddyListenAddress {
 		return errors.New("Caddy HTTP listener is invalid")
+	}
+	if d.BrowserAccessEnabled {
+		login, e := url.Parse(d.BrowserLoginOrigin)
+		if e != nil || login.Scheme != "https" || login.Host == "" || login.User != nil || login.Path != "" || login.RawQuery != "" || login.Fragment != "" {
+			return errors.New("browser access requires exact trusted HTTPS origin and distributed PSL hostname isolation")
+		}
+		for _, domain := range []string{d.PreviewBaseDomain, d.TunnelBaseDomain} {
+			suffix, _ := publicsuffix.PublicSuffix(domain)
+			if suffix != domain || login.Hostname() == domain || strings.HasSuffix(login.Hostname(), "."+domain) {
+				return errors.New("browser access requires exact trusted HTTPS origin and distributed PSL hostname isolation")
+			}
+			parent := strings.SplitN(domain, ".", 2)
+			if len(parent) != 2 {
+				return errors.New("browser access requires exact trusted HTTPS origin and distributed PSL hostname isolation")
+			}
+			suffix, _ = publicsuffix.PublicSuffix(parent[1])
+			if suffix != parent[1] {
+				return errors.New("browser access requires exact trusted HTTPS origin and distributed PSL hostname isolation")
+			}
+		}
 	}
 	for _, domain := range []string{d.PreviewBaseDomain, d.TunnelBaseDomain, d.RuntimeBaseDomain} {
 		if !routeBaseDomainPattern.MatchString(domain) || net.ParseIP(domain) != nil {

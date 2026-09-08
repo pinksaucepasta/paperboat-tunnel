@@ -171,6 +171,13 @@ ready acknowledgements, activate the new generation atomically, and only then
 retire the old generation. Revocation is a distinct terminal state and is retried
 against the durable target set after restart.
 
+Domains bound to a public `tcp` route use `certificate_strategy: "none"` and
+`certificate.state: "not_applicable"`. Their DNS instructions include the stable
+assigned `public_tcp_port` separately from the origin port. DNS verification makes
+the hostname usable at that port; it does not provide hostname routing, a default
+port, a dedicated IP, or HTTP edge TLS. The edge passes application TLS bytes
+unchanged and never uses client SNI to select the Paperboat route.
+
 The server's `POST /v1/previews` response includes the durable create operation ID in
 the safe `X-Paperboat-Operation-ID` header on both the 202 operation response and an
 exact 200 replay. The CLI observes that operation while the stable host runtime resumes
@@ -407,10 +414,10 @@ times are UTC instants, and all fields below are required unless marked optional
 | Declaration | Fields and invariant | Producer → consumer |
 | --- | --- | --- |
 | Resource binding | `account_id`, `resource_kind` (preview_lease/tunnel), `resource_id`, `resource_generation`, `route_id`, `route_generation`, `target_id`, `target_generation`, `audience`, `connection_method`; exact normalized hostname, path match and protocol | Server desired state → edge and daemon |
-| Target binding | Above binding plus `owner_device_id`, `installation_generation`, `boot_id`, `owner_session_id`, `service_instance_id`, exact scheme/address and origin TLS policy; durable tunnels use their explicitly configured connector/target ownership, not a synthetic preview session | Server-approved daemon registration → server projection → edge/daemon |
+| Target binding | Above binding plus `owner_device_id`, `installation_generation`, `boot_id`, exact scheme/address and origin TLS policy; explicit previews also bind `owner_session_id`, while lazy leases bind current daemon registration and policy ownership; durable tunnels use their explicitly configured connector/target ownership, not a synthetic preview session | Server-approved daemon registration → server projection → edge/daemon |
 | Subject grant | `grant_id`, `grant_generation`, principal user or scoped machine identity, exact resource/route/target selector, actions subset of view/inspect/replay, `expires_at`; team grants also bind `team_id` and `membership_generation` | Server membership/resource authorization → edge/daemon |
 | Edge decision | Exact resolved binding, principal, granted action, `policy_generation`, optional membership/grant generations when applicable, `issued_at`, `expires_at`, `decision_id`; additionally connector session/process, config/assignment generations and edge node/process epoch | Server authorization → authenticated edge → exact daemon stream |
-| Lazy policy | `policy_id`, `policy_generation`, owner/environment identity, audience private/team, exact allowed targets, ownership mode session/persistent_port, reservation identity, expiry, and limits below | Owner mutation at server → daemon activation and edge lookup |
+| Lazy policy | `policy_id`, `policy_generation`, owner/environment identity, audience private/team, exact allowed targets with permission following replacement listeners, reservation identity, expiry, and limits below | Owner mutation at server → daemon activation and edge lookup |
 
 No caller can supply identity as authority. Server resolves selectors against
 current state and returns the exact binding, not an account-wide forwarding grant.
@@ -419,6 +426,13 @@ address, TLS trust/SNI, ownership, audience, grants, or route match changes fenc
 relevant generation before reuse. Heartbeat-only lease extension does not replace
 the target identity. Native pair generation remains owned by the p2p-v1 contract;
 these resource generations cannot mint or replace pair authority.
+
+Task 26's implemented stable-preview authorization binds `route_generation` from
+the ready attachment and rechecks it for each browser decision. The preview lease
+heartbeat extends liveness through its own current lease ETag; it neither supplies
+route authority nor substitutes for the attachment's route generation. Production
+enablement still depends on the selected Public Suffix List isolation gate above;
+the development HTTP origin is not evidence that this rollout prerequisite passed.
 
 The edge authenticates and authorizes the exact selected route before requesting
 activation, probing the origin, or opening forwarding. The daemon independently
@@ -523,6 +537,14 @@ a gap or reconnect requires an authoritative snapshot before extending decisions
 Every cache key includes principal, action, full binding and policy/grant generations.
 A cache hit never resets issued_at; renewal rechecks authoritative state.
 
+The current Task 26 browser implementation keeps no per-principal permission cache
+or replicated permission state at the edge. Every request and each five-second
+active-stream refresh reads the server's authoritative database and receives a
+decision expiring within ten seconds, enforced by a monotonic local deadline. The
+ordered invalidation/snapshot rules above remain requirements for future caching
+consumers; no browser invalidation event stream is claimed by this direct-read path,
+and an unavailable authority read cannot extend an earlier decision.
+
 Refresh active decisions by 5 seconds. Stop new requests and close both directions
 of active HTTP bodies, WebSockets, SSE, gRPC and TCP streams by **15 seconds after
 committed revocation**, including up to 5 seconds for bounded cancellation/close.
@@ -546,23 +568,23 @@ Other target types require explicit creation/configuration. A reservation is ret
 until owner deletion, which tombstones its label permanently; it carries no access
 right and consumes no connector/origin resources while dormant.
 
-Session ownership is the default: bind installation generation, fresh boot ID,
-owner-session nonce and daemon-registered service-instance identity. PID or a port
-number alone is insufficient. Verify the same registered listener/service instance
-before every connection; an unprovable or changed identity fails closed as
-`owner_replaced`, even if a new application listens on the same port. The owning
-process/session ending invalidates its lease. A platform unable to prove this
-binding cannot offer session-mode lazy activation until its gate is implemented;
-it may offer an explicitly approved persistent-port policy instead.
+Lazy permission shares the approved exact port by default and follows replacement
+listeners at that target within the approved environment. The owner approves the
+device and target; applications need no registration, PID checks or service-instance
+proof. Bind the policy and each activation to the owner device, installation
+generation, fresh daemon boot ID and current authenticated daemon registration.
+Application exit does not revoke the port policy; a missing listener is
+`origin_unavailable`. Changed device, installation, boot or policy bindings fence
+old activations and leases; they cannot adopt a replacement registration implicitly.
 
-`persistent_port` is explicit permission for any replacement listener at that exact
-port within the approved environment. The UI says so when granting it. It persists
-as policy across service restarts, not as a preview lease across reboot. A fresh,
-authenticated owner registration for the current installation and boot is required
-before a post-reboot request can create a new lease. Machine re-enrollment or transfer
-requires owner reapproval; an old reservation or still-valid team membership cannot
-adopt a new machine. It never starts apps, scans, wakes devices, or restores a
-forwarder during boot. Durable tunnel reboot reconciliation remains Task 28.
+Port permission persists as policy across application and daemon restarts, not as
+a preview lease across reboot. A fresh, authenticated daemon registration for the
+current installation and boot is required before a post-reboot request can create
+a new lease. Machine re-enrollment or transfer requires owner reapproval; an old
+reservation or still-valid team membership cannot adopt a new machine. Current
+owner/team grants, exact target authorization, revocation and lease deadlines remain
+mandatory. It never starts apps, scans, wakes devices, or restores a forwarder during
+boot. Durable tunnel reboot reconciliation remains Task 28.
 
 | Lazy policy budget | Fixed v1 value and exhaustion behavior |
 | --- | --- |
@@ -581,6 +603,11 @@ forwarder during boot. Durable tunnel reboot reconciliation remains Task 28.
 After authorization, distinguish `host_offline`, `origin_unavailable`,
 `activation_timeout`, `owner_replaced`, `generation_conflict`, and
 `forwarding_failed`. Only an exact usable route/carrier/origin becomes ready.
+Lazy HTTP readiness uses one bounded `HEAD /` request to the exact approved target,
+with no redirects or response-body retention. A protocol failure or 5xx response is
+`origin_unavailable`; 2xx–4xx proves HTTP availability without bypassing application
+authentication or requiring a particular application route. There is no hidden
+origin-probe retry within a failed activation.
 At generation change cancel pending activation and discard its late result.
 Idle expiry releases only this lease's resources; stop/delete/revoke fences aliases
 and active work without closing a shared connector needed by other resources.
