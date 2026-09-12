@@ -394,7 +394,8 @@ func buildServiceWithCarrier(cfg config.Config, deployment config.Deployment, ca
 	if deployment.BrowserAccessEnabled {
 		browserAccess = &edgehttp.BrowserAccess{Authority: &control.BrowserAccessClient{HTTP: client, NodeID: cfg.NodeID, ProcessEpoch: processEpoch}, LoginOrigin: deployment.BrowserLoginOrigin}
 	}
-	gateway, err := edgehttp.NewGatewayWithTransports(edgehttp.Config{BrowserAccess: browserAccess, PreviewBaseDomain: deployment.PreviewBaseDomain, TunnelBaseDomain: deployment.TunnelBaseDomain, RuntimeBaseDomain: deployment.RuntimeBaseDomain, TrustedProxies: trusted, MaxHeaderBytes: 32 << 10, MaxBodyBytes: 50 << 20, Routes: routeMatcher, PrivateAccessToken: internalToken, PrivateAccessConnections: privateConnections, Readiness: previewReadiness{Canonical: previewRoutes, Fallback: routes}, HelperAccess: verifier, Revocations: trust.Snapshot, RevocationCheckInterval: deployment.ControlInterval}, "", previewForwarder, durableForwarder)
+	inspectorAccess := &edgehttp.InspectorEdgeAccess{Authority: &control.InspectorAccessClient{HTTP: client, NodeID: cfg.NodeID, ProcessEpoch: processEpoch}, Carriers: durableRoutes, PreviewCarriers: previewRoutes}
+	gateway, err := edgehttp.NewGatewayWithTransports(edgehttp.Config{BrowserAccess: browserAccess, InspectorAccess: inspectorAccess, PreviewBaseDomain: deployment.PreviewBaseDomain, TunnelBaseDomain: deployment.TunnelBaseDomain, RuntimeBaseDomain: deployment.RuntimeBaseDomain, TrustedProxies: trusted, MaxHeaderBytes: 32 << 10, MaxBodyBytes: 50 << 20, Routes: routeMatcher, PrivateAccessToken: internalToken, PrivateAccessConnections: privateConnections, Readiness: previewReadiness{Canonical: previewRoutes, Fallback: routes}, HelperAccess: verifier, Revocations: trust.Snapshot, RevocationCheckInterval: deployment.ControlInterval}, "", previewForwarder, durableForwarder)
 	if err != nil {
 		return nil, fmt.Errorf("create edge gateway: %w", err)
 	}

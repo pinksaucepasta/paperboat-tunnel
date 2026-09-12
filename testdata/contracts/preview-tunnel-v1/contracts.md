@@ -661,6 +661,19 @@ neither action. Even the owner must enable capture/raw mode explicitly. Grants a
 checked on daemon-local retrieval and again on replay, against current server
 resource authority with the same 10-second freshness/15-second revocation limits.
 
+Inspector credentials are short-lived opaque tokens the server mints only for
+the caller's own current authority: exact resource, route, principal,
+generations and one action (`inspect` or `replay`), valid at most five minutes.
+Issuance requires current resource ownership or an explicit team
+`inspect`/`replay` grant for that action; login, team membership, preview
+viewing (`use`), management (`manage`) and machine connectivity alone are
+denied and mint nothing. The daemon presents each credential on its
+machine-authenticated control channel; the server re-resolves live owner/team
+authority and returns a 10-second decision, and the machine account must equal
+the resource owner. Retrieval, detail and audit require `inspect`; replay,
+capture-policy changes and purge require `replay`; no action implies another.
+Denied operations change no daemon or server state.
+
 Replay accepts only capture ID, expected resource/target generations and an
 idempotency key; it has no destination, header or body override. It reuses exact
 supported request method/path/body and application headers, removes hop-by-hop and
@@ -676,7 +689,19 @@ Keep safe action-key/outcome metadata for the 15-minute capture lifetime; after
 expiry the old capture ID is unavailable, not reconstructed. Provider signature
 expiry is an origin result; do not bypass, re-sign, or claim provider redelivery.
 
-CLI retrieval uses native authenticated daemon access. The local dashboard uses an
+Native CONNECT carries application-owned TLS unchanged. For that opaque path,
+inspection records only bounded connection metadata with an explicit unsupported,
+non-replayable payload state; it retains neither TLS ciphertext nor invented HTTP
+request/response fields. Body inspection and replay apply only to HTTP exchanges
+terminated by the daemon. Enabling capture never terminates application TLS or
+changes native end-to-end encryption to an edge path.
+
+CLI retrieval uses native authenticated daemon access. Inspector target discovery
+uses the exact inspect/replay action; application use or machine management is not
+a prerequisite. Native admission binds the short-lived inspector credential to the
+requesting CLI and authoritative owner machine, with an inspector-only network scope.
+Owner routing is resolved by the server; callers cannot supply daemon addresses.
+Native retrieval remains available without a ready edge connection. The local dashboard uses an
 explicit authenticated edge inspection channel to the daemon at Task 32: it displays
 that edge TLS termination exposes retrieved capture data to the edge. Nothing is
 archived at the control plane/edge, responses are no-store, and native private

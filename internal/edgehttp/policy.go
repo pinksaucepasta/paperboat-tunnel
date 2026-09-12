@@ -35,6 +35,7 @@ type RouteMatcher interface {
 
 type Config struct {
 	BrowserAccess            *BrowserAccess
+	InspectorAccess          *InspectorEdgeAccess
 	PreviewBaseDomain        string
 	TunnelBaseDomain         string
 	RuntimeBaseDomain        string
@@ -227,6 +228,14 @@ func ParseTrustedProxies(values []string) ([]*net.IPNet, error) {
 }
 
 func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, inspectorEdgePrefix) {
+		if p.config.InspectorAccess == nil {
+			http.NotFound(w, r)
+		} else {
+			p.config.InspectorAccess.ServeHTTP(w, r)
+		}
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/.paperboat/access/") {
 		if r.URL.Path == browserCallbackPath && p.config.BrowserAccess != nil {
 			p.config.BrowserAccess.callback(w, r)

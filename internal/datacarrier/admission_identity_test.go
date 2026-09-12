@@ -39,7 +39,12 @@ func TestExpectedAdmissionRegistryPeerBindingUsesCarrierURNSessionFence(t *testi
 	registry.byKey["old"] = ExpectedAdmission{Identity: oldIdentity, EdgeProcessEpoch: "_epoch12", EdgeCarrierServerSPKISHA256: "sha256:" + strings.Repeat("a", 64), EdgeCarrierServerCertificateChainPEM: "test-public-certificate-chain", MachineIdentityPublicKey: encoded, MachineIdentityThumbprint: thumbprint, ExpiresAt: time.Now().Add(time.Minute), Admitted: true}
 	registry.byKey["new"] = ExpectedAdmission{Identity: newIdentity, EdgeProcessEpoch: "_epoch12", EdgeCarrierServerSPKISHA256: "sha256:" + strings.Repeat("a", 64), EdgeCarrierServerCertificateChainPEM: "test-public-certificate-chain", MachineIdentityPublicKey: encoded, MachineIdentityThumbprint: thumbprint, ExpiresAt: time.Now().Add(time.Minute), Admitted: true}
 
-	for name, identity := range map[string]Identity{"old": oldIdentity, "new": newIdentity} {
+	sharedIdentity := newIdentity
+	sharedIdentity.AccountID = "teammate_account"
+	sharedIdentity.TunnelID = "teammate_tunnel"
+	sharedIdentity.ConnectorID = "teammate_connector"
+	registry.byKey["shared"] = ExpectedAdmission{Identity: sharedIdentity, EdgeProcessEpoch: "_epoch12", MachineIdentityPublicKey: encoded, MachineIdentityThumbprint: thumbprint, ExpiresAt: time.Now().Add(time.Minute), Admitted: true}
+	for name, identity := range map[string]Identity{"old": oldIdentity, "new": newIdentity, "shared account": sharedIdentity} {
 		uri, err := connectorprotocol.CarrierIdentityURN(connectorprotocol.CarrierIdentityBinding{
 			AccountID: identity.AccountID, HostID: identity.HostID, TunnelID: identity.TunnelID,
 			ConnectorID: identity.ConnectorID, SessionID: identity.SessionID,

@@ -12,6 +12,10 @@ const (
 	// carries identity and route metadata, never credentials or body bytes.
 	MaxStreamOpenBytes = 16 << 10
 	streamOpenHeader   = 4
+	// InspectorHTTP carries one bounded, already-authorized inspector HTTP
+	// operation from the edge to the resource owner's daemon. It never carries
+	// ordinary application traffic or opens an origin connection.
+	InspectorHTTP = "inspector_http"
 )
 
 // StreamOpen is the canonical connector-v1 data-stream admission preface.
@@ -48,7 +52,7 @@ func (s StreamOpen) Validate() error {
 
 func validStreamKind(kind string) bool {
 	switch kind {
-	case "connector_ready", "tcp_public", "http_browser", "http", "https", "h2c", "websocket", "sse", "grpc", "tcp_private", PrivateAccessHTTP, PrivateAccessTCP:
+	case "connector_ready", "tcp_public", "http_browser", "http", "https", "h2c", "websocket", "sse", "grpc", "tcp_private", PrivateAccessHTTP, PrivateAccessTCP, InspectorHTTP:
 		return true
 	default:
 		return false
